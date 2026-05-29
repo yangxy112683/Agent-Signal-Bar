@@ -221,6 +221,7 @@ Tests/                     Swift 测试
 - [Codex 接入](docs/CODEX_SETUP.md)
 - [Claude Code 接入](docs/CLAUDE_CODE_SETUP.md)
 - [本地脚本接入](docs/LOCAL_SCRIPT_SETUP.md)
+- [GitHub 发布管理](docs/GITHUB_RELEASES.md)
 - [发布检查清单](docs/RELEASE_CHECKLIST.md)
 
 ## 开发者

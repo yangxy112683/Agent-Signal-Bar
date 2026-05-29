@@ -223,6 +223,7 @@ Tests/                     Swift tests
 - [Codex setup](docs/CODEX_SETUP.md)
 - [Claude Code setup](docs/CLAUDE_CODE_SETUP.md)
 - [Local script setup](docs/LOCAL_SCRIPT_SETUP.md)
+- [GitHub release management](docs/GITHUB_RELEASES.md)
 - [Release checklist](docs/RELEASE_CHECKLIST.md)
 
 ## Developer

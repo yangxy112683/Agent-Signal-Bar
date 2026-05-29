@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Swift tests
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode.app/Contents/Developer ]; then
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          fi
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Check shell scripts
+        run: |
+          bash -n script/*.sh
+          bash -n scripts/agent-signal
+          bash -n scripts/agent-signal-run
+          bash -n scripts/codex-signal-hook
+          bash -n scripts/claude-code-signal-hook
+          bash -n scripts/generic-agent-signal-hook
+
+      - name: Run Swift tests
+        run: swift test
+
+      - name: Verify local integrations
+        run: ./script/verify_local_integrations.sh
+
