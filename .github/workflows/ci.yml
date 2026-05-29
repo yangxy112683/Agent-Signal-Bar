@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Select Xcode
         run: |
@@ -45,4 +45,3 @@ jobs:
 
       - name: Verify local integrations
         run: ./script/verify_local_integrations.sh
-

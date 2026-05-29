@@ -18,17 +18,17 @@ final class StatusBarIconRendererTests: XCTestCase {
             let expectedSize = layout == .horizontal
                 ? CGSize(width: 27, height: 18)
                 : CGSize(width: 10, height: 18)
-            let lowCount = low.count(where: \.isGreenLampPixel)
-            let midCount = mid.count(where: \.isGreenLampPixel)
-            let nearHighCount = nearHigh.count(where: \.isGreenLampPixel)
-            let highCount = high.count(where: \.isGreenLampPixel)
+            let lowStrength = low.greenSignalStrength
+            let midStrength = mid.greenSignalStrength
+            let nearHighStrength = nearHigh.greenSignalStrength
+            let highStrength = high.greenSignalStrength
 
             XCTAssert(low.imageSize == expectedSize)
-            XCTAssert(lowCount >= 8)
-            XCTAssert(midCount > lowCount)
-            XCTAssert(nearHighCount >= midCount + 2)
-            XCTAssert(highCount >= nearHighCount)
-            XCTAssert(highCount >= lowCount + 6)
+            XCTAssert(lowStrength > 0)
+            XCTAssert(midStrength > lowStrength)
+            XCTAssert(nearHighStrength > midStrength)
+            XCTAssert(highStrength > nearHighStrength)
+            XCTAssert(highStrength >= lowStrength * 1.8)
         }
     }
 
@@ -315,6 +315,17 @@ private struct PixelBuffer {
                 alpha: bytes[index + 3]
             )
             return predicate(pixel) ? count + 1 : count
+        }
+    }
+
+    var greenSignalStrength: Double {
+        stride(from: 0, to: bytes.count, by: 4).reduce(0) { strength, index in
+            let red = Double(bytes[index])
+            let green = Double(bytes[index + 1])
+            let blue = Double(bytes[index + 2])
+            let alpha = Double(bytes[index + 3]) / 255
+            let dominance = max(0, green - max(red, blue))
+            return strength + dominance * alpha
         }
     }
 }

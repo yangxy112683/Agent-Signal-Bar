@@ -145,13 +145,15 @@ struct MenuBarPanelView: View {
                 }
             }
 
-            if let recentEvent = menuRecentEvent {
+            if !menuRecentEvents.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(model.text("最近", "Recent"))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
 
-                    EventRowView(model: model, event: recentEvent)
+                    ForEach(menuRecentEvents) { event in
+                        EventRowView(model: model, event: event)
+                    }
                 }
             }
         }
@@ -207,17 +209,21 @@ struct MenuBarPanelView: View {
         5 * 60
     }
 
-    private var menuRecentEvent: RecentSignalEvent? {
+    private var menuRecentEvents: [RecentSignalEvent] {
         let currentSessionKeys = Set(
             visibleAgentSessions.map { session in
                 "\(session.sessionID)|\(session.signal.rawValue)|\(session.lastEvent ?? "")"
             }
         )
 
-        return viewState.snapshot.recentEvents.first { event in
+        return Array(viewState.snapshot.recentEvents.lazy.filter { event in
             let eventKey = "\(event.sessionID)|\(event.signal.rawValue)|\(event.event ?? "")"
             return !currentSessionKeys.contains(eventKey)
-        }
+        }.prefix(menuRecentEventLimit))
+    }
+
+    private var menuRecentEventLimit: Int {
+        visibleAgentSessions.count == 1 ? 2 : 1
     }
 
     private func normalizedAgentKey(_ agent: String?, fallback: String) -> String {
