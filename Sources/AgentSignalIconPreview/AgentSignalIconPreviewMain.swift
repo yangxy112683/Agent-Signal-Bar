@@ -15,12 +15,14 @@ struct AgentSignalIconPreview {
 
         let records = try renderIcons(to: iconsURL)
         try renderSheet(records: records, to: outputURL.appendingPathComponent("status-icon-preview.png"))
+        try renderStatusBarDemo(to: outputURL.appendingPathComponent("status-bar-demo.gif"))
         try renderEffectGallery(language: .english, to: outputURL.appendingPathComponent("light-effects-en.gif"))
         try renderEffectGallery(language: .simplifiedChinese, to: outputURL.appendingPathComponent("light-effects-zh-CN.gif"))
         try writeManifest(records: records, to: outputURL.appendingPathComponent("manifest.json"))
 
         print("status icon preview: \(outputURL.path)")
         print("sheet: \(outputURL.appendingPathComponent("status-icon-preview.png").path)")
+        print("status bar demo: \(outputURL.appendingPathComponent("status-bar-demo.gif").path)")
         print("light effects en: \(outputURL.appendingPathComponent("light-effects-en.gif").path)")
         print("light effects zh-CN: \(outputURL.appendingPathComponent("light-effects-zh-CN.gif").path)")
         print("manifest: \(outputURL.appendingPathComponent("manifest.json").path)")
@@ -174,6 +176,150 @@ struct AgentSignalIconPreview {
         }
 
         try writePNG(sheet, to: outputURL)
+    }
+
+    private static func renderStatusBarDemo(to outputURL: URL) throws {
+        let demoSize = NSSize(width: 720, height: 300)
+        let frameCount = 24
+        guard let destination = CGImageDestinationCreateWithURL(
+            outputURL as CFURL,
+            UTType.gif.identifier as CFString,
+            frameCount,
+            nil
+        ) else {
+            throw PreviewError.missingGIFRepresentation(outputURL.path)
+        }
+
+        let gifProperties: [String: Any] = [
+            kCGImagePropertyGIFDictionary as String: [
+                kCGImagePropertyGIFLoopCount as String: 0
+            ]
+        ]
+        CGImageDestinationSetProperties(destination, gifProperties as CFDictionary)
+
+        let frameProperties: [String: Any] = [
+            kCGImagePropertyGIFDictionary as String: [
+                kCGImagePropertyGIFDelayTime as String: 0.12
+            ]
+        ]
+
+        for frameIndex in 0..<frameCount {
+            let frame = try renderStatusBarDemoFrame(
+                frameIndex: frameIndex,
+                size: demoSize,
+                path: outputURL.path
+            )
+            guard let image = frame.cgImage else {
+                throw PreviewError.missingGIFRepresentation(outputURL.path)
+            }
+            CGImageDestinationAddImage(destination, image, frameProperties as CFDictionary)
+        }
+
+        if !CGImageDestinationFinalize(destination) {
+            throw PreviewError.missingGIFRepresentation(outputURL.path)
+        }
+    }
+
+    private static func renderStatusBarDemoFrame(
+        frameIndex: Int,
+        size demoSize: NSSize,
+        path: String
+    ) throws -> NSBitmapImageRep {
+        let sheet = try makeBitmap(size: demoSize, path: path)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: sheet)
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
+        NSGradient(colors: [
+            NSColor(calibratedRed: 0.11, green: 0.16, blue: 0.18, alpha: 1),
+            NSColor(calibratedRed: 0.03, green: 0.34, blue: 0.36, alpha: 1)
+        ])?.draw(in: NSRect(origin: .zero, size: demoSize), angle: 0)
+
+        NSColor.white.withAlphaComponent(0.018).setFill()
+        NSRect(origin: .zero, size: demoSize).fill()
+
+        let snapshot = SignalSnapshot(
+            aggregate: .working,
+            sessions: [],
+            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json")
+        )
+        let customization = SignalEffectCustomization(activeEffect: .trafficCycle)
+        let tick = frameIndex % 12
+
+        drawStatusBarDemoIcon(
+            snapshot: snapshot,
+            tick: tick,
+            style: .trafficLight,
+            scale: 4.6,
+            center: NSPoint(x: 190, y: 186),
+            customization: customization
+        )
+        drawStatusBarDemoIcon(
+            snapshot: snapshot,
+            tick: tick,
+            style: .macOS,
+            scale: 4.8,
+            center: NSPoint(x: 190, y: 106),
+            customization: customization
+        )
+
+        drawText(
+            "Agent Signal Bar",
+            in: NSRect(x: 356, y: 168, width: 300, height: 34),
+            font: .systemFont(ofSize: 21, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.86)
+        )
+        drawText(
+            "Working",
+            in: NSRect(x: 356, y: 118, width: 300, height: 54),
+            font: .systemFont(ofSize: 40, weight: .bold),
+            color: NSColor.white.withAlphaComponent(0.98)
+        )
+        drawText(
+            "red / yellow / green sequence",
+            in: NSRect(x: 358, y: 84, width: 320, height: 28),
+            font: .systemFont(ofSize: 18, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.70)
+        )
+
+        return sheet
+    }
+
+    private static func drawStatusBarDemoIcon(
+        snapshot: SignalSnapshot,
+        tick: Int,
+        style: TrafficSignalStyle,
+        scale: CGFloat,
+        center: NSPoint,
+        customization: SignalEffectCustomization
+    ) {
+        let image = StatusBarIconRenderer.image(
+            snapshot: snapshot,
+            tick: tick,
+            layout: .horizontal,
+            style: style,
+            macOSBreathingStrength: .maximum,
+            allLightsOn: false,
+            effectCustomization: customization
+        )
+        let drawSize = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let drawRect = NSRect(
+            x: center.x - drawSize.width / 2,
+            y: center.y - drawSize.height / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        )
+
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.24)
+        shadow.shadowBlurRadius = 18
+        shadow.shadowOffset = NSSize(width: 0, height: -5)
+        shadow.set()
+        NSGraphicsContext.current?.imageInterpolation = .none
+        image.draw(in: drawRect)
+        NSGraphicsContext.restoreGraphicsState()
     }
 
     private static func renderEffectGallery(language: EffectGalleryLanguage, to outputURL: URL) throws {
