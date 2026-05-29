@@ -11,6 +11,10 @@
 </p>
 
 <p align="center">
+  Customizable light effects · Multilingual UI · Local-first · Codex and Claude Code hooks
+</p>
+
+<p align="center">
   <img src="docs/assets/status-bar-demo.gif" alt="Agent Signal Bar status light demo" width="720">
 </p>
 
@@ -25,7 +29,9 @@ Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow
 - Codex Desktop activity monitoring, Codex hooks, Claude Code hooks, and generic JSON event input.
 - Multi-session aggregation so permission, failure, and blocked states are not overwritten by normal working states.
 - Local CLI for scripts, automation, and custom agents.
-- Multilingual UI, theme selection, launch at login, effect customization, and effect testing.
+- Multilingual UI with system-language detection and manual language switching.
+- Customizable light effects, including blink speed, breathing strength, and per-state effect choices.
+- Theme selection, launch at login, and effect testing.
 - No cloud service is required. State files, hooks, and diagnostics stay on your Mac.
 
 ## Signal Language
