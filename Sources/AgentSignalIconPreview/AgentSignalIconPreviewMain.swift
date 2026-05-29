@@ -2,6 +2,8 @@ import AgentSignalLightCore
 import AgentSignalLightUI
 import AppKit
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 @MainActor
 @main
@@ -13,10 +15,14 @@ struct AgentSignalIconPreview {
 
         let records = try renderIcons(to: iconsURL)
         try renderSheet(records: records, to: outputURL.appendingPathComponent("status-icon-preview.png"))
+        try renderEffectGallery(language: .english, to: outputURL.appendingPathComponent("light-effects-en.gif"))
+        try renderEffectGallery(language: .simplifiedChinese, to: outputURL.appendingPathComponent("light-effects-zh-CN.gif"))
         try writeManifest(records: records, to: outputURL.appendingPathComponent("manifest.json"))
 
         print("status icon preview: \(outputURL.path)")
         print("sheet: \(outputURL.appendingPathComponent("status-icon-preview.png").path)")
+        print("light effects en: \(outputURL.appendingPathComponent("light-effects-en.gif").path)")
+        print("light effects zh-CN: \(outputURL.appendingPathComponent("light-effects-zh-CN.gif").path)")
         print("manifest: \(outputURL.appendingPathComponent("manifest.json").path)")
     }
 
@@ -170,6 +176,189 @@ struct AgentSignalIconPreview {
         try writePNG(sheet, to: outputURL)
     }
 
+    private static func renderEffectGallery(language: EffectGalleryLanguage, to outputURL: URL) throws {
+        let gallerySize = NSSize(width: 1000, height: 1400)
+        let frameCount = 16
+        guard let destination = CGImageDestinationCreateWithURL(
+            outputURL as CFURL,
+            UTType.gif.identifier as CFString,
+            frameCount,
+            nil
+        ) else {
+            throw PreviewError.missingGIFRepresentation(outputURL.path)
+        }
+
+        let gifProperties: [String: Any] = [
+            kCGImagePropertyGIFDictionary as String: [
+                kCGImagePropertyGIFLoopCount as String: 0
+            ]
+        ]
+        CGImageDestinationSetProperties(destination, gifProperties as CFDictionary)
+
+        let frameProperties: [String: Any] = [
+            kCGImagePropertyGIFDictionary as String: [
+                kCGImagePropertyGIFDelayTime as String: 0.16
+            ]
+        ]
+
+        for frameIndex in 0..<frameCount {
+            let sheet = try renderEffectGalleryFrame(
+                language: language,
+                frameIndex: frameIndex,
+                size: gallerySize,
+                path: outputURL.path
+            )
+            guard let image = sheet.cgImage else {
+                throw PreviewError.missingGIFRepresentation(outputURL.path)
+            }
+            CGImageDestinationAddImage(destination, image, frameProperties as CFDictionary)
+        }
+
+        if !CGImageDestinationFinalize(destination) {
+            throw PreviewError.missingGIFRepresentation(outputURL.path)
+        }
+    }
+
+    private static func renderEffectGalleryFrame(
+        language: EffectGalleryLanguage,
+        frameIndex: Int,
+        size gallerySize: NSSize,
+        path: String
+    ) throws -> NSBitmapImageRep {
+        let sheet = try makeBitmap(size: gallerySize, path: path)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: sheet)
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
+        NSGradient(colors: [
+            NSColor(calibratedRed: 0.11, green: 0.16, blue: 0.18, alpha: 1),
+            NSColor(calibratedRed: 0.04, green: 0.24, blue: 0.27, alpha: 1)
+        ])?.draw(in: NSRect(origin: .zero, size: gallerySize), angle: 0)
+
+        NSColor.white.withAlphaComponent(0.018).setFill()
+        NSRect(origin: .zero, size: gallerySize).fill()
+
+        drawText(
+            language.title,
+            in: NSRect(x: 48, y: gallerySize.height - 82, width: 760, height: 42),
+            font: .systemFont(ofSize: language == .english ? 30 : 32, weight: .bold),
+            color: .white
+        )
+        drawText(
+            language.subtitle,
+            in: NSRect(x: 50, y: gallerySize.height - 114, width: 760, height: 24),
+            font: .systemFont(ofSize: 18, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.62)
+        )
+
+        let columns = 2
+        let cardWidth: CGFloat = 440
+        let cardHeight: CGFloat = 138
+        let gapX: CGFloat = 40
+        let gapY: CGFloat = 14
+        let startX: CGFloat = 40
+        let startY: CGFloat = gallerySize.height - 144 - cardHeight
+
+        for (index, item) in effectGalleryItems.enumerated() {
+            let column = index % columns
+            let row = index / columns
+            let cardRect = NSRect(
+                x: startX + CGFloat(column) * (cardWidth + gapX),
+                y: startY - CGFloat(row) * (cardHeight + gapY),
+                width: cardWidth,
+                height: cardHeight
+            )
+            drawEffectGalleryCard(
+                item,
+                language: language,
+                frameIndex: frameIndex,
+                in: cardRect
+            )
+        }
+
+        return sheet
+    }
+
+    private static func drawEffectGalleryCard(
+        _ item: EffectGalleryItem,
+        language: EffectGalleryLanguage,
+        frameIndex: Int,
+        in rect: NSRect
+    ) {
+        NSColor.white.withAlphaComponent(0.055).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 18, yRadius: 18).fill()
+        NSColor.white.withAlphaComponent(0.08).setStroke()
+        let border = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: 17, yRadius: 17)
+        border.lineWidth = 1
+        border.stroke()
+
+        drawText(
+            item.title(for: language),
+            in: NSRect(x: rect.minX + 20, y: rect.maxY - 44, width: rect.width - 40, height: 26),
+            font: .systemFont(ofSize: language == .english ? 20 : 21, weight: .bold),
+            color: NSColor.white.withAlphaComponent(0.96)
+        )
+        drawText(
+            item.detail(for: language),
+            in: NSRect(x: rect.minX + 20, y: rect.maxY - 70, width: rect.width - 40, height: 18),
+            font: .systemFont(ofSize: 13, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.58)
+        )
+
+        drawText(
+            language.classicLabel,
+            in: NSRect(x: rect.minX + 20, y: rect.minY + 48, width: 64, height: 18),
+            font: .systemFont(ofSize: 10, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.48)
+        )
+        drawAnimatedIcon(item, style: .trafficLight, frameIndex: frameIndex, in: NSRect(x: rect.minX + 104, y: rect.minY + 38, width: 260, height: 38))
+
+        drawText(
+            language.minimalLabel,
+            in: NSRect(x: rect.minX + 20, y: rect.minY + 14, width: 64, height: 18),
+            font: .systemFont(ofSize: 10, weight: .semibold),
+            color: NSColor.white.withAlphaComponent(0.48)
+        )
+        drawAnimatedIcon(item, style: .macOS, frameIndex: frameIndex, in: NSRect(x: rect.minX + 104, y: rect.minY + 4, width: 260, height: 34))
+    }
+
+    private static func drawAnimatedIcon(
+        _ item: EffectGalleryItem,
+        style: TrafficSignalStyle,
+        frameIndex: Int,
+        in rect: NSRect
+    ) {
+        let snapshot = SignalSnapshot(
+            aggregate: item.signal,
+            sessions: [],
+            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json")
+        )
+        let tick = item.tick(at: frameIndex)
+        let image = StatusBarIconRenderer.image(
+            snapshot: snapshot,
+            tick: tick,
+            layout: .horizontal,
+            style: style,
+            macOSBreathingStrength: .maximum,
+            allLightsOn: item.allLightsOn,
+            effectCustomization: item.customization
+        )
+        let scale: CGFloat = style == .trafficLight ? 2.05 : 2.35
+        let drawSize = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let drawRect = NSRect(
+            x: rect.minX + (rect.width - drawSize.width) / 2,
+            y: rect.midY - drawSize.height / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        )
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current?.imageInterpolation = .none
+        image.draw(in: drawRect)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
     private static func writeManifest(records: [PreviewRecord], to outputURL: URL) throws {
         let formatter = ISO8601DateFormatter()
         let manifest = PreviewManifest(
@@ -311,9 +500,239 @@ private struct PreviewManifest: Encodable {
     }
 }
 
+private enum EffectGalleryLanguage {
+    case english
+    case simplifiedChinese
+
+    var title: String {
+        switch self {
+        case .english:
+            return "Light Effect Preview"
+        case .simplifiedChinese:
+            return "动态灯效预览图"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .english:
+            return "Animated preview rendered from the real status bar icon renderer"
+        case .simplifiedChinese:
+            return "由真实状态栏图标渲染器生成的效果预览图"
+        }
+    }
+
+    var classicLabel: String {
+        switch self {
+        case .english:
+            return "Classic"
+        case .simplifiedChinese:
+            return "经典"
+        }
+    }
+
+    var minimalLabel: String {
+        switch self {
+        case .english:
+            return "Minimal"
+        case .simplifiedChinese:
+            return "极简"
+        }
+    }
+}
+
+private struct EffectGalleryItem {
+    let enTitle: String
+    let zhTitle: String
+    let enDetail: String
+    let zhDetail: String
+    let signal: AgentSignal
+    let ticks: [Int]
+    let allLightsOn: Bool
+    let customization: SignalEffectCustomization
+
+    init(
+        enTitle: String,
+        zhTitle: String,
+        enDetail: String,
+        zhDetail: String,
+        signal: AgentSignal,
+        ticks: [Int],
+        allLightsOn: Bool = false,
+        customization: SignalEffectCustomization = .default
+    ) {
+        self.enTitle = enTitle
+        self.zhTitle = zhTitle
+        self.enDetail = enDetail
+        self.zhDetail = zhDetail
+        self.signal = signal
+        self.ticks = ticks
+        self.allLightsOn = allLightsOn
+        self.customization = customization
+    }
+
+    func title(for language: EffectGalleryLanguage) -> String {
+        switch language {
+        case .english:
+            return enTitle
+        case .simplifiedChinese:
+            return zhTitle
+        }
+    }
+
+    func detail(for language: EffectGalleryLanguage) -> String {
+        switch language {
+        case .english:
+            return enDetail
+        case .simplifiedChinese:
+            return zhDetail
+        }
+    }
+
+    func tick(at frameIndex: Int) -> Int {
+        guard !ticks.isEmpty else {
+            return 0
+        }
+        return ticks[frameIndex % ticks.count]
+    }
+}
+
+private let effectGalleryItems: [EffectGalleryItem] = [
+    EffectGalleryItem(
+        enTitle: "Idle",
+        zhTitle: "空闲",
+        enDetail: "steady green",
+        zhDetail: "绿灯常亮",
+        signal: .idle,
+        ticks: [0]
+    ),
+    EffectGalleryItem(
+        enTitle: "Thinking",
+        zhTitle: "思考中",
+        enDetail: "green fast flash",
+        zhDetail: "绿灯快闪",
+        signal: .thinking,
+        ticks: [0, 1],
+        customization: SignalEffectCustomization(thinkingEffect: .greenFastFlash)
+    ),
+    EffectGalleryItem(
+        enTitle: "Working",
+        zhTitle: "工作中",
+        enDetail: "green slow flash",
+        zhDetail: "绿灯慢闪",
+        signal: .working,
+        ticks: [0, 1, 2, 3, 4, 5],
+        customization: SignalEffectCustomization(activeEffect: .greenSlowFlash)
+    ),
+    EffectGalleryItem(
+        enTitle: "Green Breathe",
+        zhTitle: "绿灯呼吸",
+        enDetail: "smooth strength curve",
+        zhDetail: "强度平滑变化",
+        signal: .working,
+        ticks: Array(0...9),
+        customization: SignalEffectCustomization(activeEffect: .greenBreathing)
+    ),
+    EffectGalleryItem(
+        enTitle: "Green Steady",
+        zhTitle: "绿灯常亮",
+        enDetail: "custom active effect",
+        zhDetail: "自定义运行灯效",
+        signal: .working,
+        ticks: [0],
+        customization: SignalEffectCustomization(activeEffect: .greenSteady)
+    ),
+    EffectGalleryItem(
+        enTitle: "R/Y/G Sequence",
+        zhTitle: "红黄绿依次亮",
+        enDetail: "red, yellow, green",
+        zhDetail: "红、黄、绿轮流亮",
+        signal: .working,
+        ticks: Array(0...11),
+        customization: SignalEffectCustomization(activeEffect: .trafficCycle)
+    ),
+    EffectGalleryItem(
+        enTitle: "Attention",
+        zhTitle: "需要查看",
+        enDetail: "yellow flash",
+        zhDetail: "黄灯闪烁",
+        signal: .attention,
+        ticks: Array(0...7)
+    ),
+    EffectGalleryItem(
+        enTitle: "Permission",
+        zhTitle: "请求授权",
+        enDetail: "red flash",
+        zhDetail: "红灯闪烁",
+        signal: .permission,
+        ticks: Array(0...7)
+    ),
+    EffectGalleryItem(
+        enTitle: "Blocked",
+        zhTitle: "阻塞",
+        enDetail: "fast red flash",
+        zhDetail: "红灯快速闪烁",
+        signal: .blocked,
+        ticks: [0, 1]
+    ),
+    EffectGalleryItem(
+        enTitle: "Done",
+        zhTitle: "已完成",
+        enDetail: "steady green",
+        zhDetail: "绿灯常亮",
+        signal: .done,
+        ticks: [0],
+        customization: SignalEffectCustomization(completedEffect: .greenSteady)
+    ),
+    EffectGalleryItem(
+        enTitle: "Done Pulse",
+        zhTitle: "完成闪烁",
+        enDetail: "green or yellow pulse",
+        zhDetail: "绿灯/黄灯慢闪",
+        signal: .done,
+        ticks: [0, 1, 2, 3],
+        customization: SignalEffectCustomization(completedEffect: .yellowPulse)
+    ),
+    EffectGalleryItem(
+        enTitle: "All On",
+        zhTitle: "三灯全亮",
+        enDetail: "all lights steady",
+        zhDetail: "三个灯同时常亮",
+        signal: .done,
+        ticks: [0],
+        customization: SignalEffectCustomization(completedEffect: .allSteady)
+    ),
+    EffectGalleryItem(
+        enTitle: "All Flash",
+        zhTitle: "三灯同步闪",
+        enDetail: "all lights pulse",
+        zhDetail: "三个灯一起闪烁",
+        signal: .done,
+        ticks: [0, 1, 2, 3],
+        customization: SignalEffectCustomization(completedEffect: .allPulse)
+    ),
+    EffectGalleryItem(
+        enTitle: "Stale",
+        zhTitle: "状态不可信",
+        enDetail: "soft yellow warning",
+        zhDetail: "柔和黄灯提醒",
+        signal: .stale,
+        ticks: Array(0...7)
+    ),
+    EffectGalleryItem(
+        enTitle: "Off",
+        zhTitle: "关闭",
+        enDetail: "all lights off",
+        zhDetail: "灯全灭",
+        signal: .off,
+        ticks: [0]
+    )
+]
+
 private enum PreviewError: Error, LocalizedError {
     case usage
     case missingPNGRepresentation(String)
+    case missingGIFRepresentation(String)
     case missingImage(String)
 
     var errorDescription: String? {
@@ -322,6 +741,8 @@ private enum PreviewError: Error, LocalizedError {
             return "usage: agent-signal-icon-preview [output-dir] or agent-signal-icon-preview --output <dir>"
         case .missingPNGRepresentation(let path):
             return "could not create PNG representation for \(path)"
+        case .missingGIFRepresentation(let path):
+            return "could not create GIF representation for \(path)"
         case .missingImage(let path):
             return "could not load preview image at \(path)"
         }

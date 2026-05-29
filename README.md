@@ -73,6 +73,14 @@ Default effect settings:
 
 Effects can be customized in the Effects page of the settings window.
 
+## Light Effect Preview
+
+<p align="center">
+  <img src="docs/assets/light-effects-en.gif" alt="Agent Signal Bar animated light effect preview rendered from the real status bar icon renderer" width="720">
+</p>
+
+This animated effect preview is rendered from the same status bar icon renderer used by the app, with both the classic signal board and minimal dot styles shown for each effect.
+
 ## Aggregation Priority
 
 When multiple agents or sessions are active, the menu bar shows the highest-priority state:
