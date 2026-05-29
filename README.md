@@ -45,13 +45,20 @@ Developers can also download the source code and run `./script/build_and_run.sh`
 
 Click the menu bar signal light to open a compact panel with the current status, running agents, the latest event, and quick actions for opening agents, clearing alerts, pausing monitoring, opening settings, and quitting.
 
-## Settings Window With Standard Glass
+## Settings Glass Comparison
 
-<p align="center">
-  <img src="docs/assets/settings-glass-en.png" alt="Agent Signal Bar settings window Activity page with the standard glass effect" width="720">
-</p>
+<table>
+  <tr>
+    <td align="center"><strong>Without Glass</strong></td>
+    <td align="center"><strong>Standard Glass</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/settings-solid-en.png" alt="Agent Signal Bar settings window Activity page without glass effect" width="420"></td>
+    <td><img src="docs/assets/settings-glass-en.png" alt="Agent Signal Bar settings window Activity page with the standard glass effect" width="420"></td>
+  </tr>
+</table>
 
-The image above is a real screenshot of the Activity page with the standard glass effect enabled. The glass settings can be changed in `General > Settings glass`, while Activity, Style, Effects, Connect, General, and About provide monitoring, appearance, light-effect customization, integrations, and app information.
+Both images are real screen-region screenshots of the Activity page. The left image shows the normal solid settings window, while the right image shows the standard glass style with the desktop background participating in the window material. The glass settings can be changed in `General > Settings glass`.
 
 ## Features
 
