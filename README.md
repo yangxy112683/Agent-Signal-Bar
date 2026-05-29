@@ -20,6 +20,14 @@
 
 Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow, and green signal lights to show the current state of local AI agents. It helps you see whether Codex, Claude Code, or a local script is idle, working, done, waiting for approval, or blocked without switching back to a terminal or editor.
 
+## Menu Bar Panel
+
+<p align="center">
+  <img src="docs/assets/menu-bar-panel.png" alt="Agent Signal Bar menu bar panel" width="560">
+</p>
+
+Click the menu bar signal light to open a compact panel with the current status, running agents, the latest event, and quick actions for opening agents, clearing alerts, pausing monitoring, opening settings, and quitting.
+
 ## Features
 
 - macOS menu bar signal light with horizontal and vertical layouts.
