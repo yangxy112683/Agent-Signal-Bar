@@ -25,6 +25,7 @@ swift_tool() {
 }
 
 cleanup_duplicate_artifacts() {
+  mkdir -p "$DIST_DIR"
   find "$DIST_DIR" -maxdepth 1 \( \
     -name "$APP_NAME-local *.zip" -o \
     -name "$APP_NAME-SHA256SUMS *.txt" -o \
