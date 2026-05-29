@@ -183,6 +183,11 @@ Wrap any command as an agent run:
 
 ## Agent Integration
 
+Integration verification status:
+
+- Codex has been tested in real use and is fully verified.
+- Claude Code hook support is implemented, but it has not yet been verified with a live Claude Code workflow.
+
 Install Codex and Claude Code hooks:
 
 ```bash

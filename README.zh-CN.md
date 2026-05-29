@@ -181,6 +181,11 @@ paused > blocked > permission > needs_review > stale > active > completed > read
 
 ## 接入 Agent
 
+接入验证状态：
+
+- Codex 已经过实际测试验证，完整支持。
+- Claude Code Hook 接入逻辑已实现，但尚未进行真实 Claude Code 工作流验证。
+
 安装 Codex 和 Claude Code Hook：
 
 ```bash
