@@ -49,7 +49,7 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 mkdir -p "$STAGING_ROOT"
 ditto --norsrc "$APP_BUNDLE" "$STAGING_ROOT/$APP_NAME.app"
 ln -s /Applications "$STAGING_ROOT/Applications"
-cp "$ROOT_DIR/docs/DMG_README.md" "$STAGING_ROOT/Read Me.md"
+cp "$ROOT_DIR/docs/DMG_README.txt" "$STAGING_ROOT/Read Me.txt"
 
 find "$STAGING_ROOT" -exec xattr -c {} + 2>/dev/null || true
 plutil -lint "$STAGING_ROOT/$APP_NAME.app/Contents/Info.plist" >/dev/null

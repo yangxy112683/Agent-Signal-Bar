@@ -1169,11 +1169,11 @@ if [[ -f "$DMG" ]]; then
     if hdiutil attach -readonly -nobrowse -mountpoint "$DMG_MOUNT" "$DMG" >/tmp/agent-signal-doctor.out 2>/tmp/agent-signal-doctor.err; then
       if [[ -x "$DMG_MOUNT/$APP_NAME.app/Contents/MacOS/$APP_NAME" \
         && -L "$DMG_MOUNT/Applications" \
-        && -f "$DMG_MOUNT/Read Me.md" \
+        && -f "$DMG_MOUNT/Read Me.txt" \
         && -f "$DMG_MOUNT/$APP_NAME.app/Contents/Resources/$APP_NAME-release-info.json" ]]; then
-        pass "release DMG contains app, Applications shortcut, readme, and release info"
+        pass "release DMG contains app, Applications shortcut, text readme, and release info"
       else
-        fail "release DMG is missing app, Applications shortcut, readme, or release info"
+        fail "release DMG is missing app, Applications shortcut, text readme, or release info"
       fi
       if [[ -f "$RELEASE_MANIFEST" && -f "$DMG_MOUNT/$APP_NAME.app/Contents/Resources/$APP_NAME-release-info.json" ]]; then
         if /usr/bin/python3 - "$RELEASE_MANIFEST" "$DMG_MOUNT/$APP_NAME.app/Contents/Resources/$APP_NAME-release-info.json" <<'PY'
