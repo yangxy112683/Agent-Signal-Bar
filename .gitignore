@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+.codex/hooks.json
+dist/
+DerivedData/
+*.xcuserdata/
+.DS_Store
+__pycache__/
+*.pyc
