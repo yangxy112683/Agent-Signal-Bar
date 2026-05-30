@@ -63,15 +63,15 @@ Click the menu bar signal light to open a compact panel with the current status,
 <table>
   <tr>
     <td align="center"><strong>Without Liquid Glass</strong></td>
-    <td align="center"><strong>Standard Liquid Glass</strong></td>
+    <td align="center"><strong>Default Liquid Glass</strong></td>
   </tr>
   <tr>
     <td><img src="docs/assets/settings-solid-en.png" alt="Agent Signal Bar settings window Activity page without Liquid Glass" width="420"></td>
-    <td><img src="docs/assets/settings-glass-en.png" alt="Agent Signal Bar settings window Activity page with the standard Liquid Glass effect" width="420"></td>
+    <td><img src="docs/assets/settings-glass-en.png" alt="Agent Signal Bar settings window Activity page with the default reduced Liquid Glass effect" width="420"></td>
   </tr>
 </table>
 
-Both images are real screen-region screenshots of the Activity page. The left image shows the normal solid settings window, while the right image shows the standard Liquid Glass style with the desktop background participating in the window material. Liquid Glass is on by default at reduced strength and can be adjusted in `General > Liquid glass`.
+Both images are real screen-region screenshots of the Activity page. The left image shows the normal solid settings window, while the right image shows the default reduced Liquid Glass style with the desktop background participating in the window material. Liquid Glass is on by default at reduced strength and can be adjusted in `General > Liquid glass`.
 
 ## Features
 
