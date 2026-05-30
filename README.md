@@ -67,7 +67,7 @@ Click the menu bar signal light to open a compact panel with the current status,
   </tr>
   <tr>
     <td><img src="docs/assets/settings-solid-en.png" alt="Agent Signal Bar settings window Activity page without Liquid Glass" width="420"></td>
-    <td><img src="docs/assets/settings-glass-en.png" alt="Agent Signal Bar settings window Activity page with the default reduced Liquid Glass effect" width="420"></td>
+    <td><img src="docs/assets/settings-liquid-glass-default-en.png" alt="Agent Signal Bar settings window Activity page with the default reduced Liquid Glass effect" width="420"></td>
   </tr>
 </table>
 
