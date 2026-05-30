@@ -1,6 +1,8 @@
-# Agent Signal Bar
+<h1 align="center">Agent Signal Bar</h1>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+</p>
 
 <p align="center">
   <img src="docs/assets/app-icon.png" alt="Agent Signal Bar app icon" width="104">
@@ -12,6 +14,17 @@
 
 <p align="center">
   Customizable light effects · Multilingual UI · Local-first · Codex and Claude Code hooks
+</p>
+
+<p align="center">
+  <a href="marketing/social/video/agent-signal-bar-promo-9x16.mp4">
+    <img src="marketing/social/video/qa-frames/01-intro.png" alt="Agent Signal Bar 21.6 second vertical promo video cover" width="340">
+  </a>
+</p>
+
+<p align="center">
+  <a href="marketing/social/video/agent-signal-bar-promo-9x16.mp4"><strong>Watch the 21.6s product video</strong></a><br>
+  <sub>Vertical 9:16 promo video for social media, showing status bar styles, light effects, the menu panel, and settings.</sub>
 </p>
 
 <p align="center">

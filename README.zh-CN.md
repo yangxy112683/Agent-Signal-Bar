@@ -1,6 +1,8 @@
-# Agent Signal Bar
+<h1 align="center">Agent Signal Bar</h1>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+</p>
 
 <p align="center">
   <img src="docs/assets/app-icon.png" alt="Agent Signal Bar 应用图标" width="104">
@@ -12,6 +14,17 @@
 
 <p align="center">
   灯效可自定义 · 支持多语言 · 本地优先 · 支持 Codex 和 Claude Code Hook
+</p>
+
+<p align="center">
+  <a href="marketing/social/video/agent-signal-bar-promo-9x16.mp4">
+    <img src="marketing/social/video/qa-frames/01-intro.png" alt="Agent Signal Bar 21.6 秒竖版宣传视频封面" width="340">
+  </a>
+</p>
+
+<p align="center">
+  <a href="marketing/social/video/agent-signal-bar-promo-9x16.mp4"><strong>观看 21.6 秒产品宣传视频</strong></a><br>
+  <sub>9:16 竖版宣传视频，展示状态栏样式、灯效、小菜单和设置界面。</sub>
 </p>
 
 <p align="center">
