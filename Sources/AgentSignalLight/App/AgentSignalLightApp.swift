@@ -78,5 +78,13 @@ struct AgentSignalLightApp: App {
         Settings {
             EmptyView()
         }
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button(model.text("设置...", "Settings...")) {
+                    statusBarController.showDebugWindow()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 }

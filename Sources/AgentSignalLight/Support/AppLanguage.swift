@@ -140,14 +140,16 @@ extension MenuBarStatusModel {
         case .system:
             return text("跟随系统", "Follow System")
         case .light:
-            return text("白色", "Light")
+            return text("浅色", "Light")
         case .dark:
-            return text("黑色", "Dark")
+            return text("深色", "Dark")
         }
     }
 
     func displayName(for effect: SettingsGlassEffect) -> String {
         switch effect {
+        case .reduced:
+            return text("减弱", "Reduced")
         case .standard:
             return text("标准", "Standard")
         case .enhanced:
@@ -513,12 +515,13 @@ private enum AppLocalization {
         "Hooks are up to date.": localized(zhHant: "Hook 已是最新。", ja: "Hooks は最新です。", ko: "Hook이 최신 상태입니다.", es: "Los hooks estan actualizados.", fr: "Les hooks sont a jour.", de: "Hooks sind aktuell.", pt: "Hooks atualizados."),
         "Language": localized(zhHant: "語言", ja: "言語", ko: "언어", es: "Idioma", fr: "Langue", de: "Sprache", pt: "Idioma"),
         "Theme": localized(zhHant: "主題", ja: "テーマ", ko: "테마", es: "Tema", fr: "Theme", de: "Theme", pt: "Tema"),
-        "Settings glass": localized(zhHant: "設定毛玻璃", ja: "設定のガラス", ko: "설정 유리 효과", es: "Cristal de ajustes", fr: "Verre des reglages", de: "Einstellungen Glas", pt: "Vidro dos ajustes"),
-        "Glass style": localized(zhHant: "毛玻璃效果", ja: "ガラス効果", ko: "유리 효과", es: "Estilo de cristal", fr: "Style verre", de: "Glasstil", pt: "Estilo de vidro"),
+        "Liquid glass": localized(zhHant: "液態玻璃", ja: "リキッドグラス", ko: "리퀴드 글래스", es: "Cristal liquido", fr: "Verre liquide", de: "Liquid Glass", pt: "Vidro liquido"),
+        "Liquid glass strength": localized(zhHant: "液態玻璃強度", ja: "リキッドグラス強度", ko: "리퀴드 글래스 강도", es: "Intensidad del cristal liquido", fr: "Intensite du verre liquide", de: "Liquid Glass Staerke", pt: "Intensidade do vidro liquido"),
         "Follow System": localized(zhHant: "跟隨系統", ja: "システム連動", ko: "시스템 따르기", es: "Seguir sistema", fr: "Suivre le systeme", de: "System folgen", pt: "Seguir sistema"),
+        "Reduced": localized(zhHant: "減弱", ja: "控えめ", ko: "약하게", es: "Reducido", fr: "Reduit", de: "Reduziert", pt: "Reduzido"),
         "Enhanced": localized(zhHant: "增強", ja: "強調", ko: "강화", es: "Mejorado", fr: "Renforce", de: "Verstaerkt", pt: "Reforcado"),
-        "Light": localized(zhHant: "白色", ja: "ライト", ko: "밝게", es: "Claro", fr: "Clair", de: "Hell", pt: "Claro"),
-        "Dark": localized(zhHant: "黑色", ja: "ダーク", ko: "어둡게", es: "Oscuro", fr: "Sombre", de: "Dunkel", pt: "Escuro"),
+        "Light": localized(zhHant: "淺色", ja: "ライト", ko: "밝게", es: "Claro", fr: "Clair", de: "Hell", pt: "Claro"),
+        "Dark": localized(zhHant: "深色", ja: "ダーク", ko: "어둡게", es: "Oscuro", fr: "Sombre", de: "Dunkel", pt: "Escuro"),
         "Status bar style": localized(zhHant: "狀態列風格", ja: "表示スタイル", ko: "상태 막대 스타일", es: "Estilo de barra", fr: "Style de barre", de: "Statusleistenstil", pt: "Estilo da barra"),
         "Direction": localized(zhHant: "方向", ja: "方向", ko: "방향", es: "Direccion", fr: "Direction", de: "Richtung", pt: "Direcao"),
         "Dot breathing": localized(zhHant: "圓點呼吸強度", ja: "ドットの呼吸", ko: "점 호흡", es: "Respiracion del punto", fr: "Respiration du point", de: "Punkt Atmung", pt: "Respiracao do ponto"),

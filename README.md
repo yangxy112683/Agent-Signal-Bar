@@ -58,20 +58,20 @@ Developers can also download the source code and run `./script/build_and_run.sh`
 
 Click the menu bar signal light to open a compact panel with the current status, running agents, the latest event, and quick actions for opening agents, clearing alerts, pausing monitoring, opening settings, and quitting.
 
-## Settings Glass Comparison
+## Settings Liquid Glass Comparison
 
 <table>
   <tr>
-    <td align="center"><strong>Without Glass</strong></td>
-    <td align="center"><strong>Standard Glass</strong></td>
+    <td align="center"><strong>Without Liquid Glass</strong></td>
+    <td align="center"><strong>Standard Liquid Glass</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/settings-solid-en.png" alt="Agent Signal Bar settings window Activity page without glass effect" width="420"></td>
-    <td><img src="docs/assets/settings-glass-en.png" alt="Agent Signal Bar settings window Activity page with the standard glass effect" width="420"></td>
+    <td><img src="docs/assets/settings-solid-en.png" alt="Agent Signal Bar settings window Activity page without Liquid Glass" width="420"></td>
+    <td><img src="docs/assets/settings-glass-en.png" alt="Agent Signal Bar settings window Activity page with the standard Liquid Glass effect" width="420"></td>
   </tr>
 </table>
 
-Both images are real screen-region screenshots of the Activity page. The left image shows the normal solid settings window, while the right image shows the standard glass style with the desktop background participating in the window material. The glass settings can be changed in `General > Settings glass`.
+Both images are real screen-region screenshots of the Activity page. The left image shows the normal solid settings window, while the right image shows the standard Liquid Glass style with the desktop background participating in the window material. Liquid Glass is on by default at reduced strength and can be adjusted in `General > Liquid glass`.
 
 ## Features
 

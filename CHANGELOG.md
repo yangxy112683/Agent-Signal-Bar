@@ -1,6 +1,32 @@
 # Changelog
 
-[English](#103---2026-05-30) | [简体中文](#103---2026-05-30-简体中文)
+[English](#104---2026-05-30) | [简体中文](#104---2026-05-30-简体中文)
+
+## 1.0.4 - 2026-05-30
+
+### Changed
+
+- Optimized the Liquid Glass settings-window UI so the header, tab bar, content area, and dropdown controls feel visually consistent.
+- Added a reduced Liquid Glass strength and made it the default for fresh installs.
+- Renamed settings copy from glass to Liquid Glass across the app and README.
+
+### Fixed
+
+- Fixed the macOS app menu `Settings...` command so it opens the Agent Signal Bar settings window.
+- Improved settings window chrome so the titlebar blends with the app content.
+
+## 1.0.4 - 2026-05-30 简体中文
+
+### 改进
+
+- 优化设置窗口的液态玻璃 UI 显示，让顶部、菜单栏、内容区和下拉控件的视觉更统一。
+- 新增液态玻璃 `减弱` 强度，并将新安装默认强度设置为 `减弱`。
+- 将应用和 README 中的毛玻璃相关文案统一改为液态玻璃。
+
+### 修复
+
+- 修复 macOS 应用菜单里的 `Settings...` 无法正常打开 Agent Signal Bar 设置窗口的问题。
+- 优化设置窗口标题栏，使其与应用内容更像一个整体。
 
 ## 1.0.3 - 2026-05-30
 

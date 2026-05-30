@@ -33,6 +33,7 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
 }
 
 enum SettingsGlassEffect: String, CaseIterable, Hashable {
+    case reduced
     case standard
     case enhanced
 }
@@ -185,7 +186,7 @@ final class MenuBarStatusModel: ObservableObject {
         appTheme = storedTheme.flatMap(AppTheme.init(rawValue:)) ?? .system
         isSettingsGlassEnabled = storedSettingsGlassEnabled ?? true
         settingsGlassEffect =
-            storedSettingsGlassEffect.flatMap(SettingsGlassEffect.init(rawValue:)) ?? .enhanced
+            storedSettingsGlassEffect.flatMap(SettingsGlassEffect.init(rawValue:)) ?? .reduced
         macOSHorizontalUsesTrafficLightSize =
             UserDefaults.standard.object(forKey: "macOSHorizontalUsesTrafficLightSize") as? Bool
             ?? UserDefaults.standard.object(forKey: "macOSUsesTrafficLightSize") as? Bool

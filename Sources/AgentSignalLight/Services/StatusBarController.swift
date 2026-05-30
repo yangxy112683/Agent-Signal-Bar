@@ -359,6 +359,7 @@ final class StatusBarController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "Agent Signal Bar"
+        configureRecoveryWindowChrome(window)
         window.appearance = model.appTheme.nsAppearance
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
@@ -372,6 +373,15 @@ final class StatusBarController: NSObject, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private func configureRecoveryWindowChrome(_ window: NSWindow) {
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
+        window.isOpaque = false
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

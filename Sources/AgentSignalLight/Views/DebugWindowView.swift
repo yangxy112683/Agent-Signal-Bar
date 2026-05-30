@@ -354,12 +354,12 @@ struct DebugWindowView: View {
                 }
                 .zIndex(expandedSettingsDropdown == .theme ? 1000 : 0)
 
-                Toggle(model.text("设置毛玻璃", "Settings glass"), isOn: settingsGlassEnabledBinding)
+                Toggle(model.text("液态玻璃效果", "Liquid glass"), isOn: settingsGlassEnabledBinding)
                     .font(settingsRowTitleFont)
                     .toggleStyle(.switch)
 
                 if model.isSettingsGlassEnabled {
-                    settingRow(model.text("毛玻璃效果", "Glass style")) {
+                    settingRow(model.text("液态玻璃强度", "Liquid glass strength")) {
                         compactSegmentedControl(
                             options: SettingsGlassEffect.allCases,
                             selection: settingsGlassEffectBinding
@@ -1383,24 +1383,54 @@ struct DebugWindowView: View {
     }
 
     private var glassControlTint: Color {
-        if colorScheme == .dark {
-            return Color.white.opacity(model.settingsGlassEffect == .enhanced ? 0.055 : 0.075)
+        switch (colorScheme, model.settingsGlassEffect) {
+        case (.dark, .reduced):
+            return Color.white.opacity(0.10)
+        case (.dark, .standard):
+            return Color.white.opacity(0.075)
+        case (.dark, .enhanced):
+            return Color.white.opacity(0.055)
+        case (_, .reduced):
+            return Color.white.opacity(0.34)
+        case (_, .standard):
+            return Color.white.opacity(0.24)
+        case (_, .enhanced):
+            return Color.white.opacity(0.16)
         }
-        return Color.white.opacity(model.settingsGlassEffect == .enhanced ? 0.18 : 0.30)
     }
 
     private var glassDropdownTint: Color {
-        if colorScheme == .dark {
-            return Color.white.opacity(0.055)
+        switch (colorScheme, model.settingsGlassEffect) {
+        case (.dark, .reduced):
+            return Color.white.opacity(0.09)
+        case (.dark, .standard):
+            return Color.white.opacity(0.065)
+        case (.dark, .enhanced):
+            return Color.white.opacity(0.045)
+        case (_, .reduced):
+            return Color.white.opacity(0.26)
+        case (_, .standard):
+            return Color.white.opacity(0.18)
+        case (_, .enhanced):
+            return Color.white.opacity(0.12)
         }
-        return Color.white.opacity(0.16)
     }
 
     private var glassWindowTint: Color {
-        if colorScheme == .dark {
-            return Color.black.opacity(model.settingsGlassEffect == .enhanced ? 0.08 : 0.18)
+        switch (colorScheme, model.settingsGlassEffect) {
+        case (.dark, .reduced):
+            return Color.black.opacity(0.24)
+        case (.dark, .standard):
+            return Color.black.opacity(0.14)
+        case (.dark, .enhanced):
+            return Color.black.opacity(0.07)
+        case (_, .reduced):
+            return Color.white.opacity(0.28)
+        case (_, .standard):
+            return Color.white.opacity(0.14)
+        case (_, .enhanced):
+            return Color.white.opacity(0.05)
         }
-        return Color.white.opacity(model.settingsGlassEffect == .enhanced ? 0.05 : 0.18)
     }
 
     private var selectedMenuItemTint: Color {
@@ -1956,6 +1986,8 @@ private struct SettingsGlassBackdropView: NSViewRepresentable {
 
     private var material: NSVisualEffectView.Material {
         switch effect {
+        case .reduced:
+            return .sidebar
         case .standard:
             return .popover
         case .enhanced:
