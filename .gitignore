@@ -3,7 +3,7 @@
 .codex/hooks.json
 dist/
 DerivedData/
-marketing/social/video/
+marketing/
 *.xcuserdata/
 .DS_Store
 __pycache__/
