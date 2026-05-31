@@ -36,6 +36,41 @@ jobs:
       - name: Package release
         run: ./script/package_release.sh
 
+      - name: Prepare release notes
+        run: |
+          NOTES_FILE="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            cp "$NOTES_FILE" dist/release-notes.md
+          else
+            {
+              echo "# Agent Signal Bar ${GITHUB_REF_NAME}"
+              echo
+              echo "## English"
+              echo
+              echo "### Highlights"
+              echo
+              echo "- Maintenance release for Agent Signal Bar."
+              echo
+              echo "### Release verification"
+              echo
+              echo "- GitHub Actions built the app, ran Swift tests, packaged the release, and verified SHA-256 checksums."
+              echo "- Checksums are published in AgentSignalLight-SHA256SUMS.txt."
+              echo "- This is a local/self-use macOS build. It is ad-hoc signed and not notarized."
+              echo
+              echo "## 简体中文"
+              echo
+              echo "### 亮点"
+              echo
+              echo "- Agent Signal Bar 维护版本。"
+              echo
+              echo "### 发布验证"
+              echo
+              echo "- GitHub Actions 已完成 App 构建、Swift 测试、发布打包和 SHA-256 校验。"
+              echo "- 校验值见 AgentSignalLight-SHA256SUMS.txt。"
+              echo "- 这是本地 / 自用 macOS 构建，使用 ad-hoc 签名，尚未进行 notarization 公证。"
+            } > dist/release-notes.md
+          fi
+
       - name: Verify checksums
         run: shasum -a 256 -c dist/AgentSignalLight-SHA256SUMS.txt
 
@@ -43,7 +78,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Agent Signal Bar ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: dist/release-notes.md
           files: |
             dist/AgentSignalLight-local.zip
             dist/AgentSignalLight-local.dmg
