@@ -205,6 +205,10 @@ Wrap any command as an agent run:
 
 ## Agent Integration
 
+Codex Desktop can work without manually installing hooks. Keep `Monitor Codex Desktop` enabled in the app and Agent Signal Bar will read local Codex session logs to detect thinking, working, step-done, and done states. Hooks are still useful for Codex CLI/TUI, project-scoped automation, Claude Code, and other local agents that report events directly.
+
+Codex Desktop activity comes from the local Codex session log. Normal browser usage does not trigger Agent Signal Bar unless it is part of an active Codex task that is using tools.
+
 Integration verification status:
 
 - Codex has been tested in real use and is fully verified.

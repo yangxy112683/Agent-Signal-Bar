@@ -450,13 +450,16 @@ final class MenuBarStatusModel: ObservableObject {
 
     var displaySnapshot: SignalSnapshot {
         let displaySessions = combinedDisplaySessions()
+        let displayUpdatedAt = ([snapshot.updatedAt] + displaySessions.map(\.updatedAt))
+            .compactMap { $0 }
+            .max()
 
         return SignalSnapshot(
             aggregate: aggregateForSignalLightScope(sessions: displaySessions),
             sessions: displaySessions,
             recentEvents: snapshot.recentEvents,
             stateFileURL: snapshot.stateFileURL,
-            updatedAt: snapshot.updatedAt
+            updatedAt: displayUpdatedAt
         )
     }
 
@@ -690,8 +693,10 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func combinedDisplaySessions() -> [SessionStatus] {
-        var sessions = snapshot.sessions
         let now = Date()
+        var sessions = snapshot.sessions.filter { session in
+            Self.shouldIncludeStoredSessionInDisplay(session, now: now)
+        }
         let liveAgentKeys = Set(
             sessions.compactMap { session -> String? in
                 guard Self.shouldSuppressDesktopPresence(for: session, now: now) else { return nil }
@@ -758,6 +763,21 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
+    private static func shouldIncludeStoredSessionInDisplay(_ session: SessionStatus, now: Date) -> Bool {
+        if isDesktopPresenceSession(session) {
+            return true
+        }
+
+        switch session.signal.displayState {
+        case .active:
+            return now.timeIntervalSince(session.updatedAt) <= desktopAppSuppressionWindow
+        case .needsReview, .permission, .blocked, .stale, .completed:
+            return true
+        case .ready, .paused:
+            return false
+        }
+    }
+
     private static func shouldSuppressDesktopPresence(for session: SessionStatus, now: Date) -> Bool {
         switch session.signal.displayState {
         case .active:
@@ -767,6 +787,10 @@ final class MenuBarStatusModel: ObservableObject {
         case .ready, .completed, .paused:
             return false
         }
+    }
+
+    private static func isDesktopPresenceSession(_ session: SessionStatus) -> Bool {
+        session.sessionID.hasPrefix("desktop-app:") || session.lastEvent == "DesktopAppRunning"
     }
 
     private static func normalizedAgentKey(_ agent: String?, fallback: String) -> String {

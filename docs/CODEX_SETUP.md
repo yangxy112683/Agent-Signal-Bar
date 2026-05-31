@@ -18,7 +18,7 @@ Codex hook 事件建议映射：
 
 ## Codex Desktop
 
-Codex Desktop 当前线程可能不会执行 `.codex/hooks.json`，所以 Agent Signal Bar 内置了一个本地 Codex Desktop 监控器。它会读取 `~/.codex/sessions/**/*.jsonl` 中的本机事件：
+Codex Desktop 不需要手动安装 hook 也可以被 Agent Signal Bar 监控。Codex Desktop 当前线程可能不会执行 `.codex/hooks.json`，所以 Agent Signal Bar 内置了一个本地 Codex Desktop 监控器。它会读取 `~/.codex/sessions/**/*.jsonl` 中的本机事件：
 
 | Codex Desktop session event | Signal |
 | --- | --- |
@@ -27,7 +27,7 @@ Codex Desktop 当前线程可能不会执行 `.codex/hooks.json`，所以 Agent 
 | `function_call_output` | `tool_done` |
 | `task_complete` / `final_answer` | `done` |
 
-这个监控只读本地 Codex session 文件，不上传数据。可以在 App 设置的 `状态栏` > `Agent 来源` 里用「监控 Codex Desktop」开关打开或关闭。
+这个监控只读本地 Codex session 文件，不上传数据。可以在 App 设置的 `通用` > `Agent 来源` 里用「监控 Codex Desktop」开关打开或关闭。普通浏览器使用不会触发 Agent Signal Bar；只有 Codex 任务本身在思考、调用工具或写入本地 session 日志时才会触发。
 
 ## Recommended Install
 

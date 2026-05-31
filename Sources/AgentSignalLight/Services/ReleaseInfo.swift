@@ -1,7 +1,7 @@
 import Foundation
 
 struct ReleaseInfo: Equatable, Sendable {
-    static let fallbackVersion = "1.0.4"
+    static let fallbackVersion = "1.0.5"
     static let fallbackBuild = "1"
 
     let version: String

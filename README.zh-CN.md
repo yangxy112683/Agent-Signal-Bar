@@ -203,6 +203,10 @@ paused > blocked > permission > needs_review > stale > active > completed > read
 
 ## 接入 Agent
 
+Codex Desktop 不需要手动安装 Hook 也可以使用。只要在 App 中保持「监控 Codex Desktop」开启，Agent Signal Bar 就会读取本机 Codex session 日志，自动识别思考中、工作中、步骤完成和完成状态。Hook 仍然适合 Codex CLI/TUI、项目级自动化、Claude Code，以及其他会直接上报事件的本地 Agent。
+
+Codex Desktop 活动来自本机 Codex session 日志。普通浏览器使用不会触发 Agent Signal Bar，除非它本身是某个正在执行工具的 Codex 任务的一部分。
+
 接入验证状态：
 
 - Codex 已经过实际测试验证，完整支持。
