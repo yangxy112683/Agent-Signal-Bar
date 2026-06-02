@@ -24,13 +24,13 @@
   </tr>
   <tr>
     <td align="center"><strong>横向</strong></td>
-    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar 极简圆点横向真实 macOS 状态栏录屏转 GIF" width="330"></td>
-    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar 经典灯牌横向真实 macOS 状态栏录屏转 GIF" width="330"></td>
+    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar 极简圆点横向真实 macOS 状态栏录屏转 GIF" width="116"></td>
+    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar 经典灯牌横向真实 macOS 状态栏录屏转 GIF" width="108"></td>
   </tr>
   <tr>
     <td align="center"><strong>竖向</strong></td>
-    <td><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar 极简圆点竖向真实 macOS 状态栏录屏转 GIF" width="330"></td>
-    <td><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar 经典灯牌竖向真实 macOS 状态栏录屏转 GIF" width="330"></td>
+    <td><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar 极简圆点竖向真实 macOS 状态栏录屏转 GIF" width="68"></td>
+    <td><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar 经典灯牌竖向真实 macOS 状态栏录屏转 GIF" width="72"></td>
   </tr>
 </table>
 

@@ -24,13 +24,13 @@
   </tr>
   <tr>
     <td align="center"><strong>Horizontal</strong></td>
-    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots horizontal real macOS menu bar recording converted to GIF" width="330"></td>
-    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp horizontal real macOS menu bar recording converted to GIF" width="330"></td>
+    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots horizontal real macOS menu bar recording converted to GIF" width="116"></td>
+    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp horizontal real macOS menu bar recording converted to GIF" width="108"></td>
   </tr>
   <tr>
     <td align="center"><strong>Vertical</strong></td>
-    <td><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar Minimal Dots vertical real macOS menu bar recording converted to GIF" width="330"></td>
-    <td><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar Classic Lamp vertical real macOS menu bar recording converted to GIF" width="330"></td>
+    <td><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar Minimal Dots vertical real macOS menu bar recording converted to GIF" width="68"></td>
+    <td><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar Classic Lamp vertical real macOS menu bar recording converted to GIF" width="72"></td>
   </tr>
 </table>
 
