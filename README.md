@@ -55,11 +55,18 @@ Developers can also download the source code and run `./script/build_and_run.sh`
 
 ## Menu Bar Panel
 
-<p align="center">
-  <img src="docs/assets/menu-bar-panel-en.png" alt="Agent Signal Bar menu bar panel" width="560">
-</p>
+<table>
+  <tr>
+    <td align="center"><strong>Detailed Panel</strong></td>
+    <td align="center"><strong>Simple Menu</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/menu-bar-panel-detailed-en.png" alt="Agent Signal Bar detailed menu bar panel" width="390"></td>
+    <td><img src="docs/assets/menu-bar-panel-simple-en.png" alt="Agent Signal Bar simple native menu bar panel" width="390"></td>
+  </tr>
+</table>
 
-Click the menu bar signal light to open a compact panel with the current status, running agents, the latest event, and quick actions for opening agents, clearing alerts, pausing monitoring, opening settings, and quitting.
+Click the menu bar signal light to open either the detailed panel or the simple native-style menu. Both show the current status, running agents, latest activity, and quick actions for opening agents, clearing alerts, pausing monitoring, opening settings, and quitting.
 
 ## Settings Liquid Glass Comparison
 
