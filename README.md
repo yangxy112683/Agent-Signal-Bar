@@ -20,26 +20,26 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
-<table>
+<table width="100%">
   <tr>
-    <td align="center"><strong>Layout</strong></td>
-    <td align="center"><strong>Minimal Dots</strong></td>
-    <td align="center"><strong>Classic Lamp</strong></td>
+    <td align="center" width="18%"><strong>Layout</strong></td>
+    <td align="center" width="41%"><strong>Minimal Dots</strong></td>
+    <td align="center" width="41%"><strong>Classic Lamp</strong></td>
   </tr>
   <tr>
     <td align="center"><strong>Horizontal</strong></td>
-    <td><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots horizontal real macOS menu bar recording converted to GIF" width="116"></td>
-    <td><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp horizontal real macOS menu bar recording converted to GIF" width="108"></td>
+    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots horizontal animated status bar preview" width="220"></td>
+    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp horizontal animated status bar preview" width="220"></td>
   </tr>
   <tr>
     <td align="center"><strong>Vertical</strong></td>
-    <td><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar Minimal Dots vertical real macOS menu bar recording converted to GIF" width="68"></td>
-    <td><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar Classic Lamp vertical real macOS menu bar recording converted to GIF" width="72"></td>
+    <td align="center"><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar Minimal Dots vertical animated status bar preview" width="150"></td>
+    <td align="center"><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar Classic Lamp vertical animated status bar preview" width="150"></td>
   </tr>
 </table>
 
 <p align="center">
-  <em>Real macOS menu bar recordings converted to GIF. All styles use the red/yellow/green sequence effect.</em>
+  <em>Animated previews rendered from the same status bar icon renderer used by the app. All styles use the red/yellow/green sequence effect.</em>
 </p>
 
 Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow, and green signal lights to show the current state of local AI agents. It helps you see whether Codex, Claude Code, or a local script is idle, thinking, working, done, waiting for approval, or blocked without switching back to a terminal or editor.

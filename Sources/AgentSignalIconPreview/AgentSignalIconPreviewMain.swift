@@ -16,6 +16,7 @@ struct AgentSignalIconPreview {
         let records = try renderIcons(to: iconsURL)
         try renderSheet(records: records, to: outputURL.appendingPathComponent("status-icon-preview.png"))
         try renderStatusBarDemo(to: outputURL.appendingPathComponent("status-bar-demo.gif"))
+        try renderStatusBarStylePreviews(to: outputURL)
         try renderEffectGallery(language: .english, to: outputURL.appendingPathComponent("light-effects-en.gif"))
         try renderEffectGallery(language: .simplifiedChinese, to: outputURL.appendingPathComponent("light-effects-zh-CN.gif"))
         try writeManifest(records: records, to: outputURL.appendingPathComponent("manifest.json"))
@@ -23,6 +24,10 @@ struct AgentSignalIconPreview {
         print("status icon preview: \(outputURL.path)")
         print("sheet: \(outputURL.appendingPathComponent("status-icon-preview.png").path)")
         print("status bar demo: \(outputURL.appendingPathComponent("status-bar-demo.gif").path)")
+        print("status bar minimal dots: \(outputURL.appendingPathComponent("status-bar-minimal-dots.gif").path)")
+        print("status bar classic lamp: \(outputURL.appendingPathComponent("status-bar-classic-lamp.gif").path)")
+        print("status bar minimal dots vertical: \(outputURL.appendingPathComponent("status-bar-minimal-dots-vertical.gif").path)")
+        print("status bar classic lamp vertical: \(outputURL.appendingPathComponent("status-bar-classic-lamp-vertical.gif").path)")
         print("light effects en: \(outputURL.appendingPathComponent("light-effects-en.gif").path)")
         print("light effects zh-CN: \(outputURL.appendingPathComponent("light-effects-zh-CN.gif").path)")
         print("manifest: \(outputURL.appendingPathComponent("manifest.json").path)")
@@ -218,6 +223,148 @@ struct AgentSignalIconPreview {
         if !CGImageDestinationFinalize(destination) {
             throw PreviewError.missingGIFRepresentation(outputURL.path)
         }
+    }
+
+    private static func renderStatusBarStylePreviews(to outputURL: URL) throws {
+        try renderStatusBarStylePreview(
+            to: outputURL.appendingPathComponent("status-bar-minimal-dots.gif"),
+            style: .macOS,
+            layout: .horizontal,
+            size: NSSize(width: 220, height: 104),
+            iconOutputScale: 4,
+            macOSHorizontalUsesTrafficLightSize: true
+        )
+        try renderStatusBarStylePreview(
+            to: outputURL.appendingPathComponent("status-bar-classic-lamp.gif"),
+            style: .trafficLight,
+            layout: .horizontal,
+            size: NSSize(width: 220, height: 104),
+            iconOutputScale: 4
+        )
+        try renderStatusBarStylePreview(
+            to: outputURL.appendingPathComponent("status-bar-minimal-dots-vertical.gif"),
+            style: .macOS,
+            layout: .vertical,
+            size: NSSize(width: 150, height: 150),
+            iconOutputScale: 5
+        )
+        try renderStatusBarStylePreview(
+            to: outputURL.appendingPathComponent("status-bar-classic-lamp-vertical.gif"),
+            style: .trafficLight,
+            layout: .vertical,
+            size: NSSize(width: 150, height: 150),
+            iconOutputScale: 5
+        )
+    }
+
+    private static func renderStatusBarStylePreview(
+        to outputURL: URL,
+        style: TrafficSignalStyle,
+        layout: TrafficSignalLayout,
+        size: NSSize,
+        iconOutputScale: CGFloat,
+        macOSHorizontalUsesTrafficLightSize: Bool = false
+    ) throws {
+        let frameCount = 12
+        guard let destination = CGImageDestinationCreateWithURL(
+            outputURL as CFURL,
+            UTType.gif.identifier as CFString,
+            frameCount,
+            nil
+        ) else {
+            throw PreviewError.missingGIFRepresentation(outputURL.path)
+        }
+
+        let gifProperties: [String: Any] = [
+            kCGImagePropertyGIFDictionary as String: [
+                kCGImagePropertyGIFLoopCount as String: 0
+            ]
+        ]
+        CGImageDestinationSetProperties(destination, gifProperties as CFDictionary)
+
+        let frameProperties: [String: Any] = [
+            kCGImagePropertyGIFDictionary as String: [
+                kCGImagePropertyGIFDelayTime as String: 0.14
+            ]
+        ]
+
+        for frameIndex in 0..<frameCount {
+            let frame = try renderStatusBarStylePreviewFrame(
+                frameIndex: frameIndex,
+                style: style,
+                layout: layout,
+                size: size,
+                iconOutputScale: iconOutputScale,
+                macOSHorizontalUsesTrafficLightSize: macOSHorizontalUsesTrafficLightSize,
+                path: outputURL.path
+            )
+            guard let image = frame.cgImage else {
+                throw PreviewError.missingGIFRepresentation(outputURL.path)
+            }
+            CGImageDestinationAddImage(destination, image, frameProperties as CFDictionary)
+        }
+
+        if !CGImageDestinationFinalize(destination) {
+            throw PreviewError.missingGIFRepresentation(outputURL.path)
+        }
+    }
+
+    private static func renderStatusBarStylePreviewFrame(
+        frameIndex: Int,
+        style: TrafficSignalStyle,
+        layout: TrafficSignalLayout,
+        size: NSSize,
+        iconOutputScale: CGFloat,
+        macOSHorizontalUsesTrafficLightSize: Bool,
+        path: String
+    ) throws -> NSBitmapImageRep {
+        let sheet = try makeBitmap(size: size, path: path)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: sheet)
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
+        drawMenuBarPreviewBackdrop(in: NSRect(origin: .zero, size: size))
+
+        let snapshot = SignalSnapshot(
+            aggregate: .working,
+            sessions: [],
+            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json")
+        )
+        let image = StatusBarIconRenderer.image(
+            snapshot: snapshot,
+            tick: frameIndex,
+            layout: layout,
+            style: style,
+            macOSBreathingStrength: .maximum,
+            macOSHorizontalUsesTrafficLightSize: macOSHorizontalUsesTrafficLightSize,
+            allLightsOn: false,
+            effectCustomization: SignalEffectCustomization(activeEffect: .trafficCycle),
+            outputScale: iconOutputScale
+        )
+
+        let drawRect = NSRect(
+            x: floor((size.width - image.size.width) / 2),
+            y: floor((size.height - image.size.height) / 2),
+            width: image.size.width,
+            height: image.size.height
+        )
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: drawRect)
+
+        return sheet
+    }
+
+    private static func drawMenuBarPreviewBackdrop(in rect: NSRect) {
+        NSGradient(colors: [
+            NSColor(calibratedRed: 0.09, green: 0.13, blue: 0.15, alpha: 1),
+            NSColor(calibratedRed: 0.08, green: 0.28, blue: 0.30, alpha: 1)
+        ])?.draw(in: rect, angle: 0)
+
+        NSColor.black.withAlphaComponent(0.12).setFill()
+        NSRect(x: rect.minX, y: rect.maxY - min(24, rect.height * 0.28), width: rect.width, height: min(24, rect.height * 0.28)).fill()
+        NSColor.white.withAlphaComponent(0.045).setFill()
+        NSRect(origin: .zero, size: rect.size).fill()
     }
 
     private static func renderStatusBarDemoFrame(

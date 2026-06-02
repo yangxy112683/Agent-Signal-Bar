@@ -996,26 +996,11 @@ struct DebugWindowView: View {
 
             Divider()
 
-            settingRow(model.text("开发者", "Developer")) {
-                Text("XiongYang Guan")
-                    .font(settingsBodyFont)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            settingRow(model.text("许可证", "License")) {
-                Text("MIT License")
-                    .font(settingsBodyFont)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            settingRow(model.text("版权", "Copyright")) {
-                Text("© 2026 XiongYang Guan")
-                    .font(settingsBodyFont)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
+            Text(model.text("© 2026 XiongYang Guan · MIT 许可证", "© 2026 XiongYang Guan · MIT License"))
+                .font(settingsBodyFont)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 

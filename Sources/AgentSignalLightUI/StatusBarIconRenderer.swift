@@ -12,7 +12,8 @@ public enum StatusBarIconRenderer {
         trafficLightVerticalUsesMacOSSize: Bool = false,
         allLightsOn: Bool,
         usesSystemGrayLights: Bool = false,
-        effectCustomization: SignalEffectCustomization = .default
+        effectCustomization: SignalEffectCustomization = .default,
+        outputScale: CGFloat = 1
     ) -> NSImage {
         let metrics = SignalIconGeometry.metrics(
             layout: layout,
@@ -20,20 +21,23 @@ public enum StatusBarIconRenderer {
             macOSHorizontalUsesTrafficLightSize: macOSHorizontalUsesTrafficLightSize,
             trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize
         )
-        let size = NSSize(width: metrics.iconSize.width, height: metrics.iconSize.height)
+        let baseSize = NSSize(width: metrics.iconSize.width, height: metrics.iconSize.height)
+        let safeOutputScale = max(outputScale, 1)
+        let size = NSSize(width: baseSize.width * safeOutputScale, height: baseSize.height * safeOutputScale)
         let image = NSImage(size: size)
         image.lockFocus()
         defer { image.unlockFocus() }
 
+        NSGraphicsContext.current?.cgContext.scaleBy(x: safeOutputScale, y: safeOutputScale)
         NSColor.clear.setFill()
-        NSRect(origin: .zero, size: size).fill()
+        NSRect(origin: .zero, size: baseSize).fill()
 
         if style == .trafficLight {
-            drawTrafficLightBackground(in: NSRect(origin: .zero, size: size))
+            drawTrafficLightBackground(in: NSRect(origin: .zero, size: baseSize))
         }
 
         let displayState = snapshot.aggregate.displayState
-        for (color, rect) in lampRects(in: size, layout: layout, metrics: metrics) {
+        for (color, rect) in lampRects(in: baseSize, layout: layout, metrics: metrics) {
             let intensity = SignalLampAnimation.intensity(
                 color,
                 signal: snapshot.aggregate,
