@@ -329,6 +329,6 @@ Tests/                     Swift tests
 - [Release checklist](docs/RELEASE_CHECKLIST.md)
 - [Changelog](CHANGELOG.md)
 
-## Developer
+## License
 
-XiongYang Guan
+[MIT](LICENSE) • XiongYang Guan ([guan-ops](https://github.com/guan-ops))

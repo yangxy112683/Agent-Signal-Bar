@@ -327,6 +327,6 @@ Tests/                     Swift 测试
 - [发布检查清单](docs/RELEASE_CHECKLIST.md)
 - [更新日志](CHANGELOG.md)
 
-## 开发者
+## 许可证
 
-XiongYang Guan
+[MIT](LICENSE) • XiongYang Guan ([guan-ops](https://github.com/guan-ops))
