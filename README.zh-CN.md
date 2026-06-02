@@ -16,6 +16,10 @@
   灯效可自定义 · 支持多语言 · 本地优先 · Codex Desktop 自动监控 · 支持 Claude Code Hook
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
+
 <table>
   <tr>
     <td align="center"><strong>布局</strong></td>

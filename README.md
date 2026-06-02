@@ -16,6 +16,10 @@
   Customizable light effects · Multilingual UI · Local-first · Codex Desktop monitoring · Claude Code hooks
 </p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
+
 <table>
   <tr>
     <td align="center"><strong>Layout</strong></td>
