@@ -471,6 +471,8 @@ struct AgentSignalIconPreview {
 
     private static func renderEffectGallery(language: EffectGalleryLanguage, to outputURL: URL) throws {
         let gallerySize = NSSize(width: 1000, height: 1400)
+        let renderScale: CGFloat = 1.6
+        let bitmapSize = NSSize(width: gallerySize.width * renderScale, height: gallerySize.height * renderScale)
         let frameCount = 16
         guard let destination = CGImageDestinationCreateWithURL(
             outputURL as CFURL,
@@ -499,6 +501,8 @@ struct AgentSignalIconPreview {
                 language: language,
                 frameIndex: frameIndex,
                 size: gallerySize,
+                bitmapSize: bitmapSize,
+                renderScale: renderScale,
                 path: outputURL.path
             )
             guard let image = sheet.cgImage else {
@@ -516,13 +520,17 @@ struct AgentSignalIconPreview {
         language: EffectGalleryLanguage,
         frameIndex: Int,
         size gallerySize: NSSize,
+        bitmapSize: NSSize,
+        renderScale: CGFloat,
         path: String
     ) throws -> NSBitmapImageRep {
-        let sheet = try makeBitmap(size: gallerySize, path: path)
+        let sheet = try makeBitmap(size: bitmapSize, path: path)
 
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: sheet)
         defer { NSGraphicsContext.restoreGraphicsState() }
+
+        NSGraphicsContext.current?.cgContext.scaleBy(x: renderScale, y: renderScale)
 
         NSGradient(colors: [
             NSColor(calibratedRed: 0.11, green: 0.16, blue: 0.18, alpha: 1),
@@ -605,7 +613,7 @@ struct AgentSignalIconPreview {
             font: .systemFont(ofSize: 10, weight: .semibold),
             color: NSColor.white.withAlphaComponent(0.48)
         )
-        drawAnimatedIcon(item, style: .trafficLight, frameIndex: frameIndex, in: NSRect(x: rect.minX + 104, y: rect.minY + 38, width: 260, height: 38))
+        drawAnimatedIcon(item, style: .trafficLight, frameIndex: frameIndex, in: NSRect(x: rect.minX + 104, y: rect.minY + 38, width: 260, height: 42))
 
         drawText(
             language.minimalLabel,
@@ -613,7 +621,7 @@ struct AgentSignalIconPreview {
             font: .systemFont(ofSize: 10, weight: .semibold),
             color: NSColor.white.withAlphaComponent(0.48)
         )
-        drawAnimatedIcon(item, style: .macOS, frameIndex: frameIndex, in: NSRect(x: rect.minX + 104, y: rect.minY + 4, width: 260, height: 34))
+        drawAnimatedIcon(item, style: .macOS, frameIndex: frameIndex, in: NSRect(x: rect.minX + 104, y: rect.minY + 4, width: 260, height: 42))
     }
 
     private static func drawAnimatedIcon(
@@ -634,11 +642,15 @@ struct AgentSignalIconPreview {
             layout: .horizontal,
             style: style,
             macOSBreathingStrength: .maximum,
+            macOSHorizontalUsesTrafficLightSize: true,
             allLightsOn: item.allLightsOn,
-            effectCustomization: item.customization
+            effectCustomization: item.customization,
+            outputScale: 5
         )
-        let scale: CGFloat = style == .trafficLight ? 2.05 : 2.35
-        let drawSize = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let sourceScale: CGFloat = 5
+        let baseSize = NSSize(width: image.size.width / sourceScale, height: image.size.height / sourceScale)
+        let previewScale: CGFloat = 2.35
+        let drawSize = NSSize(width: baseSize.width * previewScale, height: baseSize.height * previewScale)
         let drawRect = NSRect(
             x: rect.minX + (rect.width - drawSize.width) / 2,
             y: rect.midY - drawSize.height / 2,
@@ -647,7 +659,7 @@ struct AgentSignalIconPreview {
         )
 
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current?.imageInterpolation = .none
+        NSGraphicsContext.current?.imageInterpolation = .high
         image.draw(in: drawRect)
         NSGraphicsContext.restoreGraphicsState()
     }
