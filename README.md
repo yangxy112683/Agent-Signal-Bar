@@ -28,13 +28,13 @@
   </tr>
   <tr>
     <td align="center"><strong>Horizontal</strong></td>
-    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots horizontal animated status bar preview" width="220"></td>
-    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp horizontal animated status bar preview" width="220"></td>
+    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar Minimal Dots horizontal animated status bar preview" width="100%"></td>
+    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar Classic Lamp horizontal animated status bar preview" width="100%"></td>
   </tr>
   <tr>
     <td align="center"><strong>Vertical</strong></td>
-    <td align="center"><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar Minimal Dots vertical animated status bar preview" width="150"></td>
-    <td align="center"><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar Classic Lamp vertical animated status bar preview" width="150"></td>
+    <td align="center"><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar Minimal Dots vertical animated status bar preview" width="100%"></td>
+    <td align="center"><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar Classic Lamp vertical animated status bar preview" width="100%"></td>
   </tr>
 </table>
 

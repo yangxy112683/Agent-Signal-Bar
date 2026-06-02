@@ -28,13 +28,13 @@
   </tr>
   <tr>
     <td align="center"><strong>横向</strong></td>
-    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar 极简圆点横向动态状态栏预览" width="220"></td>
-    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar 经典灯牌横向动态状态栏预览" width="220"></td>
+    <td align="center"><img src="docs/assets/status-bar-minimal-dots.gif" alt="Agent Signal Bar 极简圆点横向动态状态栏预览" width="100%"></td>
+    <td align="center"><img src="docs/assets/status-bar-classic-lamp.gif" alt="Agent Signal Bar 经典灯牌横向动态状态栏预览" width="100%"></td>
   </tr>
   <tr>
     <td align="center"><strong>竖向</strong></td>
-    <td align="center"><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar 极简圆点竖向动态状态栏预览" width="150"></td>
-    <td align="center"><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar 经典灯牌竖向动态状态栏预览" width="150"></td>
+    <td align="center"><img src="docs/assets/status-bar-minimal-dots-vertical.gif" alt="Agent Signal Bar 极简圆点竖向动态状态栏预览" width="100%"></td>
+    <td align="center"><img src="docs/assets/status-bar-classic-lamp-vertical.gif" alt="Agent Signal Bar 经典灯牌竖向动态状态栏预览" width="100%"></td>
   </tr>
 </table>
 

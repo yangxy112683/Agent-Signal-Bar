@@ -230,30 +230,30 @@ struct AgentSignalIconPreview {
             to: outputURL.appendingPathComponent("status-bar-minimal-dots.gif"),
             style: .macOS,
             layout: .horizontal,
-            size: NSSize(width: 220, height: 104),
-            iconOutputScale: 4,
+            size: NSSize(width: 360, height: 180),
+            iconOutputScale: 7,
             macOSHorizontalUsesTrafficLightSize: true
         )
         try renderStatusBarStylePreview(
             to: outputURL.appendingPathComponent("status-bar-classic-lamp.gif"),
             style: .trafficLight,
             layout: .horizontal,
-            size: NSSize(width: 220, height: 104),
-            iconOutputScale: 4
+            size: NSSize(width: 360, height: 180),
+            iconOutputScale: 7
         )
         try renderStatusBarStylePreview(
             to: outputURL.appendingPathComponent("status-bar-minimal-dots-vertical.gif"),
             style: .macOS,
             layout: .vertical,
-            size: NSSize(width: 150, height: 150),
-            iconOutputScale: 5
+            size: NSSize(width: 360, height: 180),
+            iconOutputScale: 9
         )
         try renderStatusBarStylePreview(
             to: outputURL.appendingPathComponent("status-bar-classic-lamp-vertical.gif"),
             style: .trafficLight,
             layout: .vertical,
-            size: NSSize(width: 150, height: 150),
-            iconOutputScale: 5
+            size: NSSize(width: 360, height: 180),
+            iconOutputScale: 8
         )
     }
 
