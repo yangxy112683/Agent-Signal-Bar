@@ -49,6 +49,9 @@ mkdir -p "$PAYLOAD_DIR/dist/bin"
 
 cp "$ROOT_DIR/Package.swift" "$PAYLOAD_DIR/Package.swift"
 cp "$ROOT_DIR/README.md" "$PAYLOAD_DIR/README.md"
+for root_file in LICENSE CHANGELOG.md VERSION; do
+  cp "$ROOT_DIR/$root_file" "$PAYLOAD_DIR/$root_file"
+done
 if [[ -f "$ROOT_DIR/README.zh-CN.md" ]]; then
   cp "$ROOT_DIR/README.zh-CN.md" "$PAYLOAD_DIR/README.zh-CN.md"
 fi

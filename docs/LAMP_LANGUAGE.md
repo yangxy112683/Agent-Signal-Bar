@@ -1,6 +1,6 @@
 # Lamp Language
 
-Agent Signal Bar v2 的状态栏灯语只回答一个问题：
+Agent Signal Bar 第二版灯语模型只回答一个问题：
 
 ```text
 用户现在需不需要介入？
