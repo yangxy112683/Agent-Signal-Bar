@@ -127,10 +127,10 @@ Effects can be customized in the Advanced page of the settings window.
 ## Light Effect Preview
 
 <p align="center">
-  <img src="docs/assets/light-effects-en-hd.gif" alt="Agent Signal Bar animated light effect preview rendered from the same light animation engine" width="720">
+  <img src="docs/assets/light-effects-landscape-en.gif" alt="Agent Signal Bar Light Effect Preview card grid rendered from the same light animation engine" width="900">
 </p>
 
-This animated effect preview is rendered from the same light animation engine used by the app, with both the classic signal board and minimal dot styles shown for each effect.
+This is the same Light Effect Preview used on the website. It is rendered from the app's light animation engine and shows the main default and customizable effects across both the classic signal board and minimal dot styles.
 
 ## Aggregation Priority
 
