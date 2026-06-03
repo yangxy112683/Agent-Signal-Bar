@@ -1,0 +1,26 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "rewrites": [
+    {
+      "source": "/assets/(.*)",
+      "destination": "/marketing/site/assets/$1"
+    },
+    {
+      "source": "/styles.css",
+      "destination": "/marketing/site/styles.css"
+    },
+    {
+      "source": "/site.js",
+      "destination": "/marketing/site/site.js"
+    },
+    {
+      "source": "/",
+      "destination": "/marketing/site/index.html"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/marketing/site/index.html"
+    }
+  ]
+}
