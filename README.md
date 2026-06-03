@@ -46,7 +46,7 @@
 </table>
 
 <p align="center">
-  <em>Animated previews rendered from the same light animation engine used by the app. All styles use the red/yellow/green sequence effect.</em>
+  <em>All styles use the red/yellow/green sequence effect.</em>
 </p>
 
 Agent Signal Bar is a local-first macOS menu bar app that uses three red, yellow, and green signal lights to show the current state of local AI agents. It helps you see whether Codex, Claude Code, or a local script is idle, thinking, working, done, waiting for approval, or blocked without switching back to a terminal or editor.
@@ -134,10 +134,8 @@ Effects can be customized in the Advanced page of the settings window.
 ## Light Effect Preview
 
 <p align="center">
-  <img src="docs/assets/light-effects-landscape-en.gif" alt="Agent Signal Bar Light Effect Preview card grid rendered from the same light animation engine" width="900">
+  <img src="docs/assets/light-effects-landscape-en.gif" alt="Agent Signal Bar light effect preview" width="900">
 </p>
-
-This is the same Light Effect Preview used on the website. It is rendered from the app's light animation engine and shows the main default and customizable effects across both the classic signal board and minimal dot styles.
 
 ## Aggregation Priority
 
