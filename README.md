@@ -27,7 +27,7 @@
 
 <p align="center">
   <a href="https://agentsignalbar.app">
-    <img src="docs/assets/readme-hero-en.svg" alt="Agent Signal Bar website hero preview" width="100%">
+    <img src="docs/assets/readme-hero-en.svg?v=20260603-2320" alt="Agent Signal Bar website hero preview" width="100%">
   </a>
 </p>
 

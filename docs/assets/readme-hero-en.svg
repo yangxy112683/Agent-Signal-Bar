@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="840" viewBox="0 0 1600 840" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="740" viewBox="0 0 1600 740" role="img" aria-labelledby="title desc">
   <title id="title">Agent Signal Bar website hero preview</title>
   <desc id="desc">A promotional preview for Agent Signal Bar with signal lights, feature cards, and a website pill.</desc>
   <defs>
@@ -46,11 +46,11 @@
     </style>
   </defs>
 
-  <rect width="1600" height="840" rx="0" fill="url(#bg)"/>
-  <rect width="1600" height="840" fill="url(#warm)"/>
-  <rect width="1600" height="840" fill="url(#violet)"/>
-  <rect width="1600" height="840" fill="url(#teal)"/>
-  <rect width="1600" height="840" fill="url(#grid)" opacity="0.58"/>
+  <rect width="1600" height="740" rx="0" fill="url(#bg)"/>
+  <rect width="1600" height="740" fill="url(#warm)"/>
+  <rect width="1600" height="740" fill="url(#violet)"/>
+  <rect width="1600" height="740" fill="url(#teal)"/>
+  <rect width="1600" height="740" fill="url(#grid)" opacity="0.58"/>
 
   <g class="font" filter="url(#shadow)">
     <g transform="translate(76 82)">
@@ -58,9 +58,9 @@
       <text x="76" y="38" fill="#f8fafc" font-size="28" font-weight="820">Agent Signal Bar</text>
     </g>
 
-    <g transform="translate(1282 88)">
-      <rect x="0" y="0" width="200" height="44" rx="22" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.18"/>
-      <text x="100" y="29" fill="#d7f8f3" font-size="21" font-weight="760" text-anchor="middle">agentsignalbar.app</text>
+    <g transform="translate(1234 88)">
+      <rect x="0" y="0" width="270" height="44" rx="22" fill="#ffffff" fill-opacity="0.08" stroke="#ffffff" stroke-opacity="0.18"/>
+      <text x="135" y="29" fill="#d7f8f3" font-size="21" font-weight="760" text-anchor="middle">agentsignalbar.app</text>
     </g>
 
     <text x="78" y="230" fill="#ffffff" font-size="72" font-weight="900" letter-spacing="0">
