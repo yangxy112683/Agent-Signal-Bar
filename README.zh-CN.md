@@ -17,7 +17,11 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/github/v/release/guan-ops/Agent-Signal-Bar?label=release&color=111827" alt="最新版本"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
+  <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="下载 DMG"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-635bff.svg" alt="MIT 许可证"></a>
   <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6.svg" alt="官网：agentsignalbar.app"></a>
 </p>
 
