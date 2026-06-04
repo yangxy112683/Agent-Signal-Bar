@@ -1499,6 +1499,35 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(release.preferredDownloadURL?.lastPathComponent, "AgentSignalLight-local.dmg")
     }
 
+    func testGitHubReleaseUpdateCheckerFallsBackToReleasePageWhenAPIRateLimited() async throws {
+        let apiResponse = HTTPURLResponse(
+            url: GitHubReleaseUpdateChecker.latestReleaseAPIURL,
+            statusCode: 403,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        let releasePageURL = URL(string: "https://github.com/guan-ops/Agent-Signal-Bar/releases/tag/v1.2.0")!
+        let pageResponse = HTTPURLResponse(
+            url: releasePageURL,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        let checker = GitHubReleaseUpdateChecker(
+            session: QueuedURLSession([
+                .init(data: Data("rate limited".utf8), response: apiResponse),
+                .init(data: Data("<html></html>".utf8), response: pageResponse)
+            ])
+        )
+
+        let result = try await checker.check(currentVersion: "1.1.0")
+
+        XCTAssertEqual(result.latestVersion, "1.2.0")
+        XCTAssertEqual(result.releasePageURL, releasePageURL)
+        XCTAssertNil(result.downloadURL)
+        XCTAssertTrue(result.isUpdateAvailable)
+    }
+
     func testActivityPresentationKeepsCodexEntrypointsSeparate() {
         let now = Date()
         let snapshot = SignalSnapshot(
@@ -2372,5 +2401,26 @@ private extension FileHandle {
         if let data = value.data(using: .utf8) {
             try write(contentsOf: data)
         }
+    }
+}
+
+private actor QueuedURLSession: URLSessionProtocol {
+    struct QueuedResponse {
+        let data: Data
+        let response: URLResponse
+    }
+
+    private var responses: [QueuedResponse]
+
+    init(_ responses: [QueuedResponse]) {
+        self.responses = responses
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard !responses.isEmpty else {
+            throw URLError(.badServerResponse)
+        }
+        let response = responses.removeFirst()
+        return (response.data, response.response)
     }
 }
