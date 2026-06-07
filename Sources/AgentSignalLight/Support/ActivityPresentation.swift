@@ -70,6 +70,10 @@ enum ActivityPresentation {
         )
 
         let filtered = snapshot.recentEvents.lazy.filter { event in
+            guard !MenuBarStatusModel.isManualIdleControlEvent(event) else {
+                return false
+            }
+
             let eventKey = "\(event.sessionID)|\(event.signal.rawValue)|\(event.event ?? "")"
             let sourceEventKey = "\(activitySourceKey(for: event))|\(event.signal.rawValue)|\(event.event ?? "")"
             return !currentSessionKeys.contains(eventKey)

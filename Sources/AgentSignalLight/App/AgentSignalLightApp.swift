@@ -84,6 +84,14 @@ struct AgentSignalLightApp: App {
                     statusBarController.showDebugWindow()
                 }
                 .keyboardShortcut(",", modifiers: .command)
+
+                Button(model.isUpdateCheckRunning
+                    ? model.text("检查中...", "Checking...")
+                    : model.text("检查更新...", "Check for Updates...")
+                ) {
+                    model.checkForUpdatesFromAppMenu()
+                }
+                .disabled(model.isUpdateCheckRunning)
             }
         }
     }

@@ -83,11 +83,7 @@ like this:
   --event AgentFinished
 ```
 
-`clear-warning` removes states that need handling (`permission`, `blocked`, `attention`, `notification`, `stale`) while keeping still-running active work. `done` is a green completed state, not a warning, and it automatically returns to idle after the completed TTL:
-
-```bash
-./scripts/agent-signal clear-warning
-```
+`done` is a green completed state and automatically returns to idle after the completed TTL.
 
 If the workflow can run one command around a job, use the wrapper instead:
 

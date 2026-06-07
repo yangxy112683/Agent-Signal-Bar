@@ -503,9 +503,11 @@ struct DebugWindowView: View {
     }
 
     private var signalLightAgentMenu: some View {
-        inlineDropdown(
+        let selectedScopes = model.displaySignalLightAgentScopes
+
+        return inlineDropdown(
             id: .signalLightAgents,
-            title: model.displayName(for: model.signalLightAgentScopes),
+            title: model.signalLightAgentMenuTitle,
             width: agentScopeMenuWidth
         ) {
             dropdownOptions(width: agentScopeMenuWidth) {
@@ -521,7 +523,7 @@ struct DebugWindowView: View {
                         ForEach(section.scopes, id: \.self) { scope in
                             signalLightAgentOption(
                                 scope,
-                                isSelected: model.signalLightAgentScopes.contains(scope),
+                                isSelected: selectedScopes.contains(scope),
                                 isRunning: model.activeSignalLightAgentScopes.contains(scope),
                                 width: agentScopeMenuWidth
                             )
@@ -535,24 +537,18 @@ struct DebugWindowView: View {
     private var signalLightAgentDropdownSections: [SignalLightAgentDropdownSection] {
         let runningScopes = model.activeSignalLightAgentScopes
         var sections: [SignalLightAgentDropdownSection] = []
-        let runningOptions = SignalLightAgentScope.selectableCases
-            .filter { runningScopes.contains($0) }
-            .sorted { $0.sortOrder < $1.sortOrder }
-
-        if !runningOptions.isEmpty {
-            sections.append(
-                SignalLightAgentDropdownSection(
-                    id: "running",
-                    title: model.text("正在运行", "Running"),
-                    scopes: runningOptions
-                )
-            )
-        }
 
         for group in SignalLightAgentScopeGroup.allCases {
             let groupOptions = SignalLightAgentScope.selectableCases
-                .filter { $0.group == group && !runningScopes.contains($0) }
-                .sorted { $0.sortOrder < $1.sortOrder }
+                .filter { $0.group == group }
+                .sorted { lhs, rhs in
+                    let lhsIsRunning = runningScopes.contains(lhs)
+                    let rhsIsRunning = runningScopes.contains(rhs)
+                    if lhsIsRunning != rhsIsRunning {
+                        return lhsIsRunning
+                    }
+                    return lhs.sortOrder < rhs.sortOrder
+                }
 
             guard !groupOptions.isEmpty else { continue }
             sections.append(
@@ -574,6 +570,17 @@ struct DebugWindowView: View {
                     signalLightAgentMenu
                 }
                 .zIndex(expandedSettingsDropdown == .signalLightAgents ? 1000 : 0)
+
+                if let hint = model.signalLightAgentUnavailableHint {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "info.circle")
+                            .font(settingsTinyIconFont)
+                        Text(hint)
+                            .font(settingsDetailFont)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(.secondary)
+                }
 
                 activitySummaryCard
 
@@ -1069,6 +1076,33 @@ struct DebugWindowView: View {
                 }
             }
 
+            settingRow(model.text("自动检查更新", "Automatically check for updates")) {
+                settingsSwitch(automaticUpdateCheckBinding)
+                    .help(model.text(
+                        "检测到新版本时发送 macOS 通知，不会自动安装。",
+                        "Send a macOS notification when a newer release is available. Updates are not installed automatically."
+                    ))
+            }
+
+            if model.isAutomaticUpdateCheckEnabled {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.text(
+                        "检测到新版本时发送通知，不会自动安装。",
+                        "Sends a notification when a newer release is available. Updates are not installed automatically."
+                    ))
+
+                    if let lastAutomaticUpdateCheckAt = model.lastAutomaticUpdateCheckAt {
+                        Text(model.text(
+                            "上次自动检查 \(lastAutomaticUpdateCheckAt.formatted(date: .omitted, time: .shortened))",
+                            "Last automatic check \(lastAutomaticUpdateCheckAt.formatted(date: .omitted, time: .shortened))"
+                        ))
+                    }
+                }
+                .font(settingsBodyFont)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             if let updateCheckMessage = model.updateCheckMessage {
                 Text(updateCheckMessage)
                     .font(settingsBodyFont)
@@ -1078,7 +1112,7 @@ struct DebugWindowView: View {
 
             Divider()
 
-            Text(model.text("© 2026 XiongYang Guan · MIT 许可证", "© 2026 XiongYang Guan · MIT License"))
+            Text(model.text("© 2026 XiongYang Guan · Apache License 2.0", "© 2026 XiongYang Guan · Apache License 2.0"))
                 .font(settingsBodyFont)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -1306,12 +1340,6 @@ struct DebugWindowView: View {
                     .truncationMode(.tail)
 
                 Spacer(minLength: 4)
-
-                Image(systemName: "checkmark")
-                    .font(settingsTinyIconFont)
-                    .foregroundStyle(isSelected ? Color.white : Color.accentColor)
-                    .frame(width: 13)
-                    .opacity(isSelected ? 1 : 0)
             }
             .font(agentScopeOptionFont)
             .foregroundStyle(isSelected ? Color.white : Color.primary)
@@ -1319,7 +1347,7 @@ struct DebugWindowView: View {
             .frame(width: width, height: 26)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(isSelected ? Color.accentColor : Color.clear)
+                    .fill(isSelected ? Color.accentColor.opacity(0.92) : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -1959,6 +1987,13 @@ struct DebugWindowView: View {
         Binding(
             get: { model.isMonitoringPaused },
             set: { model.setMonitoringPaused($0) }
+        )
+    }
+
+    private var automaticUpdateCheckBinding: Binding<Bool> {
+        Binding(
+            get: { model.isAutomaticUpdateCheckEnabled },
+            set: { model.setAutomaticUpdateCheckEnabled($0) }
         )
     }
 

@@ -200,37 +200,6 @@ public final class SignalStateStore: @unchecked Sendable {
         try setManualSignal(.idle)
     }
 
-    public func clearWarnings() throws -> SignalSnapshot {
-        try withStateLock {
-            let now = Date()
-            var document = readDocument()
-            _ = pruneRuntimeSessions(in: &document, now: now)
-            document.sessions = document.sessions.filter { _, record in
-                !record.signal.shouldClearWarning
-            }
-
-            if document.sessions.isEmpty {
-                if document.aggregate?.displayState != .paused {
-                    document.aggregate = .idle
-                }
-            } else {
-                document.aggregate = document.aggregateSignal()
-            }
-
-            appendEvent(
-                to: &document,
-                sessionID: "manual",
-                agent: "manual",
-                signal: .idle,
-                event: "ClearWarning",
-                updatedAt: now
-            )
-            document.updatedAt = now
-            try writeDocument(document)
-            return document.snapshot(stateFileURL: stateFileURL)
-        }
-    }
-
     public func applySessionSignal(
         _ signal: AgentSignal,
         sessionID: String,

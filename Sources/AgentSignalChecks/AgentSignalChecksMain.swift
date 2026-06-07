@@ -12,8 +12,7 @@ struct AgentSignalChecks {
         try checkV2AggregatePriority()
         try checkStopHooksMapToCompleted()
         try checkTurnEndDoesNotClearRedSession()
-        try checkDoneDoesNotClearWarningSession()
-        try checkClearWarningPreservesWorkingSession()
+        try checkDoneDoesNotOverrideAlertSession()
         try checkManualSignalsParticipateInAggregation()
         try checkNonPausedSignalResumesFromPausedAggregate()
         try checkSessionEndRemovesSession()
@@ -364,14 +363,14 @@ struct AgentSignalChecks {
         )
     }
 
-    private static func checkDoneDoesNotClearWarningSession() throws {
+    private static func checkDoneDoesNotOverrideAlertSession() throws {
         let store = makeStore()
 
         _ = try store.applySessionSignal(.permission, sessionID: "codex-1")
         let snapshot = try store.applySessionSignal(.done, sessionID: "codex-1")
 
         try expect(snapshot.aggregate == .permission, "done should not clear permission")
-        try expect(snapshot.sessions.first?.signal == .permission, "done should preserve the warning session")
+        try expect(snapshot.sessions.first?.signal == .permission, "done should preserve the alert session")
         try expect(snapshot.recentEvents.first?.signal == .done, "done event should still be recorded")
     }
 
@@ -427,17 +426,6 @@ struct AgentSignalChecks {
         try expect(startedActivity?.signal == .thinking, "Desktop task_started should map to thinking")
         try expect(heartbeatActivity == nil, "Desktop token_count metadata should not keep Codex active")
         try expect(compactedActivity?.signal == .thinking, "Desktop compacted event should map to thinking")
-    }
-
-    private static func checkClearWarningPreservesWorkingSession() throws {
-        let store = makeStore()
-
-        _ = try store.applySessionSignal(.working, sessionID: "codex-working")
-        _ = try store.applySessionSignal(.permission, sessionID: "codex-permission")
-        let snapshot = try store.clearWarnings()
-
-        try expect(snapshot.aggregate == .working, "clear warning should preserve working aggregate")
-        try expect(snapshot.sessions.map(\.sessionID) == ["codex-working"], "clear warning should remove only warning sessions")
     }
 
     private static func checkManualSignalsParticipateInAggregation() throws {

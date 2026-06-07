@@ -304,7 +304,21 @@ private final class MenuBarPanelViewState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        model.$presentationRefreshTick
+            .sink { [weak self, weak model] _ in
+                guard let model else { return }
+                self?.refreshSnapshots(from: model)
+            }
+            .store(in: &cancellables)
+
         model.$signalLightAgentScopes
+            .sink { [weak self, weak model] _ in
+                guard let model else { return }
+                self?.refreshSnapshots(from: model)
+            }
+            .store(in: &cancellables)
+
+        model.$signalLightAgentSelectionMode
             .sink { [weak self, weak model] _ in
                 guard let model else { return }
                 self?.refreshSnapshots(from: model)

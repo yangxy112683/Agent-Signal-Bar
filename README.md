@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/macOS-14%2B-111827.svg" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Swift-6.0-F05138.svg" alt="Swift 6.0">
   <a href="https://github.com/guan-ops/Agent-Signal-Bar/releases/latest"><img src="https://img.shields.io/badge/download-DMG-0ea5e9.svg" alt="Download DMG"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-635bff.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-635bff.svg" alt="License: Apache-2.0"></a>
   <a href="https://agentsignalbar.app"><img src="https://img.shields.io/badge/site-agentsignalbar.app-14b8a6.svg" alt="Website: agentsignalbar.app"></a>
 </p>
 
@@ -77,7 +77,7 @@ Developers can also download the source code and run `./script/build_and_run.sh`
   </tr>
 </table>
 
-Click the menu bar signal light to open either the detailed panel or the simple native-style menu. Both show the current status, running agents, latest activity, and quick actions for opening agents, clearing alerts, pausing monitoring, opening settings, and quitting.
+Click the menu bar signal light to open either the detailed panel or the simple native-style menu. Both show the current status, running agents, latest activity, and quick actions for opening active agents, pausing monitoring, opening settings, and quitting.
 
 ## Settings Liquid Glass Comparison
 
@@ -212,12 +212,6 @@ Read state:
 ./scripts/agent-signal status --json
 ```
 
-Clear warnings:
-
-```bash
-./scripts/agent-signal clear-warning
-```
-
 Reset to idle:
 
 ```bash
@@ -336,4 +330,4 @@ Tests/                     Swift tests
 
 ## License
 
-[MIT](LICENSE) • XiongYang Guan ([guan-ops](https://github.com/guan-ops))
+[Apache License 2.0](LICENSE) • XiongYang Guan ([guan-ops](https://github.com/guan-ops))

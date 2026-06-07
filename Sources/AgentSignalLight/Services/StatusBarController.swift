@@ -60,6 +60,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         }
         .store(in: &cancellables)
 
+        model.$presentationRefreshTick.sink { [weak self] _ in
+            Task { @MainActor in self?.updateStatusItem() }
+        }
+        .store(in: &cancellables)
+
         model.$statusLightOverride.sink { [weak self] _ in
             Task { @MainActor in self?.updateStatusItem() }
         }
@@ -121,6 +126,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         .store(in: &cancellables)
 
         model.$signalLightAgentScopes.sink { [weak self] _ in
+            Task { @MainActor in self?.updateStatusItem() }
+        }
+        .store(in: &cancellables)
+
+        model.$signalLightAgentSelectionMode.sink { [weak self] _ in
             Task { @MainActor in self?.updateStatusItem() }
         }
         .store(in: &cancellables)
@@ -317,7 +327,6 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
 
         menu.addItem(.separator())
         addOpenAgentMenuItems(to: menu, snapshot: activitySnapshot)
-        menu.addItem(actionMenuItem(model.text("清除提醒", "Clear Warning"), imageName: "xmark.circle", action: #selector(clearWarningsFromMenu)))
         menu.addItem(actionMenuItem(
             model.isMonitoringPaused ? model.text("继续监控", "Resume Monitoring") : model.text("暂停监控", "Pause Monitoring"),
             imageName: model.isMonitoringPaused ? "play.fill" : "pause.fill",
@@ -623,10 +632,6 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
 
     @objc private func openClaudeFromMenu() {
         model.openClaude()
-    }
-
-    @objc private func clearWarningsFromMenu() {
-        model.clearWarnings()
     }
 
     @objc private func toggleMonitoringFromMenu() {

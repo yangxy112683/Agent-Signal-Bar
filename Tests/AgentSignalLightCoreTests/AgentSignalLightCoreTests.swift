@@ -746,32 +746,6 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(snapshot.sessions.isEmpty)
     }
 
-    func testClearWarningsKeepsWorkingSessions() throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-
-        _ = try fixture.store.applySessionSignal(
-            .working,
-            sessionID: "worker",
-            agent: "codex",
-            lastEvent: "PreToolUse"
-        )
-        _ = try fixture.store.applySessionSignal(
-            .blocked,
-            sessionID: "blocked",
-            agent: "claude-code",
-            lastEvent: "PostToolUseFailure"
-        )
-
-        let snapshot = try fixture.store.clearWarnings()
-
-        XCTAssert(snapshot.aggregate == .working)
-        XCTAssert(snapshot.sessions.map(\.sessionID) == ["worker"])
-        XCTAssertEqual(snapshot.recentEvents.first?.sessionID, "manual")
-        XCTAssertEqual(snapshot.recentEvents.first?.event, "ClearWarning")
-        XCTAssertEqual(snapshot.recentEvents.first?.signal, .idle)
-    }
-
     func testManualSignalsParticipateInSessionAggregation() throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
@@ -1714,6 +1688,173 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testRecentDesktopActivityOverridesPresenceOnlySession() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .idle,
+                updatedAt: now,
+                sessions: [
+                    "platform-presence:codex-desktop": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .idle,
+                        lastEvent: "PlatformPresence:Desktop",
+                        updatedAt: now
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "desktop-tool-call",
+                        sessionID: "codex-desktop:thread",
+                        agent: "codex-desktop",
+                        signal: .working,
+                        event: "DesktopToolCall:exec_command",
+                        updatedAt: now.addingTimeInterval(-3)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = MenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.codexDesktop])
+
+        let visible = ActivityPresentation.visibleSessions(from: model.activitySnapshot, now: now, limit: nil)
+        let desktopSession = try XCTUnwrap(
+            visible.first { ActivityPresentation.activitySourceKey(for: $0) == "codex:desktop" }
+        )
+
+        XCTAssertEqual(desktopSession.signal, .working)
+        XCTAssertEqual(desktopSession.lastEvent, "DesktopToolCall:exec_command")
+        XCTAssertEqual(model.displaySnapshot.aggregate, .working)
+    }
+
+    @MainActor
+    func testSignalLightAutomaticallyFollowsHighestPriorityActiveSource() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .permission,
+                updatedAt: now,
+                sessions: [
+                    "codex-desktop:thread": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .working,
+                        lastEvent: "DesktopToolCall:exec_command",
+                        updatedAt: now.addingTimeInterval(-2)
+                    ),
+                    "claude-code:thread": SessionRecord(
+                        agent: "claude-code",
+                        signal: .permission,
+                        lastEvent: "PermissionRequest",
+                        updatedAt: now.addingTimeInterval(-1)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = MenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.signalLightAgentSelectionMode, .following)
+        XCTAssertEqual(model.displaySignalLightAgentScopes, [.claudeCode])
+        XCTAssertEqual(model.displaySnapshot.aggregate, .permission)
+        XCTAssertEqual(model.displaySnapshot.sessions.map(\.sessionID), ["claude-code:thread"])
+    }
+
+    @MainActor
+    func testManualSignalLightSelectionAggregatesMultipleSelectedSourcesOnly() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .blocked,
+                updatedAt: now,
+                sessions: [
+                    "codex-desktop:thread": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .done,
+                        lastEvent: "DesktopTaskComplete",
+                        updatedAt: now.addingTimeInterval(-3)
+                    ),
+                    "codex-cli:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .working,
+                        lastEvent: "DesktopToolCall:exec_command",
+                        updatedAt: now.addingTimeInterval(-2)
+                    ),
+                    "claude-code:thread": SessionRecord(
+                        agent: "claude-code",
+                        signal: .blocked,
+                        lastEvent: "Stop:Error",
+                        updatedAt: now.addingTimeInterval(-1)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = MenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.codexDesktop, .codexCLI])
+
+        XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
+        XCTAssertEqual(model.displaySignalLightAgentScopes, [.codexDesktop, .codexCLI])
+        XCTAssertEqual(model.displaySnapshot.aggregate, .working)
+        XCTAssertEqual(
+            Set(model.displaySnapshot.sessions.map(\.sessionID)),
+            ["codex-desktop:thread", "codex-cli:thread"]
+        )
+    }
+
+    @MainActor
+    func testManualSignalLightSelectionShowsHintWithoutSwitchingWhenOtherAgentsRun() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "claude-code:thread": SessionRecord(
+                        agent: "claude-code",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = MenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.localScript])
+
+        XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
+        XCTAssertEqual(model.displaySignalLightAgentScopes, [.localScript])
+        XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.displaySnapshot.sessions, [])
+        XCTAssertNotNil(model.signalLightAgentUnavailableHint)
+    }
+
+    @MainActor
     func testRecentPassiveThinkingDoesNotRemainFallbackSessionForFiveMinutes() {
         let now = Date(timeIntervalSince1970: 1_000)
         let freshThinking = RecentSignalEvent(
@@ -1765,15 +1906,15 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshCompleted, now: now))
         XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleCompleted, now: now))
 
-        let clearWarning = RecentSignalEvent(
-            id: "clear-warning",
+        let manualIdleEvent = RecentSignalEvent(
+            id: "manual-idle",
             sessionID: "manual",
-            signal: .working,
+            signal: .idle,
             updatedAt: now,
             agent: "manual",
-            event: "ClearWarning"
+            event: "ManualSet"
         )
-        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(clearWarning, now: now))
+        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(manualIdleEvent, now: now))
     }
 
     @MainActor
@@ -2393,6 +2534,29 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let sessionsRoot = directory.appendingPathComponent("sessions", isDirectory: true)
         try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
         return (sessionsRoot, directory)
+    }
+
+    private func clearSignalLightSelectionDefaults() -> [(String, Any?)] {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "signalLightAgentScope",
+            "signalLightAgentScopes",
+            "signalLightAgentSelectionMode"
+        ]
+        let savedValues = keys.map { ($0, defaults.object(forKey: $0)) }
+        keys.forEach(defaults.removeObject(forKey:))
+        return savedValues
+    }
+
+    private func restoreSignalLightSelectionDefaults(_ savedValues: [(String, Any?)]) {
+        let defaults = UserDefaults.standard
+        for (key, value) in savedValues {
+            if let value {
+                defaults.set(value, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
     }
 
     private func isoTimestamp(_ date: Date) -> String {

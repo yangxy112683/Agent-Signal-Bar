@@ -2,6 +2,7 @@ import AgentSignalLightCore
 import AgentSignalLightUI
 import AppKit
 import Foundation
+@preconcurrency import UserNotifications
 
 @MainActor
 final class SignalAnimationClock: ObservableObject {
@@ -214,6 +215,11 @@ enum StatusMenuMode: String, CaseIterable, Hashable {
     case simple
 }
 
+enum SignalLightAgentSelectionMode: String, Hashable {
+    case following
+    case manual
+}
+
 struct StatusLightOverrideFrame: Equatable {
     let signal: AgentSignal
     let tick: Int
@@ -258,6 +264,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var trafficLightVerticalUsesMacOSSize: Bool
     @Published var isStatusBarIconEnabled: Bool
     @Published var signalLightAgentScopes: Set<SignalLightAgentScope>
+    @Published private(set) var signalLightAgentSelectionMode: SignalLightAgentSelectionMode
     @Published var statusMenuMode: StatusMenuMode
     @Published var isCodexDesktopMonitoringEnabled: Bool
     @Published var isClaudeDesktopMonitoringEnabled: Bool
@@ -277,6 +284,8 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var diagnosticsExportMessage: String?
     @Published private(set) var releaseInfo: ReleaseInfo = .current()
     @Published private(set) var isUpdateCheckRunning = false
+    @Published private(set) var isAutomaticUpdateCheckEnabled = false
+    @Published private(set) var lastAutomaticUpdateCheckAt: Date?
     @Published var updateCheckMessage: String?
     @Published private(set) var updateReleasePageURL: URL?
     @Published var lastError: String?
@@ -291,6 +300,7 @@ final class MenuBarStatusModel: ObservableObject {
     private let codexDesktopActivityMonitor: CodexDesktopActivityMonitor
     private let codexPlatformPresenceMonitor: CodexPlatformPresenceMonitor
     private let updateChecker: GitHubReleaseUpdateChecker
+    private let stateReloadQueue = DispatchQueue(label: "com.agentsignallight.state-reload")
     private let codexDesktopPollQueue = DispatchQueue(label: "com.agentsignallight.codex-desktop-poll")
     private let platformPresencePollQueue = DispatchQueue(label: "com.agentsignallight.platform-presence-poll")
     private var pollTimer: Timer?
@@ -298,6 +308,7 @@ final class MenuBarStatusModel: ObservableObject {
     private var presentationTimer: Timer?
     private var codexDesktopTimer: Timer?
     private var desktopAppTimer: Timer?
+    private var automaticUpdateCheckTimer: Timer?
     private var watcher: StateFileWatcher?
     private static let recentEventDeduplicationWindow: TimeInterval = 4
     private static let completedDisplayWindow: TimeInterval = 30
@@ -306,8 +317,12 @@ final class MenuBarStatusModel: ObservableObject {
     private static let passiveActiveDisplayWindow: TimeInterval = 45
     private var statusLightSequence: [StatusLightOverrideFrame] = []
     private var statusLightSequenceIndex = 0
+    private var isStateReloadInFlight = false
+    private var isStateReloadQueued = false
     private var isCodexDesktopPollInFlight = false
     private var isPlatformPresencePollInFlight = false
+    private var isAutomaticUpdateCheckInFlight = false
+    private var lastNotifiedUpdateVersion: String?
 
     private static let defaultDisplayLayout: TrafficSignalLayout = .horizontal
     private static let defaultStatusBarStyle: TrafficSignalStyle = .macOS
@@ -317,7 +332,9 @@ final class MenuBarStatusModel: ObservableObject {
     private static let statePollInterval: TimeInterval = 0.75
     private static let animationTickInterval: TimeInterval = 0.25
     private static let agentPollInterval: TimeInterval = 0.5
-    private static let desktopAppPresencePollInterval: TimeInterval = 1.0
+    private static let desktopAppPresencePollInterval: TimeInterval = 5.0
+    private static let automaticUpdateCheckTimerInterval: TimeInterval = 60 * 60
+    private static let automaticUpdateCheckInterval: TimeInterval = 24 * 60 * 60
     private static let activeDisplayWindow: TimeInterval = SignalStateStore.defaultSessionTTL()
 
     private struct LaunchAtLoginUpdateResult: Sendable {
@@ -357,7 +374,12 @@ final class MenuBarStatusModel: ObservableObject {
             ?? UserDefaults.standard.string(forKey: "settingsMenuGlassEffect")
         let storedSignalLightAgentScope = UserDefaults.standard.string(forKey: "signalLightAgentScope")
         let storedSignalLightAgentScopes = UserDefaults.standard.stringArray(forKey: "signalLightAgentScopes")
+        let storedSignalLightAgentSelectionMode = UserDefaults.standard.string(forKey: "signalLightAgentSelectionMode")
         let storedStatusMenuMode = UserDefaults.standard.string(forKey: "statusMenuMode")
+        let storedAutomaticUpdateCheckEnabled =
+            UserDefaults.standard.object(forKey: "isAutomaticUpdateCheckEnabled") as? Bool
+        let storedLastAutomaticUpdateCheckAt =
+            UserDefaults.standard.object(forKey: "lastAutomaticUpdateCheckAt") as? Date
         let shouldApplyEffectDefaults = UserDefaults.standard.integer(forKey: "signalEffectDefaultsVersion") < Self.effectDefaultsVersion
         displayLayout = storedLayout.flatMap(TrafficSignalLayout.init(rawValue:)) ?? Self.defaultDisplayLayout
         statusBarStyle = storedStyle.flatMap(TrafficSignalStyle.init(rawValue:)) ?? Self.defaultStatusBarStyle
@@ -401,11 +423,19 @@ final class MenuBarStatusModel: ObservableObject {
             storedScopes: storedSignalLightAgentScopes,
             legacyScope: storedSignalLightAgentScope
         )
+        signalLightAgentSelectionMode = Self.resolvedSignalLightAgentSelectionMode(
+            storedMode: storedSignalLightAgentSelectionMode,
+            storedScopes: storedSignalLightAgentScopes,
+            legacyScope: storedSignalLightAgentScope
+        )
         statusMenuMode = storedStatusMenuMode.flatMap(StatusMenuMode.init(rawValue:)) ?? .detailed
         isCodexDesktopMonitoringEnabled =
             UserDefaults.standard.object(forKey: "isCodexDesktopMonitoringEnabled") as? Bool ?? true
         isClaudeDesktopMonitoringEnabled =
             UserDefaults.standard.object(forKey: "isClaudeDesktopMonitoringEnabled") as? Bool ?? true
+        isAutomaticUpdateCheckEnabled = storedAutomaticUpdateCheckEnabled ?? false
+        lastAutomaticUpdateCheckAt = storedLastAutomaticUpdateCheckAt
+        lastNotifiedUpdateVersion = UserDefaults.standard.string(forKey: "lastNotifiedUpdateVersion")
         snapshot = store.readSnapshot()
         isLaunchAtLoginEnabled = launchAtLoginManager.isEnabled
         desktopAppSessions = filteredPlatformPresenceSessions(codexPlatformPresenceMonitor.detectSessions())
@@ -414,19 +444,17 @@ final class MenuBarStatusModel: ObservableObject {
         }
         watcher?.start()
         startTimers()
+        performAutomaticUpdateCheckIfNeeded()
         startMonitoringResumeLightSequence()
     }
 
     func reload() {
-        let latestSnapshot = store.readSnapshot()
-        if latestSnapshot != snapshot {
-            snapshot = latestSnapshot
-        }
         let latestReleaseInfo = ReleaseInfo.current()
         if latestReleaseInfo != releaseInfo {
             releaseInfo = latestReleaseInfo
         }
-        pollDesktopAppPresence()
+
+        enqueueStateReload()
     }
 
     func reloadFromWatcher() {
@@ -452,23 +480,16 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    func clearWarnings() {
-        do {
-            snapshot = try store.clearWarnings()
-            lastError = nil
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
-
     func setMonitoringPaused(_ paused: Bool) {
         guard paused != isMonitoringPaused else { return }
         isMonitoringPaused = paused
 
         if paused {
             startMonitoringPauseLightSequence()
+            pollDesktopAppPresence()
         } else {
             reload()
+            pollDesktopAppPresence()
             startMonitoringResumeLightSequence()
         }
     }
@@ -585,15 +606,25 @@ final class MenuBarStatusModel: ObservableObject {
         guard !resolvedScopes.isEmpty else { return }
 
         signalLightAgentScopes = resolvedScopes
+        signalLightAgentSelectionMode = .manual
         UserDefaults.standard.set(
             resolvedScopes
                 .sorted { $0.sortOrder < $1.sortOrder }
                 .map(\.rawValue),
             forKey: "signalLightAgentScopes"
         )
+        UserDefaults.standard.set(
+            signalLightAgentSelectionMode.rawValue,
+            forKey: "signalLightAgentSelectionMode"
+        )
     }
 
     func toggleSignalLightAgentScope(_ scope: SignalLightAgentScope) {
+        if signalLightAgentSelectionMode == .following {
+            setSignalLightAgentScopes([scope])
+            return
+        }
+
         var updatedScopes = signalLightAgentScopes
         if updatedScopes.contains(scope) {
             updatedScopes.remove(scope)
@@ -645,6 +676,22 @@ final class MenuBarStatusModel: ObservableObject {
         UserDefaults.standard.set(effect.rawValue, forKey: "settingsGlassEffect")
     }
 
+    func setAutomaticUpdateCheckEnabled(_ enabled: Bool) {
+        guard enabled != isAutomaticUpdateCheckEnabled else { return }
+        isAutomaticUpdateCheckEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isAutomaticUpdateCheckEnabled")
+
+        if enabled {
+            requestUpdateNotificationAuthorizationIfNeeded()
+            performAutomaticUpdateCheckIfNeeded(force: true)
+        } else {
+            updateCheckMessage = text(
+                "已关闭自动检查更新。",
+                "Automatic update checks are off."
+            )
+        }
+    }
+
     var statusBarTooltip: String {
         let displaySnapshot = lightSnapshot
         var lines = [
@@ -652,7 +699,7 @@ final class MenuBarStatusModel: ObservableObject {
             "\(displayName(for: displaySnapshot.aggregate)) - \(humanAction(for: displaySnapshot.aggregate))"
         ]
 
-        lines.append("\(text("灯效 Agent", "Light Agent")): \(displayName(for: signalLightAgentScopes))")
+        lines.append("\(text("灯效 Agent", "Light Agent")): \(displayName(for: displaySignalLightAgentScopes))")
 
         if statusBarStyle == .macOS && displayLayout == .horizontal && !macOSHorizontalUsesTrafficLightSize {
             lines.append(text("圆点横向尺寸：小", "Horizontal dot size: Small"))
@@ -682,23 +729,25 @@ final class MenuBarStatusModel: ObservableObject {
 
     var displaySnapshot: SignalSnapshot {
         let displaySessions = combinedDisplaySessions()
-        let scopedDisplaySessions = displaySessions.filter { sessionMatchesSignalLightScopes($0) }
+        let displayScopes = signalLightAgentScopesForDisplay(from: displaySessions)
+        let scopedDisplaySessions = displaySessions.filter { Self.session($0, matches: displayScopes) }
         let deduplicatedSessions = deduplicatedDisplaySessions(scopedDisplaySessions)
         let scopedRecentEvents = snapshot.recentEvents
             .filter { !Self.isSignalTestEvent($0.event) }
-            .filter { recentEventMatchesSignalLightScopes($0) }
+            .filter { Self.event($0, matches: displayScopes) }
         let deduplicatedRecentEvents = deduplicatedRecentEvents(scopedRecentEvents)
         let displayUpdatedAt = deduplicatedSessions.map(\.updatedAt).max()
 
         return SignalSnapshot(
             aggregate: aggregateForSignalLightScopes(
                 sessions: deduplicatedSessions,
-                fallback: snapshot.aggregate
+                fallback: snapshot.aggregate,
+                scopes: displayScopes
             ),
             sessions: deduplicatedSessions,
             recentEvents: deduplicatedRecentEvents,
             stateFileURL: snapshot.stateFileURL,
-            updatedAt: displayUpdatedAt ?? snapshot.updatedAt
+            updatedAt: displayUpdatedAt
         )
     }
 
@@ -836,6 +885,120 @@ final class MenuBarStatusModel: ObservableObject {
         NSPasteboard.general.setString(releaseInfo.clipboardText, forType: .string)
     }
 
+    private func performAutomaticUpdateCheckIfNeeded(force: Bool = false) {
+        guard isAutomaticUpdateCheckEnabled else { return }
+        guard !isUpdateCheckRunning, !isAutomaticUpdateCheckInFlight else { return }
+
+        let now = Date()
+        if !force,
+           let lastAutomaticUpdateCheckAt,
+           now.timeIntervalSince(lastAutomaticUpdateCheckAt) < Self.automaticUpdateCheckInterval
+        {
+            return
+        }
+
+        let currentVersion = releaseInfo.version
+        let checker = updateChecker
+        isAutomaticUpdateCheckInFlight = true
+
+        Task {
+            let checkedAt = Date()
+
+            do {
+                let result = try await checker.check(currentVersion: currentVersion)
+                await MainActor.run {
+                    self.isAutomaticUpdateCheckInFlight = false
+                    self.lastAutomaticUpdateCheckAt = checkedAt
+                    UserDefaults.standard.set(checkedAt, forKey: "lastAutomaticUpdateCheckAt")
+
+                    if result.isUpdateAvailable {
+                        self.updateReleasePageURL = result.releasePageURL
+                        self.updateCheckMessage = self.text(
+                            "发现新版本 \(result.latestVersion)（当前 \(result.currentVersion)）。",
+                            "Version \(result.latestVersion) is available. Current version: \(result.currentVersion)."
+                        )
+                        self.notifyUpdateAvailable(result)
+                    } else if force {
+                        self.updateReleasePageURL = nil
+                        self.updateCheckMessage = self.text(
+                            "自动检查完成：当前版本 \(result.currentVersion)，已是最新版本。",
+                            "Automatic check complete: current version \(result.currentVersion), you are up to date."
+                        )
+                    }
+                }
+            } catch {
+                let errorMessage = error.localizedDescription
+                await MainActor.run {
+                    self.isAutomaticUpdateCheckInFlight = false
+                    self.lastAutomaticUpdateCheckAt = checkedAt
+                    UserDefaults.standard.set(checkedAt, forKey: "lastAutomaticUpdateCheckAt")
+
+                    if force {
+                        self.updateReleasePageURL = GitHubReleaseUpdateChecker.fallbackReleasePageURL
+                        self.updateCheckMessage = self.text(
+                            "自动检查更新失败：\(errorMessage)",
+                            "Automatic update check failed: \(errorMessage)"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func requestUpdateNotificationAuthorizationIfNeeded() {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard settings.authorizationStatus == .notDetermined else { return }
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
+    }
+
+    private func notifyUpdateAvailable(_ result: GitHubUpdateCheckResult) {
+        guard result.isUpdateAvailable else { return }
+        guard lastNotifiedUpdateVersion != result.latestVersion else { return }
+
+        lastNotifiedUpdateVersion = result.latestVersion
+        UserDefaults.standard.set(result.latestVersion, forKey: "lastNotifiedUpdateVersion")
+
+        let content = UNMutableNotificationContent()
+        content.title = "Agent Signal Bar"
+        content.subtitle = text(
+            "发现新版本 \(result.latestVersion)",
+            "Version \(result.latestVersion) is available"
+        )
+        content.body = text(
+            "打开关于页面或下载页面更新。",
+            "Open the About page or download page to update."
+        )
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "agent-signal-bar-update-\(result.latestVersion)",
+            content: content,
+            trigger: nil
+        )
+
+        deliverUpdateNotification(request)
+    }
+
+    private func deliverUpdateNotification(_ request: UNNotificationRequest) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                center.add(request)
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    guard granted else { return }
+                    center.add(request)
+                }
+            case .denied:
+                break
+            @unknown default:
+                break
+            }
+        }
+    }
+
     func checkForUpdates() {
         guard !isUpdateCheckRunning else { return }
 
@@ -877,6 +1040,93 @@ final class MenuBarStatusModel: ObservableObject {
                     self.lastError = nil
                 }
             }
+        }
+    }
+
+    func checkForUpdatesFromAppMenu() {
+        guard !isUpdateCheckRunning else { return }
+
+        let currentVersion = releaseInfo.version
+        let checker = updateChecker
+        isUpdateCheckRunning = true
+        updateReleasePageURL = nil
+        updateCheckMessage = text("正在检查 GitHub Releases...", "Checking GitHub Releases...")
+        lastError = nil
+
+        Task {
+            do {
+                let result = try await checker.check(currentVersion: currentVersion)
+                await MainActor.run {
+                    self.isUpdateCheckRunning = false
+                    self.updateReleasePageURL = result.isUpdateAvailable ? result.releasePageURL : nil
+                    if result.isUpdateAvailable {
+                        self.updateCheckMessage = self.text(
+                            "发现新版本 \(result.latestVersion)（当前 \(result.currentVersion)）。",
+                            "Version \(result.latestVersion) is available. Current version: \(result.currentVersion)."
+                        )
+                    } else {
+                        self.updateCheckMessage = self.text(
+                            "当前版本 \(result.currentVersion)。已是最新版本。",
+                            "Current version \(result.currentVersion). You are up to date."
+                        )
+                    }
+                    self.lastError = nil
+                    self.showUpdateCheckDialog(for: result)
+                }
+            } catch {
+                let errorMessage = error.localizedDescription
+                await MainActor.run {
+                    self.isUpdateCheckRunning = false
+                    self.updateReleasePageURL = GitHubReleaseUpdateChecker.fallbackReleasePageURL
+                    self.updateCheckMessage = self.text(
+                        "检查更新失败：\(errorMessage)",
+                        "Update check failed: \(errorMessage)"
+                    )
+                    self.lastError = nil
+                    self.showUpdateCheckFailureDialog(message: errorMessage)
+                }
+            }
+        }
+    }
+
+    private func showUpdateCheckDialog(for result: GitHubUpdateCheckResult) {
+        let alert = NSAlert()
+        alert.alertStyle = result.isUpdateAvailable ? .informational : .informational
+        alert.messageText = result.isUpdateAvailable
+            ? text("发现新版本", "Update Available")
+            : text("Agent Signal Bar 已是最新版本", "Agent Signal Bar Is Up to Date")
+        alert.informativeText = result.isUpdateAvailable
+            ? text(
+                "版本 \(result.latestVersion) 可用。当前版本：\(result.currentVersion)。",
+                "Version \(result.latestVersion) is available. Current version: \(result.currentVersion)."
+            )
+            : text(
+                "当前版本 \(result.currentVersion) 已经是最新版本。",
+                "Current version \(result.currentVersion) is already the latest version."
+            )
+
+        if result.isUpdateAvailable {
+            alert.addButton(withTitle: text("打开下载页面", "Open Download Page"))
+            alert.addButton(withTitle: text("稍后", "Later"))
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(result.releasePageURL)
+            }
+        } else {
+            alert.addButton(withTitle: text("好", "OK"))
+            alert.runModal()
+        }
+    }
+
+    private func showUpdateCheckFailureDialog(message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = text("检查更新失败", "Update Check Failed")
+        alert.informativeText = message
+        alert.addButton(withTitle: text("打开下载页面", "Open Download Page"))
+        alert.addButton(withTitle: text("好", "OK"))
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(GitHubReleaseUpdateChecker.fallbackReleasePageURL)
         }
     }
 
@@ -985,9 +1235,21 @@ final class MenuBarStatusModel: ObservableObject {
                 self?.pollDesktopAppPresence()
             }
         }
-        desktopAppTimer.tolerance = 0.2
+        desktopAppTimer.tolerance = 0.75
         RunLoop.main.add(desktopAppTimer, forMode: .common)
         self.desktopAppTimer = desktopAppTimer
+
+        let automaticUpdateCheckTimer = Timer(
+            timeInterval: Self.automaticUpdateCheckTimerInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.performAutomaticUpdateCheckIfNeeded()
+            }
+        }
+        automaticUpdateCheckTimer.tolerance = 5 * 60
+        RunLoop.main.add(automaticUpdateCheckTimer, forMode: .common)
+        self.automaticUpdateCheckTimer = automaticUpdateCheckTimer
     }
 
     private func startMonitoringResumeLightSequence() {
@@ -996,6 +1258,36 @@ final class MenuBarStatusModel: ObservableObject {
 
     private func startMonitoringPauseLightSequence() {
         startStatusLightSequence(Self.monitoringPauseLightSequence)
+    }
+
+    private func enqueueStateReload() {
+        if isStateReloadInFlight {
+            isStateReloadQueued = true
+            return
+        }
+
+        isStateReloadInFlight = true
+        let store = store
+
+        stateReloadQueue.async { [weak self] in
+            let latestSnapshot = store.readSnapshot()
+
+            DispatchQueue.main.async { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.isStateReloadInFlight = false
+
+                    if latestSnapshot != self.snapshot {
+                        self.snapshot = latestSnapshot
+                    }
+
+                    if self.isStateReloadQueued {
+                        self.isStateReloadQueued = false
+                        self.enqueueStateReload()
+                    }
+                }
+            }
+        }
     }
 
     private func startStatusLightSequence(_ frames: [StatusLightOverrideFrame]) {
@@ -1117,6 +1409,7 @@ final class MenuBarStatusModel: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     self.isCodexDesktopPollInFlight = false
+                    guard self.isCodexDesktopMonitoringEnabled, !self.isMonitoringPaused else { return }
                     if let latestSnapshot {
                         self.snapshot = latestSnapshot
                     }
@@ -1127,6 +1420,13 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func pollDesktopAppPresence() {
+        guard shouldPollPlatformPresence else {
+            if !desktopAppSessions.isEmpty {
+                desktopAppSessions = []
+            }
+            return
+        }
+
         guard !isPlatformPresencePollInFlight else { return }
 
         isPlatformPresencePollInFlight = true
@@ -1139,6 +1439,12 @@ final class MenuBarStatusModel: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     self.isPlatformPresencePollInFlight = false
+                    guard self.shouldPollPlatformPresence else {
+                        if !self.desktopAppSessions.isEmpty {
+                            self.desktopAppSessions = []
+                        }
+                        return
+                    }
                     let latestSessions = self.filteredPlatformPresenceSessions(detectedSessions)
                     if latestSessions != self.desktopAppSessions {
                         self.desktopAppSessions = latestSessions
@@ -1146,6 +1452,11 @@ final class MenuBarStatusModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private var shouldPollPlatformPresence: Bool {
+        !isMonitoringPaused
+            && (isCodexDesktopMonitoringEnabled || isClaudeDesktopMonitoringEnabled)
     }
 
     func filteredPlatformPresenceSessions(_ sessions: [SessionStatus]) -> [SessionStatus] {
@@ -1220,7 +1531,8 @@ final class MenuBarStatusModel: ObservableObject {
             }
 
             if let existingSession = latestExistingSessionBySourceKey[sourceKey],
-               existingSession.updatedAt >= event.updatedAt {
+               existingSession.updatedAt >= event.updatedAt,
+               !Self.isPresenceSession(existingSession) {
                 continue
             }
 
@@ -1337,7 +1649,7 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     static func shouldUseRecentEventAsFallbackSession(_ event: RecentSignalEvent, now: Date) -> Bool {
-        if event.event == "ClearWarning" {
+        if isManualIdleControlEvent(event) {
             return false
         }
 
@@ -1356,6 +1668,12 @@ final class MenuBarStatusModel: ObservableObject {
 
     private static func recentActivityFallbackWindow(for event: RecentSignalEvent) -> TimeInterval {
         isPassiveActiveEvent(event) ? passiveActiveDisplayWindow : recentActivityFallbackWindow
+    }
+
+    nonisolated static func isManualIdleControlEvent(_ event: RecentSignalEvent) -> Bool {
+        event.sessionID == "manual"
+            && (event.agent ?? "manual") == "manual"
+            && event.signal.displayState == .ready
     }
 
     private static func isPassiveActiveEvent(_ event: RecentSignalEvent) -> Bool {
@@ -1475,6 +1793,37 @@ final class MenuBarStatusModel: ObservableObject {
         )
     }
 
+    var displaySignalLightAgentScopes: Set<SignalLightAgentScope> {
+        signalLightAgentScopesForDisplay(from: combinedDisplaySessions())
+    }
+
+    var signalLightAgentMenuTitle: String {
+        displayName(for: displaySignalLightAgentScopes)
+    }
+
+    var signalLightAgentUnavailableHint: String? {
+        guard signalLightAgentSelectionMode == .manual else { return nil }
+
+        let visibleSessions = ActivityPresentation.visibleSessions(from: activitySnapshot, limit: nil)
+        let selectedHasVisibleSession = visibleSessions.contains { session in
+            Self.session(session, matches: signalLightAgentScopes)
+        }
+        guard !selectedHasVisibleSession else { return nil }
+
+        let otherVisibleScopes = Set(
+            SignalLightAgentScope.selectableCases.filter { scope in
+                !signalLightAgentScopes.contains(scope)
+                    && visibleSessions.contains { scope.matches(session: $0) }
+            }
+        )
+        guard !otherVisibleScopes.isEmpty else { return nil }
+
+        return text(
+            "已选 Agent 尚未运行。其他 Agent 正在运行，可在灯效 Agent 中切换。",
+            "The selected agent is not running. Other agents are running; switch in Light Agent if needed."
+        )
+    }
+
     private static func resolvedSignalLightAgentScopes(
         storedScopes: [String]?,
         legacyScope: String?
@@ -1502,12 +1851,94 @@ final class MenuBarStatusModel: ObservableObject {
         return SignalLightAgentScope.defaultSelectedCases
     }
 
+    private static func resolvedSignalLightAgentSelectionMode(
+        storedMode: String?,
+        storedScopes: [String]?,
+        legacyScope: String?
+    ) -> SignalLightAgentSelectionMode {
+        if let storedMode,
+           let mode = SignalLightAgentSelectionMode(rawValue: storedMode) {
+            return mode
+        }
+
+        if storedScopes != nil || legacyScope != nil {
+            return .manual
+        }
+
+        return .following
+    }
+
+    private func signalLightAgentScopesForDisplay(from displaySessions: [SessionStatus]) -> Set<SignalLightAgentScope> {
+        switch signalLightAgentSelectionMode {
+        case .manual:
+            return signalLightAgentScopes
+        case .following:
+            guard let scope = followedSignalLightAgentScope(in: displaySessions) else {
+                return []
+            }
+            return [scope]
+        }
+    }
+
+    private func followedSignalLightAgentScope(in displaySessions: [SessionStatus]) -> SignalLightAgentScope? {
+        struct Candidate {
+            let scope: SignalLightAgentScope
+            let priority: Int
+            let updatedAt: Date
+        }
+
+        let candidates = SignalLightAgentScope.selectableCases.compactMap { scope -> Candidate? in
+            let matchingSessions = displaySessions.filter {
+                scope.matches(session: $0) && Self.isFollowCandidateSession($0)
+            }
+
+            guard let bestSession = matchingSessions.max(by: { lhs, rhs in
+                if lhs.signal.displayState.priority != rhs.signal.displayState.priority {
+                    return lhs.signal.displayState.priority < rhs.signal.displayState.priority
+                }
+                return lhs.updatedAt < rhs.updatedAt
+            }) else {
+                return nil
+            }
+
+            return Candidate(
+                scope: scope,
+                priority: bestSession.signal.displayState.priority,
+                updatedAt: bestSession.updatedAt
+            )
+        }
+
+        return candidates.max { lhs, rhs in
+            if lhs.priority != rhs.priority {
+                return lhs.priority < rhs.priority
+            }
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt < rhs.updatedAt
+            }
+            return lhs.scope.sortOrder > rhs.scope.sortOrder
+        }?.scope
+    }
+
+    private static func isFollowCandidateSession(_ session: SessionStatus) -> Bool {
+        if isSignalTestEvent(session.lastEvent) {
+            return false
+        }
+
+        switch session.signal.displayState {
+        case .paused:
+            return false
+        case .ready, .active, .completed, .needsReview, .permission, .blocked, .stale:
+            return true
+        }
+    }
+
     private func aggregateForSignalLightScopes(
         sessions: [SessionStatus],
-        fallback: AgentSignal
+        fallback: AgentSignal,
+        scopes: Set<SignalLightAgentScope>
     ) -> AgentSignal {
         let selectedSignals = sessions.compactMap { session -> AgentSignal? in
-            guard sessionMatchesSignalLightScopes(session) else { return nil }
+            guard Self.session(session, matches: scopes) else { return nil }
             return session.signal
         }
 
@@ -1517,7 +1948,7 @@ final class MenuBarStatusModel: ObservableObject {
             return aggregate
         }
 
-        return fallbackForEmptyDisplaySessions(fallback)
+        return fallbackForEmptySignalLightSessions(fallback, scopes: scopes)
     }
 
     private func aggregateForSessions(
@@ -1543,12 +1974,36 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
+    private func fallbackForEmptySignalLightSessions(
+        _ fallback: AgentSignal,
+        scopes: Set<SignalLightAgentScope>
+    ) -> AgentSignal {
+        if signalLightAgentSelectionMode == .manual, !scopes.isEmpty {
+            switch fallback.displayState {
+            case .paused, .stale:
+                return fallback.normalizedAggregateSignal
+            case .ready, .active, .completed, .needsReview, .permission, .blocked:
+                return .idle
+            }
+        }
+
+        return fallbackForEmptyDisplaySessions(fallback)
+    }
+
     private func sessionMatchesSignalLightScopes(_ session: SessionStatus) -> Bool {
-        signalLightAgentScopes.contains { $0.matches(session: session) }
+        Self.session(session, matches: signalLightAgentScopes)
     }
 
     private func recentEventMatchesSignalLightScopes(_ event: RecentSignalEvent) -> Bool {
-        signalLightAgentScopes.contains { $0.matches(event: event) }
+        Self.event(event, matches: signalLightAgentScopes)
+    }
+
+    private static func session(_ session: SessionStatus, matches scopes: Set<SignalLightAgentScope>) -> Bool {
+        scopes.contains { $0.matches(session: session) }
+    }
+
+    private static func event(_ event: RecentSignalEvent, matches scopes: Set<SignalLightAgentScope>) -> Bool {
+        scopes.contains { $0.matches(event: event) }
     }
 
     private func snapshot(_ snapshot: SignalSnapshot, overridingAggregate aggregate: AgentSignal) -> SignalSnapshot {

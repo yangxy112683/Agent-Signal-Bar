@@ -131,7 +131,7 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleVersion</key>
   <string>$APP_BUILD</string>
   <key>NSHumanReadableCopyright</key>
-  <string>© 2026 XiongYang Guan · MIT License</string>
+  <string>© 2026 XiongYang Guan · Apache License 2.0</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSApplicationCategoryType</key>

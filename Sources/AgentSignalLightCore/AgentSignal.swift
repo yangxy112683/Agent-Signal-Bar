@@ -262,12 +262,4 @@ public extension AgentSignal {
         displayState == .permission || displayState == .blocked
     }
 
-    var shouldClearWarning: Bool {
-        switch displayState {
-        case .blocked, .permission, .needsReview, .stale:
-            return true
-        case .ready, .active, .completed, .paused:
-            return false
-        }
-    }
 }

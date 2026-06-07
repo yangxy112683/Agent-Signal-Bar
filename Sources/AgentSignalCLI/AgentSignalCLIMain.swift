@@ -36,11 +36,6 @@ struct AgentSignalCLI {
                 let parsed = try parse(Array(arguments.dropFirst()))
                 try requireNoPositionals(parsed)
                 printStatus(store.readSnapshot(), asJSON: parsed.printsJSON)
-            case "clear", "clear-warning", "clear-warnings":
-                let parsed = try parse(Array(arguments.dropFirst()))
-                try requireNoPositionals(parsed)
-                let snapshot = try store.clearWarnings()
-                printStatus(snapshot, asJSON: parsed.printsJSON)
             case "reset", "clear-all":
                 let parsed = try parse(Array(arguments.dropFirst()))
                 try requireNoPositionals(parsed)
@@ -278,7 +273,6 @@ private func printUsage() {
           agent-signal codex-hook [event]
           agent-signal claude-hook [event]
           agent-signal agent-hook [event] [--agent <name>] [--session <id>]
-          agent-signal clear-warning [--json]
           agent-signal reset [--json]
 
         Examples:
@@ -287,7 +281,6 @@ private func printUsage() {
           echo '{"event":"AgentStarted","agent":"local-script","session_id":"local-script-main"}' | agent-signal agent-hook
           agent-signal status --json
           agent-signal permission --session codex-main --event PermissionRequest
-          agent-signal clear-warning
 
         Signals:
           idle, thinking, working, tool_done, subagent_start, subagent_stop,

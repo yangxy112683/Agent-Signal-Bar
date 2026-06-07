@@ -291,6 +291,10 @@ extension MenuBarStatusModel {
         let selectableScopes = Set(SignalLightAgentScope.selectableCases)
         let normalizedScopes = scopes.intersection(selectableScopes)
 
+        if normalizedScopes.isEmpty {
+            return text("选择 Agent", "Select Agent")
+        }
+
         if normalizedScopes == selectableScopes {
             return text("全部 Agent", "All Agents")
         }
@@ -414,8 +418,6 @@ extension MenuBarStatusModel {
             return text("会话结束", "Session Ended")
         case "ManualSet":
             return text("手动设置", "Manual Set")
-        case "ClearWarning":
-            return text("清除提醒", "Clear Warning")
         case "DesktopThinking":
             return text("思考中", "Thinking")
         case "DesktopToolDone":
@@ -553,7 +555,6 @@ private enum AppLocalization {
         "Start at login": localized(zhHant: "登入時啟動", ja: "ログイン時に起動", ko: "로그인 시 시작", es: "Iniciar al entrar", fr: "Lancer a l'ouverture", de: "Beim Anmelden starten", pt: "Iniciar no login"),
         "Open Agent Signal Bar automatically after macOS login": localized(zhHant: "登入 macOS 後自動開啟 Agent Signal Bar", ja: "macOS ログイン後に Agent Signal Bar を自動で開きます", ko: "macOS 로그인 후 Agent Signal Bar를 자동으로 엽니다", es: "Abrir Agent Signal Bar automaticamente al iniciar sesion en macOS", fr: "Ouvrir Agent Signal Bar automatiquement apres la connexion macOS", de: "Agent Signal Bar nach der macOS Anmeldung automatisch oeffnen", pt: "Abrir Agent Signal Bar automaticamente apos login no macOS"),
         "Open Agent": localized(zhHant: "開啟 Agent", ja: "Agent を開く", ko: "Agent 열기", es: "Abrir Agent", fr: "Ouvrir l'agent", de: "Agent oeffnen", pt: "Abrir Agent"),
-        "Clear Warning": localized(zhHant: "清除提醒", ja: "警告消去", ko: "경고 지우기", es: "Borrar aviso", fr: "Effacer l'alerte", de: "Warnung loeschen", pt: "Limpar aviso"),
         "Status Bar": localized(zhHant: "狀態列", ja: "ステータスバー", ko: "상태 막대", es: "Barra de estado", fr: "Barre d'etat", de: "Statusleiste", pt: "Barra de status"),
         "Show status bar signal": localized(zhHant: "顯示狀態列信號", ja: "信号を表示", ko: "상태 막대 신호 표시", es: "Mostrar senal en la barra", fr: "Afficher le signal dans la barre", de: "Signal in der Statusleiste anzeigen", pt: "Mostrar sinal na barra"),
         "Hold Command and drag the status bar signal to move its position.": localized(zhHant: "按住 Command 並拖動狀態列信號燈，即可調整它在狀態列中的位置。", ja: "Command キーを押しながらステータスバー信号をドラッグすると位置を移動できます。", ko: "Command 키를 누른 채 상태 막대 신호를 드래그하면 위치를 옮길 수 있습니다.", es: "Manten Command y arrastra la senal de la barra de estado para moverla.", fr: "Maintenez Command et faites glisser le signal de la barre d'etat pour le deplacer.", de: "Halte Command gedrueckt und ziehe das Signal in der Statusleiste, um es zu verschieben.", pt: "Segure Command e arraste o sinal da barra de status para mover a posicao."),
@@ -658,8 +659,14 @@ private enum AppLocalization {
         "Version": localized(zhHant: "版本", ja: "バージョン", ko: "버전", es: "Version", fr: "Version", de: "Version", pt: "Versao"),
         "Updates": localized(zhHant: "更新", ja: "アップデート", ko: "업데이트", es: "Actualizaciones", fr: "Mises a jour", de: "Updates", pt: "Atualizacoes"),
         "Check for Updates": localized(zhHant: "檢查更新", ja: "アップデートを確認", ko: "업데이트 확인", es: "Buscar actualizaciones", fr: "Rechercher des mises a jour", de: "Nach Updates suchen", pt: "Buscar atualizacoes"),
+        "Check for Updates...": localized(zhHant: "檢查更新...", ja: "アップデートを確認...", ko: "업데이트 확인...", es: "Buscar actualizaciones...", fr: "Rechercher des mises a jour...", de: "Nach Updates suchen...", pt: "Buscar atualizacoes..."),
         "Checking": localized(zhHant: "檢查中", ja: "確認中", ko: "확인 중", es: "Comprobando", fr: "Verification", de: "Prueft", pt: "Verificando"),
+        "Checking...": localized(zhHant: "檢查中...", ja: "確認中...", ko: "확인 중...", es: "Comprobando...", fr: "Verification...", de: "Prueft...", pt: "Verificando..."),
         "Open Download Page": localized(zhHant: "開啟下載頁", ja: "ダウンロードページを開く", ko: "다운로드 페이지 열기", es: "Abrir descarga", fr: "Ouvrir le telechargement", de: "Downloadseite oeffnen", pt: "Abrir pagina de download"),
+        "Automatically check for updates": localized(zhHant: "自動檢查更新", ja: "アップデートを自動確認", ko: "업데이트 자동 확인", es: "Buscar actualizaciones automaticamente", fr: "Verifier automatiquement les mises a jour", de: "Automatisch nach Updates suchen", pt: "Verificar atualizacoes automaticamente"),
+        "Send a macOS notification when a newer release is available. Updates are not installed automatically.": localized(zhHant: "偵測到新版本時發送 macOS 通知，不會自動安裝。", ja: "新しいリリースがあると macOS 通知を送ります。自動インストールはしません。", ko: "새 릴리스가 있으면 macOS 알림을 보냅니다. 자동 설치는 하지 않습니다.", es: "Envia una notificacion de macOS cuando haya una version nueva. No se instala automaticamente.", fr: "Envoie une notification macOS quand une nouvelle version est disponible. L'installation n'est pas automatique.", de: "Sendet eine macOS Mitteilung, wenn eine neue Version verfuegbar ist. Updates werden nicht automatisch installiert.", pt: "Envia uma notificacao do macOS quando houver uma nova versao. Nao instala automaticamente."),
+        "Sends a notification when a newer release is available. Updates are not installed automatically.": localized(zhHant: "偵測到新版本時發送通知，不會自動安裝。", ja: "新しいリリースがあると通知します。自動インストールはしません。", ko: "새 릴리스가 있으면 알림을 보냅니다. 자동 설치는 하지 않습니다.", es: "Envia una notificacion cuando haya una version nueva. No se instala automaticamente.", fr: "Envoie une notification quand une nouvelle version est disponible. L'installation n'est pas automatique.", de: "Sendet eine Mitteilung, wenn eine neue Version verfuegbar ist. Updates werden nicht automatisch installiert.", pt: "Envia uma notificacao quando houver uma nova versao. Nao instala automaticamente."),
+        "Automatic update checks are off.": localized(zhHant: "已關閉自動檢查更新。", ja: "アップデートの自動確認はオフです。", ko: "업데이트 자동 확인이 꺼져 있습니다.", es: "La busqueda automatica de actualizaciones esta desactivada.", fr: "La verification automatique des mises a jour est desactivee.", de: "Automatische Updatepruefung ist aus.", pt: "A verificacao automatica de atualizacoes esta desativada."),
         "Checking GitHub Releases...": localized(zhHant: "正在檢查 GitHub Releases...", ja: "GitHub Releases を確認中...", ko: "GitHub Releases 확인 중...", es: "Comprobando GitHub Releases...", fr: "Verification de GitHub Releases...", de: "GitHub Releases werden geprueft...", pt: "Verificando GitHub Releases..."),
         "Current version": localized(zhHant: "目前版本", ja: "現在のバージョン", ko: "현재 버전", es: "Version actual", fr: "Version actuelle", de: "Aktuelle Version", pt: "Versao atual"),
         "No updates are available.": localized(zhHant: "暫無可用更新。", ja: "利用可能なアップデートはありません。", ko: "사용 가능한 업데이트가 없습니다.", es: "No hay actualizaciones disponibles.", fr: "Aucune mise a jour disponible.", de: "Keine Updates verfuegbar.", pt: "Nenhuma atualizacao disponivel."),
