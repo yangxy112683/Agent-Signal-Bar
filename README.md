@@ -72,12 +72,12 @@ Developers can also download the source code and run `./script/build_and_run.sh`
     <td align="center"><strong>Simple Menu</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/menu-bar-panel-detailed-en.png" alt="Agent Signal Bar detailed menu bar panel" width="390"></td>
-    <td><img src="docs/assets/menu-bar-panel-simple-en.png" alt="Agent Signal Bar simple native menu bar panel" width="390"></td>
+    <td><img src="docs/assets/menu-bar-panel-detailed-en.png" alt="Agent Signal Bar detailed menu bar panel" width="360"></td>
+    <td><img src="docs/assets/menu-bar-panel-simple-en.png" alt="Agent Signal Bar simple native menu bar panel" width="360"></td>
   </tr>
 </table>
 
-Click the menu bar signal light to open either the detailed panel or the simple native-style menu. Both show the current status, running agents, latest activity, and quick actions for opening active agents, pausing monitoring, opening settings, and quitting.
+Click the menu bar signal light to open either the detailed panel or the simple native-style menu. Both show the current status and live agent activity. The detailed panel keeps the quick actions focused on pausing monitoring, opening settings, and quitting; the simple menu can also show open-agent shortcuts when relevant.
 
 ## Settings Liquid Glass Comparison
 
@@ -98,7 +98,7 @@ Both images are real screenshots of the current Activity page. The left image sh
 
 - macOS menu bar signal light with horizontal and vertical layouts.
 - Two visual styles: classic signal board and minimal dots.
-- Menu bar panel with current status, running agents, latest event, quick actions, and quit.
+- Menu bar panel with current status, running agents, recent activity, pause/settings actions, and quit.
 - Settings window with Activity, General, Connections, Advanced, and About pages.
 - Codex Desktop activity monitoring without required hooks, plus optional Codex hooks, Claude Code hooks, and generic JSON event input.
 - Multi-session aggregation so permission, failure, and blocked states are not overwritten by normal working states.
