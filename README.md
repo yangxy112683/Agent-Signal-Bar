@@ -72,8 +72,8 @@ Developers can also download the source code and run `./script/build_and_run.sh`
     <td align="center"><strong>Simple Menu</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/assets/menu-bar-panel-detailed-en.png" alt="Agent Signal Bar detailed menu bar panel" width="360"></td>
-    <td><img src="docs/assets/menu-bar-panel-simple-en.png" alt="Agent Signal Bar simple native menu bar panel" width="360"></td>
+    <td><img src="docs/assets/menu-bar-panel-detailed-v1.2.2-en.png" alt="Agent Signal Bar detailed menu bar panel" width="360"></td>
+    <td><img src="docs/assets/menu-bar-panel-simple-v1.2.2-en.png" alt="Agent Signal Bar simple native menu bar panel" width="360"></td>
   </tr>
 </table>
 
