@@ -328,4 +328,8 @@ Tests/                     Swift 测试
 
 ## 许可证
 
-[Apache License 2.0](LICENSE) • XiongYang Guan ([guan-ops](https://github.com/guan-ops))
+源码基于 [Apache License 2.0](LICENSE) 开源，作者归属记录在 [NOTICE](NOTICE) 中。
+
+Agent Signal Bar 的名称、App 图标、Logo、网站视觉、截图、宣传图、视频素材和其他品牌资产，不授权用于冒充官方版本、竞争品牌或未经许可的重新包装发布。
+
+© 2026 XiongYang Guan ([guan-ops](https://github.com/guan-ops))
