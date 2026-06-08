@@ -332,6 +332,4 @@ Tests/                     Swift tests
 
 Source code is licensed under the [Apache License 2.0](LICENSE). Attribution is recorded in [NOTICE](NOTICE).
 
-The Agent Signal Bar name, app icon, logo, website artwork, screenshots, marketing images, video materials, and other brand assets are not licensed for reuse as a competing or unofficial brand without permission.
-
 © 2026 XiongYang Guan ([guan-ops](https://github.com/guan-ops))
