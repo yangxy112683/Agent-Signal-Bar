@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 STATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-signal-local-integrations.XXXXXX")"
 STATE_FILE="$STATE_ROOT/status.json"
 OUTPUT_FILE="$STATE_ROOT/output.json"
@@ -18,6 +19,16 @@ pass() {
 die() {
   printf "[fail] %s\n" "$1" >&2
   exit 1
+}
+
+swift_tool() {
+  if [[ -n "${DEVELOPER_DIR:-}" ]]; then
+    swift "$@"
+  elif [[ -d "$XCODE_DEVELOPER_DIR" ]]; then
+    DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" swift "$@"
+  else
+    swift "$@"
+  fi
 }
 
 expect_json() {
@@ -44,8 +55,8 @@ PY
 
 cd "$ROOT_DIR"
 
-swift build --product agent-signal >/dev/null
-export AGENT_SIGNAL_BIN="$ROOT_DIR/.build/debug/agent-signal"
+swift_tool build --product agent-signal >/dev/null
+export AGENT_SIGNAL_BIN="$(swift_tool build --product agent-signal --show-bin-path)/agent-signal"
 
 GENERIC_STATE="$STATE_ROOT/generic-status.json"
 printf '{"event":"AgentStarted","agent":"local-script","session_id":"local-script-hook"}' \

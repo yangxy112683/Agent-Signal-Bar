@@ -47,6 +47,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+write_launch_agent_plist() {
+  /usr/bin/python3 - "$LAUNCH_AGENT_PLIST" "$BUNDLE_ID" "$INSTALLED_APP" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+plist_path = Path(sys.argv[1])
+bundle_id = sys.argv[2]
+installed_app = sys.argv[3]
+
+plist = {
+    "Label": bundle_id,
+    "ProgramArguments": [
+        "/usr/bin/open",
+        installed_app,
+    ],
+    "RunAtLoad": True,
+    "StandardOutPath": "/tmp/agent-signal/app.out.log",
+    "StandardErrorPath": "/tmp/agent-signal/app.err.log",
+}
+
+plist_path.write_bytes(plistlib.dumps(plist, fmt=plistlib.FMT_XML, sort_keys=False))
+PY
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --login-item|--launch-at-login)
@@ -142,27 +167,7 @@ codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP" >/dev/null 2>&1
 
 if [[ "$ENABLE_LOGIN_ITEM" -eq 1 ]]; then
   mkdir -p "$LAUNCH_AGENT_DIR" /tmp/agent-signal
-  cat >"$LAUNCH_AGENT_PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>$BUNDLE_ID</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/open</string>
-    <string>$INSTALLED_APP</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/tmp/agent-signal/app.out.log</string>
-  <key>StandardErrorPath</key>
-  <string>/tmp/agent-signal/app.err.log</string>
-</dict>
-</plist>
-PLIST
+  write_launch_agent_plist
 
   launchctl bootout "gui/$(id -u)" "$LAUNCH_AGENT_PLIST" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT_PLIST"
