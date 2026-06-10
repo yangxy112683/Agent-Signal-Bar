@@ -342,6 +342,16 @@ Tests/                     Swift tests
 
 ## License
 
-Source code is licensed under the [Apache License 2.0](LICENSE). Attribution is recorded in [NOTICE](NOTICE).
+Source code is licensed under the [Apache License 2.0](LICENSE).
+
+Non-code assets use separate terms:
+
+- Bundled audio files, including the New Zealand crossing sounds, plus app icons,
+  logos, screenshots, GIFs, and marketing artwork are covered by
+  [ASSET_LICENSES.md](ASSET_LICENSES.md).
+- The `Agent Signal Bar` name and brand assets are covered by
+  [TRADEMARKS.md](TRADEMARKS.md).
+
+Attribution is recorded in [NOTICE](NOTICE).
 
 © 2026 XiongYang Guan ([guan-ops](https://github.com/guan-ops))

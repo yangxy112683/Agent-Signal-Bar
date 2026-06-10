@@ -102,6 +102,10 @@ for audio_resource in "$ROOT_DIR"/Sources/AgentSignalLight/Resources/*.{m4a,wav}
   [[ -e "$audio_resource" ]] || continue
   cp "$audio_resource" "$APP_RESOURCES/$(basename "$audio_resource")"
 done
+for license_resource in LICENSE NOTICE ASSET_LICENSES.md TRADEMARKS.md; do
+  [[ -f "$ROOT_DIR/$license_resource" ]] || continue
+  cp "$ROOT_DIR/$license_resource" "$APP_RESOURCES/$license_resource"
+done
 cp "$VERSION_FILE" "$VERSION_RESOURCE"
 chmod +x "$APP_BINARY"
 chmod +x "$APP_RESOURCES/dist/bin/agent-signal" \

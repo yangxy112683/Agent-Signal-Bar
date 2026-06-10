@@ -14,6 +14,8 @@ English
 
 This local DMG is ad-hoc signed for personal use. It is not Developer ID signed or notarized yet.
 
+Source code is licensed under Apache License 2.0. Bundled audio, app icons, logos, screenshots, GIFs, marketing artwork, and the Agent Signal Bar brand are subject to the separate asset and trademark terms in the repository and release zip; they are not licensed for standalone reuse.
+
 
 中文
 ----
@@ -27,3 +29,5 @@ This local DMG is ad-hoc signed for personal use. It is not Developer ID signed 
 7. 排查问题时，可以使用“连接 > 检查连接”或“导出诊断”。
 
 这个本地 DMG 目前使用 ad-hoc 签名，适合个人使用，尚未使用 Developer ID 签名或 Apple 公证。
+
+源码基于 Apache License 2.0 开源。内置音频、App 图标、Logo、截图、GIF、营销图片以及 Agent Signal Bar 品牌适用仓库和 release zip 中的资产与商标条款，不授权单独复用。

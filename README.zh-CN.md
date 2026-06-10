@@ -340,6 +340,14 @@ Tests/                     Swift 测试
 
 ## 许可证
 
-源码基于 [Apache License 2.0](LICENSE) 开源，作者归属记录在 [NOTICE](NOTICE) 中。
+源码基于 [Apache License 2.0](LICENSE) 开源。
+
+非代码资产使用单独条款：
+
+- 内置音频文件，包括新西兰红绿灯声音，以及 App 图标、Logo、截图、GIF 和营销图片，适用
+  [ASSET_LICENSES.md](ASSET_LICENSES.md)。
+- `Agent Signal Bar` 名称和品牌资产适用 [TRADEMARKS.md](TRADEMARKS.md)。
+
+作者归属记录在 [NOTICE](NOTICE) 中。
 
 © 2026 XiongYang Guan ([guan-ops](https://github.com/guan-ops))
