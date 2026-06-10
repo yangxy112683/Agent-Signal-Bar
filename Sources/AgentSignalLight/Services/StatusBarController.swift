@@ -149,6 +149,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         }
         .store(in: &cancellables)
 
+        model.$isSignalLightDebugEnabled.sink { [weak self] _ in
+            Task { @MainActor in self?.updateStatusItem() }
+        }
+        .store(in: &cancellables)
+
         model.$appLanguage.sink { [weak self] _ in
             Task { @MainActor in self?.updateStatusItem() }
         }

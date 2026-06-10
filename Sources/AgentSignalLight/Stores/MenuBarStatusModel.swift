@@ -285,6 +285,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isFloatingSignalWaitingSoundEnabled: Bool
     @Published var isFloatingSignalAlertSoundEnabled: Bool
     @Published var floatingSignalSoundLevel: FloatingSignalSoundLevel
+    @Published private(set) var isSignalLightDebugEnabled = false
     @Published private(set) var statusLightOverride: StatusLightOverrideFrame?
     @Published private(set) var desktopAppSessions: [SessionStatus] = []
     @Published private(set) var isLaunchAtLoginEnabled = false
@@ -613,6 +614,11 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
+    func setSignalLightDebugEnabled(_ enabled: Bool) {
+        guard enabled != isSignalLightDebugEnabled else { return }
+        isSignalLightDebugEnabled = enabled
+    }
+
     func toggleMonitoring() {
         setMonitoringPaused(!isMonitoringPaused)
     }
@@ -673,6 +679,10 @@ final class MenuBarStatusModel: ObservableObject {
 
     var lightSnapshot: SignalSnapshot {
         let baseSnapshot = displaySnapshot
+        if isSignalLightDebugEnabled {
+            return snapshot(baseSnapshot, overridingAggregate: .idle)
+        }
+
         if let statusLightOverride {
             return snapshot(baseSnapshot, overridingAggregate: statusLightOverride.signal)
         }
@@ -685,10 +695,18 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     var lightTick: Int {
-        statusLightOverride?.tick ?? animationClock.tick
+        if isSignalLightDebugEnabled {
+            return 0
+        }
+
+        return statusLightOverride?.tick ?? animationClock.tick
     }
 
     var lightAllLightsOn: Bool {
+        if isSignalLightDebugEnabled {
+            return true
+        }
+
         if statusLightOverride == nil, isMonitoringPaused {
             return true
         }
@@ -697,11 +715,19 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     var lightUsesSystemGrayLights: Bool {
-        statusLightOverride?.usesSystemGrayLights ?? isMonitoringPaused
+        if isSignalLightDebugEnabled {
+            return false
+        }
+
+        return statusLightOverride?.usesSystemGrayLights ?? isMonitoringPaused
     }
 
     var lightEffectCustomization: SignalEffectCustomization {
-        statusLightOverride?.effectCustomization ?? signalEffectCustomization
+        if isSignalLightDebugEnabled {
+            return Self.monitoringTransitionCustomization
+        }
+
+        return statusLightOverride?.effectCustomization ?? signalEffectCustomization
     }
 
     func setMacOSHorizontalUsesTrafficLightSize(_ enabled: Bool) {

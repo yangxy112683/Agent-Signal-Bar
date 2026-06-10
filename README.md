@@ -54,7 +54,7 @@ Agent Signal Bar is a local-first macOS app that uses three red, yellow, and gre
 ## Floating Signal Light
 
 <p align="center">
-  <img src="docs/assets/floating-signal-light-v1.3.0.png" alt="Agent Signal Bar floating desktop signal light with running-agent badge" width="360">
+  <img src="docs/assets/floating-signal-light-v1.3.0.png" alt="Agent Signal Bar floating desktop signal light with all three lights on and a running-agent badge" width="260">
 </p>
 
 The floating signal light stays visible on the desktop, syncs with the menu bar light, and supports dragging, resizing, vertical or horizontal layouts, a compact running-agent badge, and a small current-session popover. Sound alerts can be configured separately for completion, green flashing, and warning states.
