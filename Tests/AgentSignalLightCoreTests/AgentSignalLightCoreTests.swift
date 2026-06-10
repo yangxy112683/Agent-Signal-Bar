@@ -2,8 +2,31 @@ import Foundation
 import XCTest
 @testable import AgentSignalLight
 @testable import AgentSignalLightCore
+@testable import AgentSignalLightUI
 
 final class AgentSignalLightCoreTests: XCTestCase {
+    func testFloatingSignalGeometryTracksLayout() {
+        let scale = FloatingSignalScale.standard
+        let verticalLamp = scale.panelSize(
+            layout: .vertical,
+            trafficLightVerticalUsesMacOSSize: false
+        )
+        let horizontalLamp = scale.panelSize(
+            layout: .horizontal,
+            trafficLightVerticalUsesMacOSSize: false
+        )
+        let horizontalBacking = scale.housingBackingSize(
+            layout: .horizontal,
+            trafficLightVerticalUsesMacOSSize: false
+        )
+
+        XCTAssertEqual(verticalLamp.width, 34 * scale.visualScale, accuracy: 0.01)
+        XCTAssertEqual(verticalLamp.height, 74 * scale.visualScale, accuracy: 0.01)
+        XCTAssertGreaterThan(horizontalLamp.width, verticalLamp.width)
+        XCTAssertLessThan(horizontalLamp.height, verticalLamp.height)
+        XCTAssertEqual(horizontalBacking.height, (16 + 12) * scale.visualScale, accuracy: 0.01)
+    }
+
     func testSignalNormalizationAcceptsHumanInputVariants() {
         XCTAssert(AgentSignal.normalized("tool-done") == .toolDone)
         XCTAssert(AgentSignal.normalized(" session start ") == .sessionStart)
@@ -1540,6 +1563,60 @@ final class AgentSignalLightCoreTests: XCTestCase {
             "codex:desktop",
             "codex:terminal",
             "codex:ide:idea"
+        ])
+    }
+
+    func testFloatingInfoSessionsFollowCurrentSessionsButExcludeIdleAndPaused() {
+        let now = Date()
+        let snapshot = SignalSnapshot(
+            aggregate: .working,
+            sessions: [
+                SessionStatus(
+                    sessionID: "platform-presence:codex-desktop",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-desktop",
+                    lastEvent: "PlatformPresence:Desktop"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:claude-desktop",
+                    signal: .paused,
+                    updatedAt: now,
+                    agent: "claude-desktop",
+                    lastEvent: "PlatformPresence:Desktop"
+                ),
+                SessionStatus(
+                    sessionID: "codex-cli:active-thread",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "PreToolUse"
+                ),
+                SessionStatus(
+                    sessionID: "codex-vscode:review-thread",
+                    signal: .notification,
+                    updatedAt: now,
+                    agent: "codex-vscode",
+                    lastEvent: "Notification"
+                )
+            ],
+            recentEvents: [],
+            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal/status.json"),
+            updatedAt: now
+        )
+
+        let currentSessions = ActivityPresentation.visibleSessions(
+            from: snapshot,
+            now: now,
+            limit: ActivityPresentation.currentSessionLimit
+        )
+        let floatingSessions = ActivityPresentation.visibleRunningSessions(from: snapshot, now: now)
+
+        XCTAssertTrue(currentSessions.contains { $0.sessionID == "platform-presence:codex-desktop" })
+        XCTAssertTrue(currentSessions.contains { $0.sessionID == "platform-presence:claude-desktop" })
+        XCTAssertEqual(Set(floatingSessions.map(\.sessionID)), [
+            "codex-cli:active-thread",
+            "codex-vscode:review-thread"
         ])
     }
 

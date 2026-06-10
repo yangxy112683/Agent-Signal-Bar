@@ -26,6 +26,9 @@ let package = Package(
             dependencies: [
                 "AgentSignalLightCore",
                 "AgentSignalLightUI"
+            ],
+            resources: [
+                .process("Resources")
             ]
         ),
         .executableTarget(

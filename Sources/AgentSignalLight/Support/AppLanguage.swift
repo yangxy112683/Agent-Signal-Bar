@@ -164,6 +164,67 @@ extension MenuBarStatusModel {
         }
     }
 
+    func displayName(for scale: FloatingSignalScale) -> String {
+        switch scale {
+        case .compact:
+            return text("小", "Small")
+        case .standard:
+            return text("默认", "Default")
+        case .large:
+            return text("大", "Large")
+        }
+    }
+
+    func displayName(for level: FloatingSignalSoundLevel) -> String {
+        switch level {
+        case .soft:
+            return text("轻", "Soft")
+        case .standard:
+            return text("标准", "Standard")
+        case .loud:
+            return text("响", "Loud")
+        }
+    }
+
+    func displayName(for sound: FloatingSignalCompletionSound) -> String {
+        switch sound {
+        case .off:
+            return text("关闭", "Off")
+        case .newZealandCrossing:
+            return text("新西兰", "New Zealand")
+        case .aiAurora:
+            return text("清亮", "Bright")
+        case .aiGlow:
+            return text("柔和", "Soft")
+        }
+    }
+
+    func displayName(for sound: FloatingSignalWaitingSound) -> String {
+        switch sound {
+        case .off:
+            return text("关闭", "Off")
+        case .newZealandCrossing:
+            return text("新西兰", "New Zealand")
+        case .aiTick:
+            return text("短促", "Tick")
+        case .aiOrbit:
+            return text("圆润", "Round")
+        }
+    }
+
+    func displayName(for sound: FloatingSignalAlertSound) -> String {
+        switch sound {
+        case .off:
+            return text("关闭", "Off")
+        case .defaultPulse:
+            return text("脉冲", "Pulse")
+        case .aiBeacon:
+            return text("提醒", "Beacon")
+        case .aiUrgent:
+            return text("警示", "Alert")
+        }
+    }
+
     func displayName(for layout: TrafficSignalLayout) -> String {
         switch layout {
         case .horizontal:

@@ -98,6 +98,10 @@ cp "$ROOT_DIR/scripts/agent-signal-run" "$APP_RESOURCES/scripts/agent-signal-run
 cp "$ROOT_DIR/scripts/codex-signal-hook" "$APP_RESOURCES/scripts/codex-signal-hook"
 cp "$ROOT_DIR/scripts/claude-code-signal-hook" "$APP_RESOURCES/scripts/claude-code-signal-hook"
 cp "$ROOT_DIR/scripts/generic-agent-signal-hook" "$APP_RESOURCES/scripts/generic-agent-signal-hook"
+for audio_resource in "$ROOT_DIR"/Sources/AgentSignalLight/Resources/*.{m4a,wav}; do
+  [[ -e "$audio_resource" ]] || continue
+  cp "$audio_resource" "$APP_RESOURCES/$(basename "$audio_resource")"
+done
 cp "$VERSION_FILE" "$VERSION_RESOURCE"
 chmod +x "$APP_BINARY"
 chmod +x "$APP_RESOURCES/dist/bin/agent-signal" \

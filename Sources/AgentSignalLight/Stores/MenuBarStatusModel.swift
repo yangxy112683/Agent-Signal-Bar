@@ -273,6 +273,18 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isSettingsGlassEnabled: Bool
     @Published var settingsGlassEffect: SettingsGlassEffect
     @Published var isMonitoringPaused = false
+    @Published var isFloatingSignalEnabled: Bool
+    @Published var floatingSignalScale: FloatingSignalScale
+    @Published var floatingSignalVisualScale: CGFloat
+    @Published var floatingSignalLayout: TrafficSignalLayout
+    @Published var isFloatingSignalSoundEnabled: Bool
+    @Published var floatingSignalCompletionSound: FloatingSignalCompletionSound
+    @Published var floatingSignalWaitingSound: FloatingSignalWaitingSound
+    @Published var floatingSignalAlertSound: FloatingSignalAlertSound
+    @Published var isFloatingSignalCompletionSoundEnabled: Bool
+    @Published var isFloatingSignalWaitingSoundEnabled: Bool
+    @Published var isFloatingSignalAlertSoundEnabled: Bool
+    @Published var floatingSignalSoundLevel: FloatingSignalSoundLevel
     @Published private(set) var statusLightOverride: StatusLightOverrideFrame?
     @Published private(set) var desktopAppSessions: [SessionStatus] = []
     @Published private(set) var isLaunchAtLoginEnabled = false
@@ -290,6 +302,9 @@ final class MenuBarStatusModel: ObservableObject {
     @Published private(set) var updateReleasePageURL: URL?
     @Published var lastError: String?
     @Published private(set) var presentationRefreshTick = 0
+    @Published private(set) var floatingSignalSoundTestTick = 0
+    @Published private(set) var floatingSignalWaitingSoundTestTick = 0
+    @Published private(set) var floatingSignalAlertSoundTestTick = 0
 
     let animationClock = SignalAnimationClock()
 
@@ -329,6 +344,8 @@ final class MenuBarStatusModel: ObservableObject {
     private static let defaultMacOSHorizontalUsesTrafficLightSize = true
     private static let defaultTrafficLightVerticalUsesMacOSSize = false
     private static let effectDefaultsVersion = 2
+    private static let floatingSignalScaleDefaultsVersion = 3
+    private static let preferenceDefaultsVersion = 1
     private static let statePollInterval: TimeInterval = 0.75
     private static let animationTickInterval: TimeInterval = 0.25
     private static let agentPollInterval: TimeInterval = 0.5
@@ -376,14 +393,45 @@ final class MenuBarStatusModel: ObservableObject {
         let storedSignalLightAgentScopes = UserDefaults.standard.stringArray(forKey: "signalLightAgentScopes")
         let storedSignalLightAgentSelectionMode = UserDefaults.standard.string(forKey: "signalLightAgentSelectionMode")
         let storedStatusMenuMode = UserDefaults.standard.string(forKey: "statusMenuMode")
+        let storedFloatingSignalScale = UserDefaults.standard.string(forKey: "floatingSignalScale")
+        let storedFloatingSignalVisualScale =
+            UserDefaults.standard.object(forKey: "floatingSignalVisualScale") as? Double
+        let storedFloatingSignalLayout = UserDefaults.standard.string(forKey: "floatingSignalLayout")
+        let storedFloatingSignalScaleDefaultsVersion =
+            UserDefaults.standard.integer(forKey: "floatingSignalScaleDefaultsVersion")
+        let storedFloatingSignalSoundLevel = UserDefaults.standard.string(forKey: "floatingSignalSoundLevel")
+        let storedFloatingSignalCompletionSound =
+            UserDefaults.standard.string(forKey: "floatingSignalCompletionSound")
+        let storedFloatingSignalWaitingSound =
+            UserDefaults.standard.string(forKey: "floatingSignalWaitingSound")
+        let storedFloatingSignalAlertSound =
+            UserDefaults.standard.string(forKey: "floatingSignalAlertSound")
+        let storedFloatingSignalSoundEnabled =
+            UserDefaults.standard.object(forKey: "isFloatingSignalSoundEnabled") as? Bool
+        let storedFloatingSignalCompletionSoundEnabled =
+            UserDefaults.standard.object(forKey: "isFloatingSignalCompletionSoundEnabled") as? Bool
+        let storedFloatingSignalWaitingSoundEnabled =
+            UserDefaults.standard.object(forKey: "isFloatingSignalWaitingSoundEnabled") as? Bool
+        let storedFloatingSignalAlertSoundEnabled =
+            UserDefaults.standard.object(forKey: "isFloatingSignalAlertSoundEnabled") as? Bool
         let storedAutomaticUpdateCheckEnabled =
             UserDefaults.standard.object(forKey: "isAutomaticUpdateCheckEnabled") as? Bool
         let storedLastAutomaticUpdateCheckAt =
             UserDefaults.standard.object(forKey: "lastAutomaticUpdateCheckAt") as? Date
+        let shouldApplyPreferenceDefaults =
+            UserDefaults.standard.integer(forKey: "settingsPreferenceDefaultsVersion")
+                < Self.preferenceDefaultsVersion
         let shouldApplyEffectDefaults = UserDefaults.standard.integer(forKey: "signalEffectDefaultsVersion") < Self.effectDefaultsVersion
-        displayLayout = storedLayout.flatMap(TrafficSignalLayout.init(rawValue:)) ?? Self.defaultDisplayLayout
+        let resolvedDisplayLayout =
+            storedLayout.flatMap(TrafficSignalLayout.init(rawValue:)) ?? Self.defaultDisplayLayout
+        displayLayout = resolvedDisplayLayout
         statusBarStyle = storedStyle.flatMap(TrafficSignalStyle.init(rawValue:)) ?? Self.defaultStatusBarStyle
-        macOSBreathingStrength = storedMacOSStrength.flatMap(MacOSBreathingStrength.init(rawValue:)) ?? .maximum
+        let storedMacOSBreathingStrength = storedMacOSStrength.flatMap(MacOSBreathingStrength.init(rawValue:))
+        let resolvedMacOSBreathingStrength = storedMacOSBreathingStrength ?? .pronounced
+        macOSBreathingStrength = resolvedMacOSBreathingStrength
+        if storedMacOSBreathingStrength == nil {
+            UserDefaults.standard.set(resolvedMacOSBreathingStrength.rawValue, forKey: "macOSBreathingStrength")
+        }
         let resolvedThinkingSignalEffect: ActiveSignalEffect = shouldApplyEffectDefaults
             ? .greenFastFlash
             : storedThinkingSignalEffect.flatMap(ActiveSignalEffect.init(rawValue:)) ?? .greenFastFlash
@@ -409,6 +457,64 @@ final class MenuBarStatusModel: ObservableObject {
         isSettingsGlassEnabled = storedSettingsGlassEnabled ?? true
         settingsGlassEffect =
             SettingsGlassEffect.preferenceValue(for: storedSettingsGlassEffect) ?? .reduced
+        isFloatingSignalEnabled =
+            UserDefaults.standard.object(forKey: "isFloatingSignalEnabled") as? Bool ?? true
+        let resolvedFloatingSignalScale = Self.resolvedFloatingSignalScale(
+            storedRawValue: storedFloatingSignalScale,
+            storedDefaultsVersion: storedFloatingSignalScaleDefaultsVersion
+        )
+        floatingSignalScale = resolvedFloatingSignalScale
+        let resolvedFloatingSignalVisualScale = FloatingSignalScale.clampedVisualScale(
+            CGFloat(storedFloatingSignalVisualScale ?? Double(resolvedFloatingSignalScale.visualScale))
+        )
+        floatingSignalVisualScale = resolvedFloatingSignalVisualScale
+        if storedFloatingSignalVisualScale == nil {
+            UserDefaults.standard.set(Double(resolvedFloatingSignalVisualScale), forKey: "floatingSignalVisualScale")
+        }
+        if storedFloatingSignalScaleDefaultsVersion < Self.floatingSignalScaleDefaultsVersion {
+            UserDefaults.standard.set(resolvedFloatingSignalScale.rawValue, forKey: "floatingSignalScale")
+            UserDefaults.standard.set(
+                Self.floatingSignalScaleDefaultsVersion,
+                forKey: "floatingSignalScaleDefaultsVersion"
+            )
+        }
+        let storedFloatingSignalLayoutValue = storedFloatingSignalLayout.flatMap(TrafficSignalLayout.init(rawValue:))
+        let resolvedFloatingSignalLayout: TrafficSignalLayout
+        if shouldApplyPreferenceDefaults,
+           storedFloatingSignalLayoutValue == nil || storedFloatingSignalLayoutValue == .horizontal {
+            resolvedFloatingSignalLayout = .vertical
+        } else {
+            resolvedFloatingSignalLayout = storedFloatingSignalLayoutValue ?? .vertical
+        }
+        floatingSignalLayout = resolvedFloatingSignalLayout
+        if storedFloatingSignalLayoutValue != resolvedFloatingSignalLayout {
+            UserDefaults.standard.set(resolvedFloatingSignalLayout.rawValue, forKey: "floatingSignalLayout")
+        }
+        let resolvedFloatingSignalSoundEnabled = storedFloatingSignalSoundEnabled ?? true
+        isFloatingSignalSoundEnabled = resolvedFloatingSignalSoundEnabled
+        let resolvedFloatingSignalCompletionSound =
+            storedFloatingSignalCompletionSound.flatMap(FloatingSignalCompletionSound.init(rawValue:))
+            ?? ((storedFloatingSignalCompletionSoundEnabled ?? resolvedFloatingSignalSoundEnabled)
+                ? .newZealandCrossing
+                : .off)
+        floatingSignalCompletionSound = resolvedFloatingSignalCompletionSound
+        isFloatingSignalCompletionSoundEnabled = resolvedFloatingSignalCompletionSound.isEnabled
+        let resolvedFloatingSignalWaitingSound =
+            storedFloatingSignalWaitingSound.flatMap(FloatingSignalWaitingSound.init(rawValue:))
+            ?? ((storedFloatingSignalWaitingSoundEnabled ?? resolvedFloatingSignalSoundEnabled)
+                ? .newZealandCrossing
+                : .off)
+        floatingSignalWaitingSound = resolvedFloatingSignalWaitingSound
+        isFloatingSignalWaitingSoundEnabled = resolvedFloatingSignalWaitingSound.isEnabled
+        let resolvedFloatingSignalAlertSound =
+            storedFloatingSignalAlertSound.flatMap(FloatingSignalAlertSound.init(rawValue:))
+            ?? ((storedFloatingSignalAlertSoundEnabled ?? resolvedFloatingSignalSoundEnabled)
+                ? .defaultPulse
+                : .off)
+        floatingSignalAlertSound = resolvedFloatingSignalAlertSound
+        isFloatingSignalAlertSoundEnabled = resolvedFloatingSignalAlertSound.isEnabled
+        floatingSignalSoundLevel =
+            storedFloatingSignalSoundLevel.flatMap(FloatingSignalSoundLevel.init(rawValue:)) ?? .standard
         macOSHorizontalUsesTrafficLightSize =
             UserDefaults.standard.object(forKey: "macOSHorizontalUsesTrafficLightSize") as? Bool
             ?? UserDefaults.standard.object(forKey: "macOSUsesTrafficLightSize") as? Bool
@@ -428,16 +534,29 @@ final class MenuBarStatusModel: ObservableObject {
             storedScopes: storedSignalLightAgentScopes,
             legacyScope: storedSignalLightAgentScope
         )
-        statusMenuMode = storedStatusMenuMode.flatMap(StatusMenuMode.init(rawValue:)) ?? .detailed
+        let storedStatusMenuModeValue = storedStatusMenuMode.flatMap(StatusMenuMode.init(rawValue:))
+        let resolvedStatusMenuMode = storedStatusMenuModeValue ?? .simple
+        statusMenuMode = resolvedStatusMenuMode
+        if storedStatusMenuModeValue == nil {
+            UserDefaults.standard.set(resolvedStatusMenuMode.rawValue, forKey: "statusMenuMode")
+        }
         isCodexDesktopMonitoringEnabled =
             UserDefaults.standard.object(forKey: "isCodexDesktopMonitoringEnabled") as? Bool ?? true
         isClaudeDesktopMonitoringEnabled =
             UserDefaults.standard.object(forKey: "isClaudeDesktopMonitoringEnabled") as? Bool ?? true
-        isAutomaticUpdateCheckEnabled = storedAutomaticUpdateCheckEnabled ?? false
+        let resolvedAutomaticUpdateCheckEnabled = storedAutomaticUpdateCheckEnabled ?? true
+        isAutomaticUpdateCheckEnabled = resolvedAutomaticUpdateCheckEnabled
+        if storedAutomaticUpdateCheckEnabled == nil {
+            UserDefaults.standard.set(resolvedAutomaticUpdateCheckEnabled, forKey: "isAutomaticUpdateCheckEnabled")
+        }
         lastAutomaticUpdateCheckAt = storedLastAutomaticUpdateCheckAt
         lastNotifiedUpdateVersion = UserDefaults.standard.string(forKey: "lastNotifiedUpdateVersion")
         snapshot = store.readSnapshot()
         isLaunchAtLoginEnabled = launchAtLoginManager.isEnabled
+        if shouldApplyPreferenceDefaults {
+            enableLaunchAtLoginByDefaultIfNeeded()
+            UserDefaults.standard.set(Self.preferenceDefaultsVersion, forKey: "settingsPreferenceDefaultsVersion")
+        }
         desktopAppSessions = filteredPlatformPresenceSessions(codexPlatformPresenceMonitor.detectSessions())
         watcher = StateFileWatcher(stateFileURL: snapshot.stateFileURL) { [weak self] in
             self?.reloadFromWatcher()
@@ -598,6 +717,114 @@ final class MenuBarStatusModel: ObservableObject {
     func setStatusBarIconEnabled(_ enabled: Bool) {
         isStatusBarIconEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isStatusBarIconEnabled")
+    }
+
+    func setFloatingSignalEnabled(_ enabled: Bool) {
+        isFloatingSignalEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isFloatingSignalEnabled")
+    }
+
+    func setFloatingSignalScale(_ scale: FloatingSignalScale) {
+        floatingSignalScale = scale
+        UserDefaults.standard.set(scale.rawValue, forKey: "floatingSignalScale")
+        setFloatingSignalVisualScale(scale.visualScale, persist: true)
+        UserDefaults.standard.set(
+            Self.floatingSignalScaleDefaultsVersion,
+            forKey: "floatingSignalScaleDefaultsVersion"
+        )
+    }
+
+    func setFloatingSignalVisualScale(_ visualScale: CGFloat, persist: Bool) {
+        let clampedScale = FloatingSignalScale.clampedVisualScale(visualScale)
+        guard abs(floatingSignalVisualScale - clampedScale) > 0.001 || persist else { return }
+
+        floatingSignalVisualScale = clampedScale
+        if persist {
+            UserDefaults.standard.set(Double(clampedScale), forKey: "floatingSignalVisualScale")
+        }
+    }
+
+    func setFloatingSignalLayout(_ layout: TrafficSignalLayout) {
+        floatingSignalLayout = layout
+        UserDefaults.standard.set(layout.rawValue, forKey: "floatingSignalLayout")
+    }
+
+    func makeFloatingSignalSmaller() {
+        setFloatingSignalVisualScale(floatingSignalVisualScale - 0.18, persist: true)
+    }
+
+    func makeFloatingSignalLarger() {
+        setFloatingSignalVisualScale(floatingSignalVisualScale + 0.18, persist: true)
+    }
+
+    func setFloatingSignalSoundEnabled(_ enabled: Bool) {
+        isFloatingSignalSoundEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isFloatingSignalSoundEnabled")
+    }
+
+    func setFloatingSignalCompletionSoundEnabled(_ enabled: Bool) {
+        setFloatingSignalCompletionSound(enabled ? .newZealandCrossing : .off)
+    }
+
+    func setFloatingSignalWaitingSoundEnabled(_ enabled: Bool) {
+        setFloatingSignalWaitingSound(enabled ? .newZealandCrossing : .off)
+    }
+
+    func setFloatingSignalAlertSoundEnabled(_ enabled: Bool) {
+        setFloatingSignalAlertSound(enabled ? .defaultPulse : .off)
+    }
+
+    func setFloatingSignalCompletionSound(_ sound: FloatingSignalCompletionSound) {
+        floatingSignalCompletionSound = sound
+        isFloatingSignalCompletionSoundEnabled = sound.isEnabled
+        UserDefaults.standard.set(sound.rawValue, forKey: "floatingSignalCompletionSound")
+        UserDefaults.standard.set(sound.isEnabled, forKey: "isFloatingSignalCompletionSoundEnabled")
+    }
+
+    func setFloatingSignalWaitingSound(_ sound: FloatingSignalWaitingSound) {
+        floatingSignalWaitingSound = sound
+        isFloatingSignalWaitingSoundEnabled = sound.isEnabled
+        UserDefaults.standard.set(sound.rawValue, forKey: "floatingSignalWaitingSound")
+        UserDefaults.standard.set(sound.isEnabled, forKey: "isFloatingSignalWaitingSoundEnabled")
+    }
+
+    func setFloatingSignalAlertSound(_ sound: FloatingSignalAlertSound) {
+        floatingSignalAlertSound = sound
+        isFloatingSignalAlertSoundEnabled = sound.isEnabled
+        UserDefaults.standard.set(sound.rawValue, forKey: "floatingSignalAlertSound")
+        UserDefaults.standard.set(sound.isEnabled, forKey: "isFloatingSignalAlertSoundEnabled")
+    }
+
+    func setFloatingSignalSoundLevel(_ level: FloatingSignalSoundLevel) {
+        floatingSignalSoundLevel = level
+        UserDefaults.standard.set(level.rawValue, forKey: "floatingSignalSoundLevel")
+    }
+
+    func previewFloatingSignalSound() {
+        floatingSignalSoundTestTick &+= 1
+    }
+
+    func previewFloatingSignalWaitingSound() {
+        floatingSignalWaitingSoundTestTick &+= 1
+    }
+
+    func previewFloatingSignalAlertSound() {
+        floatingSignalAlertSoundTestTick &+= 1
+    }
+
+    func savedFloatingSignalOrigin() -> NSPoint? {
+        guard let x = UserDefaults.standard.object(forKey: "floatingSignalOriginX") as? Double,
+              let y = UserDefaults.standard.object(forKey: "floatingSignalOriginY") as? Double
+        else {
+            return nil
+        }
+
+        return NSPoint(x: x, y: y)
+    }
+
+    func setFloatingSignalOrigin(_ origin: NSPoint) {
+        UserDefaults.standard.set(Double(origin.x), forKey: "floatingSignalOriginX")
+        UserDefaults.standard.set(Double(origin.y), forKey: "floatingSignalOriginY")
     }
 
     func setSignalLightAgentScopes(_ scopes: Set<SignalLightAgentScope>) {
@@ -766,6 +993,11 @@ final class MenuBarStatusModel: ObservableObject {
             stateFileURL: snapshot.stateFileURL,
             updatedAt: displayUpdatedAt ?? snapshot.updatedAt
         )
+    }
+
+    private func enableLaunchAtLoginByDefaultIfNeeded() {
+        guard !isLaunchAtLoginEnabled else { return }
+        setLaunchAtLoginEnabled(true)
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
@@ -1822,6 +2054,25 @@ final class MenuBarStatusModel: ObservableObject {
             "已选 Agent 尚未运行。其他 Agent 正在运行，可在灯效 Agent 中切换。",
             "The selected agent is not running. Other agents are running; switch in Light Agent if needed."
         )
+    }
+
+    private static func resolvedFloatingSignalScale(
+        storedRawValue: String?,
+        storedDefaultsVersion: Int
+    ) -> FloatingSignalScale {
+        let storedScale = storedRawValue.flatMap(FloatingSignalScale.init(rawValue:))
+        guard storedDefaultsVersion >= floatingSignalScaleDefaultsVersion else {
+            switch storedScale {
+            case .compact?:
+                return .standard
+            case .standard?, .large?:
+                return .large
+            case nil:
+                return .standard
+            }
+        }
+
+        return storedScale ?? .standard
     }
 
     private static func resolvedSignalLightAgentScopes(

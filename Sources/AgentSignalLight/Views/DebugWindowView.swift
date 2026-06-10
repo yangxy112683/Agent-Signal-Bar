@@ -243,6 +243,9 @@ struct DebugWindowView: View {
         case thinkingEffect
         case workingEffect
         case doneEffect
+        case completionSound
+        case waitingSound
+        case alertSound
     }
 
     private struct SignalLightAgentDropdownSection: Identifiable {
@@ -374,28 +377,33 @@ struct DebugWindowView: View {
                         .disabled(model.isLaunchAtLoginChangeRunning)
                         .help(model.text("登录 macOS 后自动打开 Agent Signal Bar", "Open Agent Signal Bar automatically after macOS login"))
                 }
-
-                settingRow(model.text("暂停监控", "Pause Monitoring")) {
-                    settingsSwitch(monitoringPausedBinding)
-                        .help(model.text(
-                            "暂停后状态栏灯会熄灭，Agent 事件暂不刷新。",
-                            "When paused, the status bar light turns off and agent events stop refreshing."
-                        ))
-                }
             }
             .zIndex(isGeneralDropdownExpanded ? 10 : 1)
 
             Divider()
                 .zIndex(0)
 
-            statusBarSettings
+            signalVisibilitySettings
+
+            Divider()
                 .zIndex(0)
+
+            monitoringPauseSetting
         }
     }
 
     private var isGeneralDropdownExpanded: Bool {
         switch expandedSettingsDropdown {
         case .language, .theme:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var isFloatingSignalDropdownExpanded: Bool {
+        switch expandedSettingsDropdown {
+        case .completionSound, .waitingSound, .alertSound:
             return true
         default:
             return false
@@ -436,6 +444,66 @@ struct DebugWindowView: View {
                         width: settingsPickerWidth
                     ) {
                         model.setAppTheme(theme)
+                    }
+                }
+            }
+        }
+    }
+
+    private var completionSoundMenu: some View {
+        inlineDropdown(
+            id: .completionSound,
+            title: model.displayName(for: model.floatingSignalCompletionSound),
+            width: settingsPickerWidth
+        ) {
+            dropdownOptions(width: settingsPickerWidth) {
+                ForEach(FloatingSignalCompletionSound.allCases, id: \.self) { sound in
+                    dropdownOption(
+                        model.displayName(for: sound),
+                        isSelected: model.floatingSignalCompletionSound == sound,
+                        width: settingsPickerWidth
+                    ) {
+                        model.setFloatingSignalCompletionSound(sound)
+                    }
+                }
+            }
+        }
+    }
+
+    private var waitingSoundMenu: some View {
+        inlineDropdown(
+            id: .waitingSound,
+            title: model.displayName(for: model.floatingSignalWaitingSound),
+            width: settingsPickerWidth
+        ) {
+            dropdownOptions(width: settingsPickerWidth) {
+                ForEach(FloatingSignalWaitingSound.allCases, id: \.self) { sound in
+                    dropdownOption(
+                        model.displayName(for: sound),
+                        isSelected: model.floatingSignalWaitingSound == sound,
+                        width: settingsPickerWidth
+                    ) {
+                        model.setFloatingSignalWaitingSound(sound)
+                    }
+                }
+            }
+        }
+    }
+
+    private var alertSoundMenu: some View {
+        inlineDropdown(
+            id: .alertSound,
+            title: model.displayName(for: model.floatingSignalAlertSound),
+            width: settingsPickerWidth
+        ) {
+            dropdownOptions(width: settingsPickerWidth) {
+                ForEach(FloatingSignalAlertSound.allCases, id: \.self) { sound in
+                    dropdownOption(
+                        model.displayName(for: sound),
+                        isSelected: model.floatingSignalAlertSound == sound,
+                        width: settingsPickerWidth
+                    ) {
+                        model.setFloatingSignalAlertSound(sound)
                     }
                 }
             }
@@ -598,6 +666,16 @@ struct DebugWindowView: View {
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private var monitoringPauseSetting: some View {
+        settingRow(model.text("暂停监控", "Pause Monitoring")) {
+            settingsSwitch(monitoringPausedBinding)
+                .help(model.text(
+                    "暂停后状态栏灯会熄灭，Agent 事件暂不刷新。",
+                    "When paused, the status bar light turns off and agent events stop refreshing."
+                ))
+        }
+    }
+
     private var activitySummaryCard: some View {
         let lightSnapshot = model.lightSnapshot
         let selectedSignal = lightSnapshot.aggregate
@@ -714,11 +792,28 @@ struct DebugWindowView: View {
         )
     }
 
-    private var statusBarSettings: some View {
-        settingsSection(model.text("状态栏", "Status Bar")) {
+    private var signalVisibilitySettings: some View {
+        settingsSection(model.text("信号灯", "Signals")) {
             settingRow(model.text("显示状态栏信号", "Show status bar signal")) {
                 settingsSwitch(statusBarEnabledBinding)
             }
+
+            settingRow(model.text("显示悬浮信号灯", "Show floating signal")) {
+                settingsSwitch(floatingSignalEnabledBinding)
+                    .help(model.text("在桌面上显示可拖动、可缩放的悬浮信号灯", "Show the draggable, resizable floating signal on the desktop"))
+            }
+        }
+    }
+
+    private var statusBarSettings: some View {
+        settingsSection(model.text("状态栏", "Status Bar")) {
+            Text(model.text(
+                "按住 ⌘ 并拖动状态栏信号灯，可以调整它在状态栏中的位置。",
+                "Hold Command and drag the status bar signal to move its position."
+            ))
+            .font(settingsDetailFont)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
 
             settingRow(model.text("状态栏菜单", "Status bar menu")) {
                 compactSegmentedControl(
@@ -729,30 +824,6 @@ struct DebugWindowView: View {
                 }
             }
 
-            Text(model.text(
-                "按住 ⌘ 并拖动状态栏信号灯，可以调整它在状态栏中的位置。",
-                "Hold Command and drag the status bar signal to move its position."
-            ))
-            .font(settingsBodyFont)
-            .foregroundStyle(.secondary)
-        }
-    }
-
-    private var advancedSettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(model.text("高级设置", "Advanced Settings"))
-                .font(settingsSectionTitleFont)
-
-            appearanceSettings
-
-            Divider()
-
-            manualSignalSettings
-        }
-    }
-
-    private var appearanceSettings: some View {
-        settingsSection(model.text("样式", "Style")) {
             settingRow(model.text("状态栏风格", "Status bar style")) {
                 compactSegmentedControl(
                     options: statusBarStyleOptions,
@@ -762,7 +833,7 @@ struct DebugWindowView: View {
                 }
             }
 
-            settingRow(model.text("方向", "Direction")) {
+            settingRow(model.text("状态栏方向", "Status bar direction")) {
                 compactSegmentedControl(
                     options: TrafficSignalLayout.allCases,
                     selection: displayLayoutBinding
@@ -798,6 +869,102 @@ struct DebugWindowView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var floatingSignalSettings: some View {
+        settingsSection(model.text("悬浮灯", "Floating Signal")) {
+            settingRow(model.text("悬浮灯方向", "Floating signal direction")) {
+                compactSegmentedControl(
+                    options: TrafficSignalLayout.allCases,
+                    selection: floatingSignalLayoutBinding
+                ) { layout in
+                    model.displayName(for: layout)
+                }
+            }
+
+            settingRow(model.text("悬浮灯大小", "Floating signal size")) {
+                Button {
+                    model.setFloatingSignalScale(.standard)
+                } label: {
+                    settingsActionSurface(
+                        model.text("恢复默认大小", "Restore Default Size"),
+                        systemImage: "arrow.counterclockwise"
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(abs(model.floatingSignalVisualScale - FloatingSignalScale.defaultVisualScale) < 0.01)
+                .help(model.text(
+                    "恢复为中号（默认）的悬浮灯大小。",
+                    "Restore the medium (default) floating signal size."
+                ))
+            }
+
+            settingRow(model.text("声音提醒", "Sound alert")) {
+                settingsSwitch(floatingSignalSoundEnabledBinding)
+            }
+
+            if model.isFloatingSignalSoundEnabled {
+                settingRow(model.text("完成提示音", "Completion sound")) {
+                    completionSoundMenu
+                }
+                .zIndex(expandedSettingsDropdown == .completionSound ? 1000 : 0)
+
+                settingControlRow {
+                    soundPreviewButton(disabled: !model.isFloatingSignalCompletionSoundEnabled) {
+                        model.previewFloatingSignalSound()
+                    }
+                }
+
+                settingRow(model.text("绿灯闪烁音", "Green flash sound")) {
+                    waitingSoundMenu
+                }
+                .zIndex(expandedSettingsDropdown == .waitingSound ? 1000 : 0)
+
+                settingControlRow {
+                    soundPreviewButton(disabled: !model.isFloatingSignalWaitingSoundEnabled) {
+                        model.previewFloatingSignalWaitingSound()
+                    }
+                }
+
+                settingRow(model.text("告警提示音", "Alert sound")) {
+                    alertSoundMenu
+                }
+                .zIndex(expandedSettingsDropdown == .alertSound ? 1000 : 0)
+
+                settingControlRow {
+                    soundPreviewButton(disabled: !model.isFloatingSignalAlertSoundEnabled) {
+                        model.previewFloatingSignalAlertSound()
+                    }
+                }
+
+                settingRow(model.text("提醒音量", "Alert volume")) {
+                    compactSegmentedControl(
+                        options: FloatingSignalSoundLevel.allCases,
+                        selection: floatingSignalSoundLevelBinding
+                    ) { level in
+                        model.displayName(for: level)
+                    }
+                }
+            }
+        }
+    }
+
+    private var advancedSettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(model.text("高级设置", "Advanced Settings"))
+                .font(settingsSectionTitleFont)
+
+            statusBarSettings
+
+            Divider()
+
+            floatingSignalSettings
+                .zIndex(isFloatingSignalDropdownExpanded ? 10 : 0)
+
+            Divider()
+
+            manualSignalSettings
         }
     }
 
@@ -1152,6 +1319,13 @@ struct DebugWindowView: View {
         }
     }
 
+    private func settingControlRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top) {
+            Spacer()
+            content()
+        }
+    }
+
     private func settingsSwitch(_ isOn: Binding<Bool>) -> some View {
         Toggle("", isOn: isOn)
             .toggleStyle(.switch)
@@ -1446,9 +1620,22 @@ struct DebugWindowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
+    private func soundPreviewButton(disabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            settingsActionSurface(
+                model.text("试听", "Preview"),
+                systemImage: "speaker.wave.2.fill",
+                width: soundPreviewButtonWidth
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
     private func compactSegmentedControl<Option: Hashable>(
         options: [Option],
         selection: Binding<Option>,
+        width: CGFloat? = nil,
         title: @escaping (Option) -> String
     ) -> some View {
         HStack(spacing: 0) {
@@ -1476,7 +1663,7 @@ struct DebugWindowView: View {
             }
         }
         .padding(2)
-        .frame(width: effectSegmentWidth, height: dropdownControlHeight)
+        .frame(width: width ?? effectSegmentWidth, height: dropdownControlHeight)
         .background(
             glassControlBackground(cornerRadius: 7)
         )
@@ -1619,6 +1806,10 @@ struct DebugWindowView: View {
 
     private var settingsActionButtonWidth: CGFloat {
         settingsControlWidth
+    }
+
+    private var soundPreviewButtonWidth: CGFloat {
+        settingsControlWidth / 2
     }
 
     private var diagnosticActionButtonWidth: CGFloat {
@@ -1973,6 +2164,34 @@ struct DebugWindowView: View {
         Binding(
             get: { model.statusMenuMode },
             set: { model.setStatusMenuMode($0) }
+        )
+    }
+
+    private var floatingSignalEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isFloatingSignalEnabled },
+            set: { model.setFloatingSignalEnabled($0) }
+        )
+    }
+
+    private var floatingSignalLayoutBinding: Binding<TrafficSignalLayout> {
+        Binding(
+            get: { model.floatingSignalLayout },
+            set: { model.setFloatingSignalLayout($0) }
+        )
+    }
+
+    private var floatingSignalSoundEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isFloatingSignalSoundEnabled },
+            set: { model.setFloatingSignalSoundEnabled($0) }
+        )
+    }
+
+    private var floatingSignalSoundLevelBinding: Binding<FloatingSignalSoundLevel> {
+        Binding(
+            get: { model.floatingSignalSoundLevel },
+            set: { model.setFloatingSignalSoundLevel($0) }
         )
     }
 

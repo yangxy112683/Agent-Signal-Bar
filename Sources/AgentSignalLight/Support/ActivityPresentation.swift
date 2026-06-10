@@ -53,6 +53,15 @@ enum ActivityPresentation {
         return sessions
     }
 
+    static func visibleRunningSessions(
+        from snapshot: SignalSnapshot,
+        now: Date = Date(),
+        limit: Int? = currentSessionLimit
+    ) -> [SessionStatus] {
+        visibleSessions(from: snapshot, now: now, limit: limit)
+            .filter(isRunningCurrentSession)
+    }
+
     static func recentEvents(
         from snapshot: SignalSnapshot,
         excluding currentSessions: [SessionStatus],
@@ -280,6 +289,15 @@ enum ActivityPresentation {
         case .active:
             return now.timeIntervalSince(session.updatedAt) <= activeSessionWindow(for: session)
         case .completed, .needsReview, .permission, .blocked, .stale:
+            return true
+        case .ready, .paused:
+            return false
+        }
+    }
+
+    private static func isRunningCurrentSession(_ session: SessionStatus) -> Bool {
+        switch session.signal.displayState {
+        case .active, .completed, .needsReview, .permission, .blocked, .stale:
             return true
         case .ready, .paused:
             return false

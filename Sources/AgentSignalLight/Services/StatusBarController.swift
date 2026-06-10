@@ -21,6 +21,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     private var popoverOpenedAt = Date.distantPast
     private var cancellables = Set<AnyCancellable>()
     private let settingsOpenClickDebounce: TimeInterval = 0.25
+    private lazy var floatingSignalController = FloatingSignalWindowController(model: model) { [weak self] in
+        self?.showDebugWindow()
+    }
 
     private struct StatusRenderKey: Equatable {
         let length: CGFloat
@@ -41,6 +44,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         self.model = model
         super.init()
         bind()
+        floatingSignalController.start()
         updateStatusItem()
     }
 
@@ -162,6 +166,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         recoveryWindow?.appearance = appearance
         popover?.contentViewController?.view.appearance = appearance
         popover?.contentViewController?.view.window?.appearance = appearance
+        floatingSignalController.applyAppearance()
     }
 
     private func updateStatusItem() {
@@ -331,6 +336,16 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             model.isMonitoringPaused ? model.text("继续监控", "Resume Monitoring") : model.text("暂停监控", "Pause Monitoring"),
             imageName: model.isMonitoringPaused ? "play.fill" : "pause.fill",
             action: #selector(toggleMonitoringFromMenu)
+        ))
+        menu.addItem(actionMenuItem(
+            model.isFloatingSignalEnabled ? model.text("隐藏悬浮灯", "Hide Floating Signal") : model.text("显示悬浮灯", "Show Floating Signal"),
+            imageName: model.isFloatingSignalEnabled ? "eye.slash" : "eye",
+            action: #selector(toggleFloatingSignalFromMenu)
+        ))
+        menu.addItem(actionMenuItem(
+            model.isFloatingSignalSoundEnabled ? model.text("关闭声音提醒", "Turn Sound Off") : model.text("开启声音提醒", "Turn Sound On"),
+            imageName: model.isFloatingSignalSoundEnabled ? "speaker.slash" : "speaker.wave.2",
+            action: #selector(toggleFloatingSignalSoundFromMenu)
         ))
         menu.addItem(.separator())
         menu.addItem(actionMenuItem(model.text("设置", "Settings"), imageName: "gearshape", action: #selector(openSettingsFromMenu)))
@@ -548,34 +563,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             return .systemGray
         }
 
-        let preferred = preferredNativeStatusLampColor(for: snapshot.aggregate)
-        let intensities = SignalLampColor.allCases.map { color in
-            (
-                color,
-                SignalLampAnimation.intensity(
-                    color,
-                    signal: snapshot.aggregate,
-                    tick: model.lightTick,
-                    allLightsOn: model.lightAllLightsOn,
-                    customization: model.lightEffectCustomization
-                )
-            )
-        }
-
-        let strongestIntensity = intensities.map(\.1).max() ?? 0
-        guard strongestIntensity > 0 else {
-            return .tertiaryLabelColor
-        }
-
-        let strongestColors = intensities
-            .filter { abs($0.1 - strongestIntensity) < 0.001 }
-            .map(\.0)
-
-        if strongestColors.contains(preferred) {
-            return nativeNSColor(for: preferred)
-        }
-
-        return nativeNSColor(for: strongestColors.first ?? preferred)
+        return nativeNSColor(for: preferredNativeStatusLampColor(for: snapshot.aggregate))
     }
 
     private func preferredNativeStatusLampColor(for signal: AgentSignal) -> SignalLampColor {
@@ -636,6 +624,14 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
 
     @objc private func toggleMonitoringFromMenu() {
         model.toggleMonitoring()
+    }
+
+    @objc private func toggleFloatingSignalFromMenu() {
+        model.setFloatingSignalEnabled(!model.isFloatingSignalEnabled)
+    }
+
+    @objc private func toggleFloatingSignalSoundFromMenu() {
+        model.setFloatingSignalSoundEnabled(!model.isFloatingSignalSoundEnabled)
     }
 
     @objc private func openSettingsFromMenu() {
