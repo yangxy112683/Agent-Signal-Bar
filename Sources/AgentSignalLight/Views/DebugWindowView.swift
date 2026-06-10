@@ -554,7 +554,9 @@ struct DebugWindowView: View {
         inlineDropdown(
             id: .doneEffect,
             title: model.displayName(for: model.completedSignalEffect),
-            width: effectMenuWidth
+            width: effectMenuWidth,
+            opensUpward: true,
+            optionsHeight: dropdownOptionsHeight(optionCount: CompletedSignalEffect.allCases.count)
         ) {
             dropdownOptions(width: effectMenuWidth) {
                 ForEach(CompletedSignalEffect.allCases, id: \.self) { effect in
@@ -1346,9 +1348,15 @@ struct DebugWindowView: View {
         title: String,
         systemImage: String? = nil,
         width: CGFloat,
+        opensUpward: Bool = false,
+        optionsHeight: CGFloat? = nil,
         @ViewBuilder options: () -> Options
     ) -> some View {
         let isExpanded = expandedSettingsDropdown == id
+        let expandedOffset = opensUpward
+            ? -((optionsHeight ?? dropdownControlHeight) + 4)
+            : dropdownControlHeight + 4
+        let transitionEdge: Edge = opensUpward ? .bottom : .top
 
         return Button {
             withAnimation(.easeInOut(duration: 0.12)) {
@@ -1359,6 +1367,7 @@ struct DebugWindowView: View {
                 title,
                 systemImage: systemImage,
                 isExpanded: isExpanded,
+                opensUpward: opensUpward,
                 width: width
             )
         }
@@ -1375,9 +1384,9 @@ struct DebugWindowView: View {
         .overlay(alignment: .topLeading) {
             if isExpanded {
                 options()
-                    .offset(y: dropdownControlHeight + 4)
+                    .offset(y: expandedOffset)
                     .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(.opacity.combined(with: .move(edge: transitionEdge)))
                     .zIndex(1)
             }
         }
@@ -1388,13 +1397,26 @@ struct DebugWindowView: View {
         28
     }
 
+    private func dropdownOptionsHeight(optionCount: Int) -> CGFloat {
+        CGFloat(optionCount) * dropdownOptionHeight + 6
+    }
+
+    private var dropdownOptionHeight: CGFloat {
+        28
+    }
+
     private func dropdownSurface(
         _ title: String,
         systemImage: String? = nil,
         isExpanded: Bool,
+        opensUpward: Bool = false,
         width: CGFloat
     ) -> some View {
-        HStack(spacing: 7) {
+        let chevronName = opensUpward
+            ? (isExpanded ? "chevron.down" : "chevron.up")
+            : (isExpanded ? "chevron.up" : "chevron.down")
+
+        return HStack(spacing: 7) {
             if let systemImage {
                 Image(systemName: systemImage)
                     .font(settingsIconFont)
@@ -1408,7 +1430,7 @@ struct DebugWindowView: View {
 
             Spacer(minLength: 6)
 
-            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+            Image(systemName: chevronName)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 10)
@@ -1482,7 +1504,7 @@ struct DebugWindowView: View {
             .font(settingsControlFont)
             .foregroundStyle(isSelected ? Color.white : Color.primary)
             .padding(.horizontal, 9)
-            .frame(width: width, height: 28)
+            .frame(width: width, height: dropdownOptionHeight)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(isSelected ? Color.accentColor : Color.clear)
