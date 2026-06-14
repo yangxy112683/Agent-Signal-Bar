@@ -376,7 +376,7 @@ struct DebugWindowView: View {
                     settingsSwitch(newZealandTrafficLightModeBinding)
                         .help(model.text(
                             "按新西兰行人红绿灯节奏慢闪，并将完成音和闪烁音切换为新西兰。",
-                            "Use the New Zealand original cadence and switch completion and blink sounds to New Zealand."
+                            "Use the original New Zealand pedestrian crossing cadence and switch completion and blink sounds to New Zealand."
                         ))
                 }
             }
@@ -688,7 +688,7 @@ struct DebugWindowView: View {
                     .help(model.text("登录 macOS 后自动打开 Agent Signal Bar", "Open Agent Signal Bar automatically after macOS login"))
             }
 
-            settingRow(model.text("低功耗模式", "Low Power Mode")) {
+            settingRow(model.text("低功耗模式", "Low power mode")) {
                 settingsSwitch(lowPowerModeBinding)
                     .help(model.text(
                         "降低后台轮询和动画刷新频率，适合长时间常驻。",
