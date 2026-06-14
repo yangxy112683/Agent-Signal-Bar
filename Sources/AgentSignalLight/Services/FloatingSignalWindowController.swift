@@ -1581,10 +1581,83 @@ private enum FloatingSignalSoundAsset {
     case defaultPulse
 }
 
+struct FloatingSignalSoundResourceResolver {
+    static let supportedExtensions = ["m4a", "wav"]
+
+    private let candidateDirectories: [URL]
+    private let fileManager: FileManager
+
+    init(
+        candidateDirectories: [URL] = Self.defaultCandidateDirectories(),
+        fileManager: FileManager = .default
+    ) {
+        self.candidateDirectories = Self.uniqueExistingDirectories(candidateDirectories, fileManager: fileManager)
+        self.fileManager = fileManager
+    }
+
+    func url(named name: String) -> URL? {
+        for ext in Self.supportedExtensions {
+            let fileName = "\(name).\(ext)"
+            for directory in candidateDirectories {
+                let url = directory.appendingPathComponent(fileName)
+                if fileManager.isReadableFile(atPath: url.path) {
+                    return url
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func defaultCandidateDirectories(
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        var directories: [URL] = []
+
+        append(bundle.resourceURL, to: &directories)
+        append(bundle.bundleURL.appendingPathComponent("Contents").appendingPathComponent("Resources"), to: &directories)
+
+        if let executableDirectory = bundle.executableURL?.deletingLastPathComponent() {
+            append(executableDirectory, to: &directories)
+            append(executableDirectory.deletingLastPathComponent().appendingPathComponent("Resources"), to: &directories)
+            appendResourceBundle(named: "AgentSignalLight_AgentSignalLight", parent: executableDirectory, to: &directories)
+        }
+
+        appendResourceBundle(named: "AgentSignalLight_AgentSignalLight", parent: bundle.bundleURL, to: &directories)
+        if let resourceURL = bundle.resourceURL {
+            appendResourceBundle(named: "AgentSignalLight_AgentSignalLight", parent: resourceURL, to: &directories)
+        }
+
+        return uniqueExistingDirectories(directories, fileManager: fileManager)
+    }
+
+    private static func appendResourceBundle(named name: String, parent: URL, to directories: inout [URL]) {
+        let bundleURL = parent.appendingPathComponent("\(name).bundle")
+        append(Bundle(url: bundleURL)?.resourceURL ?? bundleURL, to: &directories)
+    }
+
+    private static func append(_ url: URL?, to directories: inout [URL]) {
+        guard let url else { return }
+        directories.append(url.standardizedFileURL)
+    }
+
+    private static func uniqueExistingDirectories(_ directories: [URL], fileManager: FileManager) -> [URL] {
+        var seen = Set<String>()
+        return directories.filter { url in
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return false
+            }
+            return seen.insert(url.standardizedFileURL.path).inserted
+        }
+    }
+}
+
 @MainActor
 private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
     private var players: [UUID: AVAudioPlayer] = [:]
     private var previewToken: UUID?
+    private let resourceResolver = FloatingSignalSoundResourceResolver()
     private static let wavData = makeCrossingPulseWAV()
 
     func play(asset: FloatingSignalSoundAsset, level: FloatingSignalSoundLevel) {
@@ -1683,23 +1756,13 @@ private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
     private func makePlayer(asset: FloatingSignalSoundAsset) throws -> AVAudioPlayer {
         switch asset {
         case .resource(let resourceName):
-            if let url = soundURL(named: resourceName) {
+            if let url = resourceResolver.url(named: resourceName) {
                 return try AVAudioPlayer(contentsOf: url)
             }
             return try AVAudioPlayer(data: Self.wavData)
         case .defaultPulse:
             return try AVAudioPlayer(data: Self.wavData)
         }
-    }
-
-    private func soundURL(named name: String) -> URL? {
-        for ext in ["m4a", "wav"] {
-            if let url = Bundle.main.url(forResource: name, withExtension: ext)
-                ?? Bundle.module.url(forResource: name, withExtension: ext) {
-                return url
-            }
-        }
-        return nil
     }
 
     private static func makeCrossingPulseWAV() -> Data {

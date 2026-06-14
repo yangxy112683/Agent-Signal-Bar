@@ -2540,6 +2540,36 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(model.runtimeTimingProfile, .standard)
     }
 
+    func testFloatingSignalSoundResolverFindsWAVWhenM4AIsMissing() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("agent-signal-light-sound-resources-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let wavURL = directory.appendingPathComponent("completion-ai-glow.wav")
+        try Data([0x52, 0x49, 0x46, 0x46]).write(to: wavURL)
+
+        let resolver = FloatingSignalSoundResourceResolver(candidateDirectories: [directory])
+
+        XCTAssertEqual(resolver.url(named: "completion-ai-glow"), wavURL)
+    }
+
+    func testFloatingSignalSoundResolverPrefersM4AWhenBothFormatsExist() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("agent-signal-light-sound-resources-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let m4aURL = directory.appendingPathComponent("waiting-signal-nz.m4a")
+        let wavURL = directory.appendingPathComponent("waiting-signal-nz.wav")
+        try Data([0x00]).write(to: m4aURL)
+        try Data([0x52, 0x49, 0x46, 0x46]).write(to: wavURL)
+
+        let resolver = FloatingSignalSoundResourceResolver(candidateDirectories: [directory])
+
+        XCTAssertEqual(resolver.url(named: "waiting-signal-nz"), m4aURL)
+    }
+
     @MainActor
     func testActivitySessionSubtitleUsesSameRealEventTextAsRecentEvents() {
         let model = MenuBarStatusModel()
