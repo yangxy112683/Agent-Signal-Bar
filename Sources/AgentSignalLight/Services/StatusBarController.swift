@@ -18,6 +18,8 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     private var recoveryWindow: NSWindow?
     private var didPresentRecoveryWindowForCurrentDisable = false
     private var lastRenderKey: StatusRenderKey?
+    private var lastTooltip: String?
+    private var statusImageCache: [String: NSImage] = [:]
     private var popoverOpenedAt = Date.distantPast
     private var cancellables = Set<AnyCancellable>()
     private let settingsOpenClickDebounce: TimeInterval = 0.25
@@ -36,8 +38,27 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         let usesSystemGrayLights: Bool
         let effectCustomization: SignalEffectCustomization
         let statusMenuMode: StatusMenuMode
-        let tooltip: String
         let visualFrame: [Int]
+
+        var cacheKey: String {
+            [
+                String(format: "%.2f", Double(length)),
+                layout.rawValue,
+                style.rawValue,
+                macOSBreathingStrength.rawValue,
+                macOSHorizontalUsesTrafficLightSize ? "macH1" : "macH0",
+                trafficLightVerticalUsesMacOSSize ? "trafficV1" : "trafficV0",
+                allLightsOn ? "all1" : "all0",
+                usesSystemGrayLights ? "gray1" : "gray0",
+                effectCustomization.thinkingEffect.rawValue,
+                effectCustomization.activeEffect.rawValue,
+                effectCustomization.activeSpeed.rawValue,
+                effectCustomization.alertSpeed.rawValue,
+                effectCustomization.completedEffect.rawValue,
+                statusMenuMode.rawValue,
+                visualFrame.map(String.init).joined(separator: ",")
+            ].joined(separator: "|")
+        }
     }
 
     init(model: MenuBarStatusModel) {
@@ -60,11 +81,6 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         .store(in: &cancellables)
 
         model.animationClock.$tick.sink { [weak self] _ in
-            Task { @MainActor in self?.updateStatusItem() }
-        }
-        .store(in: &cancellables)
-
-        model.$presentationRefreshTick.sink { [weak self] _ in
             Task { @MainActor in self?.updateStatusItem() }
         }
         .store(in: &cancellables)
@@ -176,6 +192,8 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
                 didPresentRecoveryWindowForCurrentDisable = true
             }
             lastRenderKey = nil
+            lastTooltip = nil
+            statusImageCache.removeAll()
             removeStatusItem()
             writeStatusItemHealth()
             return
@@ -205,7 +223,6 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             usesSystemGrayLights: lightUsesSystemGrayLights,
             effectCustomization: lightEffectCustomization,
             statusMenuMode: model.statusMenuMode,
-            tooltip: tooltip,
             visualFrame: Self.visualFrameSignature(
                 snapshot: lightSnapshot,
                 tick: lightTick,
@@ -217,21 +234,22 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         )
 
         if renderKey == lastRenderKey, statusItem?.button?.image != nil {
+            if lastTooltip != tooltip {
+                statusItem?.button?.toolTip = tooltip
+                lastTooltip = tooltip
+            }
             return
         }
         lastRenderKey = renderKey
+        lastTooltip = tooltip
 
         let item = ensureStatusItem()
         configureStatusItemMode(item)
         item.length = length
-        item.button?.image = StatusBarIconRenderer.image(
+        item.button?.image = cachedStatusImage(
+            for: renderKey,
             snapshot: lightSnapshot,
             tick: lightTick,
-            layout: model.displayLayout,
-            style: model.statusBarStyle,
-            macOSBreathingStrength: model.macOSBreathingStrength,
-            macOSHorizontalUsesTrafficLightSize: model.macOSHorizontalUsesTrafficLightSize,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             allLightsOn: lightAllLightsOn,
             usesSystemGrayLights: lightUsesSystemGrayLights,
             effectCustomization: lightEffectCustomization
@@ -239,6 +257,38 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         item.button?.imagePosition = .imageOnly
         item.button?.toolTip = tooltip
         writeStatusItemHealth()
+    }
+
+    private func cachedStatusImage(
+        for renderKey: StatusRenderKey,
+        snapshot: SignalSnapshot,
+        tick: Int,
+        allLightsOn: Bool,
+        usesSystemGrayLights: Bool,
+        effectCustomization: SignalEffectCustomization
+    ) -> NSImage {
+        let cacheKey = renderKey.cacheKey
+        if let image = statusImageCache[cacheKey] {
+            return image
+        }
+
+        let image = StatusBarIconRenderer.image(
+            snapshot: snapshot,
+            tick: tick,
+            layout: model.displayLayout,
+            style: model.statusBarStyle,
+            macOSBreathingStrength: model.macOSBreathingStrength,
+            macOSHorizontalUsesTrafficLightSize: model.macOSHorizontalUsesTrafficLightSize,
+            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
+            allLightsOn: allLightsOn,
+            usesSystemGrayLights: usesSystemGrayLights,
+            effectCustomization: effectCustomization
+        )
+        if statusImageCache.count > 64 {
+            statusImageCache.removeAll(keepingCapacity: true)
+        }
+        statusImageCache[cacheKey] = image
+        return image
     }
 
     private static func visualFrameSignature(
@@ -648,6 +698,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         NSStatusBar.system.removeStatusItem(statusItem)
         self.statusItem = nil
         lastRenderKey = nil
+        lastTooltip = nil
     }
 
     private func writeStatusItemHealth() {

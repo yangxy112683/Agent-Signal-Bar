@@ -377,6 +377,14 @@ struct DebugWindowView: View {
                         .disabled(model.isLaunchAtLoginChangeRunning)
                         .help(model.text("登录 macOS 后自动打开 Agent Signal Bar", "Open Agent Signal Bar automatically after macOS login"))
                 }
+
+                settingRow(model.text("新西兰原版模式", "New Zealand original mode")) {
+                    settingsSwitch(newZealandTrafficLightModeBinding)
+                        .help(model.text(
+                            "按新西兰行人红绿灯节奏慢闪，并将完成音和闪烁音切换为新西兰。",
+                            "Use the New Zealand original cadence and switch completion and blink sounds to New Zealand."
+                        ))
+                }
             }
             .zIndex(isGeneralDropdownExpanded ? 10 : 1)
 
@@ -2229,6 +2237,13 @@ struct DebugWindowView: View {
         Binding(
             get: { model.isMonitoringPaused },
             set: { model.setMonitoringPaused($0) }
+        )
+    }
+
+    private var newZealandTrafficLightModeBinding: Binding<Bool> {
+        Binding(
+            get: { model.isNewZealandTrafficLightModeEnabled },
+            set: { model.setNewZealandTrafficLightModeEnabled($0) }
         )
     }
 

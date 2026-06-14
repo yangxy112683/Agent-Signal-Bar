@@ -115,17 +115,17 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         .store(in: &cancellables)
 
         model.$floatingSignalSoundTestTick.dropFirst().sink { [weak self] _ in
-            Task { @MainActor in self?.playAlertSound(force: true, cue: .completion) }
+            Task { @MainActor in self?.previewAlertSound(cue: .completion) }
         }
         .store(in: &cancellables)
 
         model.$floatingSignalWaitingSoundTestTick.dropFirst().sink { [weak self] _ in
-            Task { @MainActor in self?.playAlertSound(force: true, cue: .waiting) }
+            Task { @MainActor in self?.previewAlertSound(cue: .waiting) }
         }
         .store(in: &cancellables)
 
         model.$floatingSignalAlertSoundTestTick.dropFirst().sink { [weak self] _ in
-            Task { @MainActor in self?.playAlertSound(force: true, cue: .alert) }
+            Task { @MainActor in self?.previewAlertSound(cue: .alert) }
         }
         .store(in: &cancellables)
 
@@ -133,9 +133,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
             model.$snapshot.map { _ in () }.eraseToAnyPublisher(),
             model.$desktopAppSessions.map { _ in () }.eraseToAnyPublisher(),
             model.$statusLightOverride.map { _ in () }.eraseToAnyPublisher(),
-            model.$isMonitoringPaused.map { _ in () }.eraseToAnyPublisher(),
-            model.$presentationRefreshTick.map { _ in () }.eraseToAnyPublisher(),
-            model.animationClock.$tick.map { _ in () }.eraseToAnyPublisher()
+            model.$isMonitoringPaused.map { _ in () }.eraseToAnyPublisher()
         ]
 
         for publisher in soundStatePublishers {
@@ -147,14 +145,30 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
             }
             .store(in: &cancellables)
         }
+
+        model.animationClock.$tick.sink { [weak self] tick in
+            Task { @MainActor in
+                self?.evaluateAlertSound()
+                self?.evaluateActiveGreenPulseSound(tickOverride: tick)
+            }
+        }
+        .store(in: &cancellables)
     }
 
     private func updateVisibility() {
         if model.isFloatingSignalEnabled {
             showPanel()
         } else {
-            panel?.orderOut(nil)
+            releasePanel()
         }
+    }
+
+    private func releasePanel() {
+        panel?.orderOut(nil)
+        panel?.delegate = nil
+        panel?.contentViewController = nil
+        hostingController = nil
+        panel = nil
     }
 
     private func showPanel() {
@@ -389,7 +403,12 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         soundPlayer.play(asset: asset, level: model.floatingSignalSoundLevel)
     }
 
-    private func evaluateActiveGreenPulseSound() {
+    private func previewAlertSound(cue: FloatingSignalSoundCue) {
+        guard let asset = soundAsset(for: cue) else { return }
+        soundPlayer.preview(asset: asset, level: model.floatingSignalSoundLevel)
+    }
+
+    private func evaluateActiveGreenPulseSound(tickOverride: Int? = nil) {
         guard model.isFloatingSignalEnabled, isSoundEnabled(for: .waiting) else {
             wasActiveGreenLitForSound = false
             return
@@ -401,10 +420,11 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
             return
         }
 
+        let tick = model.statusLightOverride == nil ? (tickOverride ?? model.lightTick) : model.lightTick
         let isGreenLit = SignalLampAnimation.isLit(
             .green,
             signal: signal,
-            tick: model.lightTick,
+            tick: tick,
             allLightsOn: model.lightAllLightsOn,
             customization: model.lightEffectCustomization
         )
@@ -515,7 +535,7 @@ private final class FloatingSignalCursorPush {
 
 private struct FloatingSignalPanelView: View {
     @ObservedObject var model: MenuBarStatusModel
-    @ObservedObject var animationClock: SignalAnimationClock
+    let animationClock: SignalAnimationClock
     let hide: () -> Void
     let smaller: () -> Void
     let larger: () -> Void
@@ -531,6 +551,38 @@ private struct FloatingSignalPanelView: View {
     @State private var resizeStartVisualScale: CGFloat?
     @State private var resizeTargetVisualScale: CGFloat?
     @State private var resizeStartTick: Int?
+    @State private var cachedLightSnapshot: SignalSnapshot
+    @State private var cachedFloatingInfoSessions: [SessionStatus]
+
+    init(
+        model: MenuBarStatusModel,
+        animationClock: SignalAnimationClock,
+        hide: @escaping () -> Void,
+        smaller: @escaping () -> Void,
+        larger: @escaping () -> Void,
+        toggleLayout: @escaping () -> Void,
+        toggleSound: @escaping () -> Void,
+        previewCompletionSound: @escaping () -> Void,
+        previewWaitingSound: @escaping () -> Void,
+        resizeFromHandle: @escaping (CGFloat, Bool) -> Void,
+        openSettings: @escaping () -> Void
+    ) {
+        self.model = model
+        self.animationClock = animationClock
+        self.hide = hide
+        self.smaller = smaller
+        self.larger = larger
+        self.toggleLayout = toggleLayout
+        self.toggleSound = toggleSound
+        self.previewCompletionSound = previewCompletionSound
+        self.previewWaitingSound = previewWaitingSound
+        self.resizeFromHandle = resizeFromHandle
+        self.openSettings = openSettings
+        _cachedLightSnapshot = State(initialValue: model.lightSnapshot)
+        _cachedFloatingInfoSessions = State(
+            initialValue: ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot)
+        )
+    }
 
     var body: some View {
         let scale = effectiveVisualScale
@@ -553,15 +605,12 @@ private struct FloatingSignalPanelView: View {
         let handleHotspotInset = FloatingSignalPanelLayout.resizeHandleHotspotInset(for: scale)
         let badgeOverlap = FloatingSignalPanelLayout.infoBadgeOverlap(for: scale)
         let panelSize = FloatingSignalPanelLayout.outerSize(contentSize: contentSize, scale: scale)
-        let currentTick = model.statusLightOverride?.tick ?? animationClock.tick
-        let syncedTick = isDraggingResizeHandle ? (resizeStartTick ?? currentTick) : currentTick
 
         ZStack(alignment: .topLeading) {
             signalBody(
                 backingSize: backingSize,
                 signalSize: signalSize,
-                scale: scale,
-                syncedTick: syncedTick
+                scale: scale
             )
             .frame(width: contentSize.width, height: contentSize.height, alignment: .topLeading)
             .overlay {
@@ -619,7 +668,25 @@ private struct FloatingSignalPanelView: View {
         }
         .preferredColorScheme(model.appTheme.colorScheme)
         .accessibilityLabel(model.text("悬浮信号灯", "Floating Signal Light"))
-        .accessibilityValue(model.displayName(for: model.lightSnapshot.aggregate))
+        .accessibilityValue(model.displayName(for: cachedLightSnapshot.aggregate))
+        .onReceive(model.$snapshot) { _ in
+            refreshCachedSnapshots()
+        }
+        .onReceive(model.$desktopAppSessions) { _ in
+            refreshCachedSnapshots()
+        }
+        .onReceive(model.$statusLightOverride) { _ in
+            refreshCachedSnapshots()
+        }
+        .onReceive(model.$isMonitoringPaused) { _ in
+            refreshCachedSnapshots()
+        }
+        .onReceive(model.$signalLightAgentScopes) { _ in
+            refreshCachedSnapshots()
+        }
+        .onReceive(model.$signalLightAgentSelectionMode) { _ in
+            refreshCachedSnapshots()
+        }
     }
 
     private var showsResizeHandle: Bool {
@@ -669,41 +736,35 @@ private struct FloatingSignalPanelView: View {
     }
 
     private var infoBadgeCount: Int {
-        floatingInfoSessions.count
-    }
-
-    private var floatingInfoSessions: [SessionStatus] {
-        ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot)
+        cachedFloatingInfoSessions.count
     }
 
     private func signalBody(
         backingSize: CGSize,
         signalSize: CGSize,
-        scale: CGFloat,
-        syncedTick: Int
+        scale: CGFloat
     ) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8 * scale, style: .continuous)
-                .fill(Color.black.opacity(0.96))
-                .frame(width: backingSize.width, height: backingSize.height)
+        FloatingSignalLightsView(
+            animationClock: animationClock,
+            snapshot: cachedLightSnapshot,
+            statusLightOverride: model.statusLightOverride,
+            isDraggingResizeHandle: isDraggingResizeHandle,
+            resizeStartTick: resizeStartTick,
+            backingSize: backingSize,
+            signalSize: signalSize,
+            scale: scale,
+            layout: model.floatingSignalLayout,
+            macOSBreathingStrength: model.macOSBreathingStrength,
+            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
+            allLightsOn: model.lightAllLightsOn,
+            usesSystemGrayLights: model.lightUsesSystemGrayLights,
+            effectCustomization: model.lightEffectCustomization
+        )
+    }
 
-            TrafficSignalView(
-                snapshot: model.lightSnapshot,
-                tick: syncedTick,
-                size: .panel,
-                layout: model.floatingSignalLayout,
-                style: .trafficLight,
-                macOSBreathingStrength: model.macOSBreathingStrength,
-                macOSHorizontalUsesTrafficLightSize: false,
-                trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
-                allLightsOn: model.lightAllLightsOn,
-                usesSystemGrayLights: model.lightUsesSystemGrayLights,
-                effectCustomization: model.lightEffectCustomization
-            )
-            .scaleEffect(scale)
-            .frame(width: signalSize.width, height: signalSize.height)
-            .accessibilityHidden(true)
-        }
+    private func refreshCachedSnapshots() {
+        cachedLightSnapshot = model.lightSnapshot
+        cachedFloatingInfoSessions = ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot)
     }
 
     private func resizeHandleTarget(scale: CGFloat, hotspotInset: CGFloat) -> some View {
@@ -769,6 +830,51 @@ private struct FloatingSignalPanelView: View {
     ) -> CGFloat {
         let resizeDistance = (translation.width + translation.height) / sqrt(2)
         return FloatingSignalScale.clampedVisualScale(baseScale + resizeDistance / 82)
+    }
+}
+
+private struct FloatingSignalLightsView: View {
+    @ObservedObject var animationClock: SignalAnimationClock
+    let snapshot: SignalSnapshot
+    let statusLightOverride: StatusLightOverrideFrame?
+    let isDraggingResizeHandle: Bool
+    let resizeStartTick: Int?
+    let backingSize: CGSize
+    let signalSize: CGSize
+    let scale: CGFloat
+    let layout: TrafficSignalLayout
+    let macOSBreathingStrength: MacOSBreathingStrength
+    let trafficLightVerticalUsesMacOSSize: Bool
+    let allLightsOn: Bool
+    let usesSystemGrayLights: Bool
+    let effectCustomization: SignalEffectCustomization
+
+    var body: some View {
+        let currentTick = statusLightOverride?.tick ?? animationClock.tick
+        let syncedTick = isDraggingResizeHandle ? (resizeStartTick ?? currentTick) : currentTick
+
+        ZStack {
+            RoundedRectangle(cornerRadius: 8 * scale, style: .continuous)
+                .fill(Color.black.opacity(0.96))
+                .frame(width: backingSize.width, height: backingSize.height)
+
+            TrafficSignalView(
+                snapshot: snapshot,
+                tick: syncedTick,
+                size: .panel,
+                layout: layout,
+                style: .trafficLight,
+                macOSBreathingStrength: macOSBreathingStrength,
+                macOSHorizontalUsesTrafficLightSize: false,
+                trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize,
+                allLightsOn: allLightsOn,
+                usesSystemGrayLights: usesSystemGrayLights,
+                effectCustomization: effectCustomization
+            )
+            .scaleEffect(scale)
+            .frame(width: signalSize.width, height: signalSize.height)
+            .accessibilityHidden(true)
+        }
     }
 }
 
@@ -1477,7 +1583,8 @@ private enum FloatingSignalSoundAsset {
 
 @MainActor
 private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
-    private var players: [ObjectIdentifier: AVAudioPlayer] = [:]
+    private var players: [UUID: AVAudioPlayer] = [:]
+    private var previewToken: UUID?
     private static let wavData = makeCrossingPulseWAV()
 
     func play(asset: FloatingSignalSoundAsset, level: FloatingSignalSoundLevel) {
@@ -1486,9 +1593,29 @@ private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
             player.delegate = self
             player.volume = level.volume
             player.prepareToPlay()
-            retain(player)
+            let token = retain(player)
+            let playerID = ObjectIdentifier(player)
             if !player.play() {
-                release(ObjectIdentifier(player))
+                release(token, matching: playerID)
+            }
+        } catch {
+            NSSound.beep()
+        }
+    }
+
+    func preview(asset: FloatingSignalSoundAsset, level: FloatingSignalSoundLevel) {
+        stopPreview()
+
+        do {
+            let player = try makePlayer(asset: asset)
+            player.delegate = self
+            player.volume = level.volume
+            player.prepareToPlay()
+            let token = retain(player)
+            let playerID = ObjectIdentifier(player)
+            previewToken = token
+            if !player.play() {
+                release(token, matching: playerID)
             }
         } catch {
             NSSound.beep()
@@ -1503,27 +1630,54 @@ private final class FloatingSignalSoundPlayer: NSObject, AVAudioPlayerDelegate {
         releaseOnMain(ObjectIdentifier(player))
     }
 
-    private func retain(_ player: AVAudioPlayer) {
-        let id = ObjectIdentifier(player)
-        players[id] = player
+    private func retain(_ player: AVAudioPlayer) -> UUID {
+        let token = UUID()
+        let playerID = ObjectIdentifier(player)
+        players[token] = player
 
         let releaseDelay = max(player.duration + 2.0, 3.0)
         let releaseNanoseconds = UInt64(releaseDelay * 1_000_000_000)
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: releaseNanoseconds)
-            self?.release(id)
+            self?.release(token, matching: playerID)
         }
+        return token
     }
 
-    nonisolated private func releaseOnMain(_ id: ObjectIdentifier) {
+    nonisolated private func releaseOnMain(_ playerID: ObjectIdentifier) {
         Task { @MainActor [weak self] in
-            self?.release(id)
+            self?.release(playerID)
         }
     }
 
-    private func release(_ id: ObjectIdentifier) {
-        players[id]?.delegate = nil
-        players.removeValue(forKey: id)
+    private func release(_ playerID: ObjectIdentifier) {
+        guard let token = players.first(where: { ObjectIdentifier($0.value) == playerID })?.key else {
+            return
+        }
+        release(token, matching: playerID)
+    }
+
+    private func release(_ token: UUID, matching playerID: ObjectIdentifier) {
+        guard let player = players[token], ObjectIdentifier(player) == playerID else {
+            return
+        }
+        if previewToken == token {
+            previewToken = nil
+        }
+        player.delegate = nil
+        players.removeValue(forKey: token)
+    }
+
+    private func stopPreview() {
+        guard let token = previewToken, let player = players[token] else {
+            previewToken = nil
+            return
+        }
+
+        player.stop()
+        player.delegate = nil
+        players.removeValue(forKey: token)
+        previewToken = nil
     }
 
     private func makePlayer(asset: FloatingSignalSoundAsset) throws -> AVAudioPlayer {

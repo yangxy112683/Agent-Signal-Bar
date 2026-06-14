@@ -8,8 +8,8 @@ import Foundation
 final class SignalAnimationClock: ObservableObject {
     @Published private(set) var tick: Int = 0
 
-    func advance() {
-        tick = (tick + 1) % 10_000
+    func advance(by step: Int = 1) {
+        tick = (tick + max(step, 1)) % 10_000
     }
 
     func reset() {
@@ -272,6 +272,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var appTheme: AppTheme
     @Published var isSettingsGlassEnabled: Bool
     @Published var settingsGlassEffect: SettingsGlassEffect
+    @Published var isNewZealandTrafficLightModeEnabled: Bool
     @Published var isMonitoringPaused = false
     @Published var isFloatingSignalEnabled: Bool
     @Published var floatingSignalScale: FloatingSignalScale
@@ -301,7 +302,6 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var updateCheckMessage: String?
     @Published private(set) var updateReleasePageURL: URL?
     @Published var lastError: String?
-    @Published private(set) var presentationRefreshTick = 0
     @Published private(set) var floatingSignalSoundTestTick = 0
     @Published private(set) var floatingSignalWaitingSoundTestTick = 0
     @Published private(set) var floatingSignalAlertSoundTestTick = 0
@@ -320,7 +320,6 @@ final class MenuBarStatusModel: ObservableObject {
     private let platformPresencePollQueue = DispatchQueue(label: "com.agentsignallight.platform-presence-poll")
     private var pollTimer: Timer?
     private var animationTimer: Timer?
-    private var presentationTimer: Timer?
     private var codexDesktopTimer: Timer?
     private var desktopAppTimer: Timer?
     private var automaticUpdateCheckTimer: Timer?
@@ -332,6 +331,7 @@ final class MenuBarStatusModel: ObservableObject {
     private static let passiveActiveDisplayWindow: TimeInterval = 45
     private var statusLightSequence: [StatusLightOverrideFrame] = []
     private var statusLightSequenceIndex = 0
+    private var animationFrameSkipCounter = 0
     private var isStateReloadInFlight = false
     private var isStateReloadQueued = false
     private var isCodexDesktopPollInFlight = false
@@ -346,10 +346,10 @@ final class MenuBarStatusModel: ObservableObject {
     private static let effectDefaultsVersion = 2
     private static let floatingSignalScaleDefaultsVersion = 3
     private static let preferenceDefaultsVersion = 1
-    private static let statePollInterval: TimeInterval = 0.75
-    private static let animationTickInterval: TimeInterval = 0.25
-    private static let agentPollInterval: TimeInterval = 0.5
-    private static let desktopAppPresencePollInterval: TimeInterval = 5.0
+    private static let statePollInterval: TimeInterval = 5.0
+    private static let animationTickInterval: TimeInterval = 0.45
+    private static let agentPollInterval: TimeInterval = 2.0
+    private static let desktopAppPresencePollInterval: TimeInterval = 20.0
     private static let automaticUpdateCheckTimerInterval: TimeInterval = 60 * 60
     private static let automaticUpdateCheckInterval: TimeInterval = 24 * 60 * 60
     private static let activeDisplayWindow: TimeInterval = SignalStateStore.defaultSessionTTL()
@@ -357,6 +357,11 @@ final class MenuBarStatusModel: ObservableObject {
     private struct LaunchAtLoginUpdateResult: Sendable {
         let isEnabled: Bool
         let errorMessage: String?
+    }
+
+    private struct AnimationTickCadence {
+        let timerFramesPerAdvance: Int
+        let tickAdvance: Int
     }
 
     init(
@@ -389,6 +394,9 @@ final class MenuBarStatusModel: ObservableObject {
         let storedSettingsGlassEffect =
             UserDefaults.standard.string(forKey: "settingsGlassEffect")
             ?? UserDefaults.standard.string(forKey: "settingsMenuGlassEffect")
+        let storedNewZealandTrafficLightModeEnabled =
+            UserDefaults.standard.object(forKey: "isNewZealandTrafficLightModeEnabled") as? Bool
+            ?? UserDefaults.standard.object(forKey: "isLowPowerModeEnabled") as? Bool
         let storedSignalLightAgentScope = UserDefaults.standard.string(forKey: "signalLightAgentScope")
         let storedSignalLightAgentScopes = UserDefaults.standard.stringArray(forKey: "signalLightAgentScopes")
         let storedSignalLightAgentSelectionMode = UserDefaults.standard.string(forKey: "signalLightAgentSelectionMode")
@@ -457,6 +465,15 @@ final class MenuBarStatusModel: ObservableObject {
         isSettingsGlassEnabled = storedSettingsGlassEnabled ?? true
         settingsGlassEffect =
             SettingsGlassEffect.preferenceValue(for: storedSettingsGlassEffect) ?? .reduced
+        isNewZealandTrafficLightModeEnabled = storedNewZealandTrafficLightModeEnabled ?? false
+        if UserDefaults.standard.object(forKey: "isNewZealandTrafficLightModeEnabled") == nil,
+           let storedNewZealandTrafficLightModeEnabled {
+            UserDefaults.standard.set(
+                storedNewZealandTrafficLightModeEnabled,
+                forKey: "isNewZealandTrafficLightModeEnabled"
+            )
+            UserDefaults.standard.removeObject(forKey: "isLowPowerModeEnabled")
+        }
         isFloatingSignalEnabled =
             UserDefaults.standard.object(forKey: "isFloatingSignalEnabled") as? Bool ?? true
         let resolvedFloatingSignalScale = Self.resolvedFloatingSignalScale(
@@ -901,6 +918,19 @@ final class MenuBarStatusModel: ObservableObject {
     func setSettingsGlassEffect(_ effect: SettingsGlassEffect) {
         settingsGlassEffect = effect
         UserDefaults.standard.set(effect.rawValue, forKey: "settingsGlassEffect")
+    }
+
+    func setNewZealandTrafficLightModeEnabled(_ enabled: Bool) {
+        guard enabled != isNewZealandTrafficLightModeEnabled else { return }
+        isNewZealandTrafficLightModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isNewZealandTrafficLightModeEnabled")
+        UserDefaults.standard.removeObject(forKey: "isLowPowerModeEnabled")
+        if enabled {
+            setFloatingSignalCompletionSound(.newZealandCrossing)
+            setFloatingSignalWaitingSound(.newZealandCrossing)
+        }
+        animationFrameSkipCounter = 0
+        animationClock.reset()
     }
 
     func setAutomaticUpdateCheckEnabled(_ enabled: Bool) {
@@ -1420,7 +1450,7 @@ final class MenuBarStatusModel: ObservableObject {
                 self?.reloadFromWatcher()
             }
         }
-        pollTimer.tolerance = 0.15
+        pollTimer.tolerance = 1.0
         RunLoop.main.add(pollTimer, forMode: .common)
         self.pollTimer = pollTimer
 
@@ -1428,34 +1458,33 @@ final class MenuBarStatusModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if self.advanceStatusLightSequenceIfNeeded() {
+                    self.animationFrameSkipCounter = 0
                     return
                 }
                 guard self.shouldAnimateCurrentSignal else {
+                    self.animationFrameSkipCounter = 0
                     self.animationClock.reset()
                     return
                 }
-                self.animationClock.advance()
+                let cadence = self.animationTickCadenceForCurrentSignal
+                self.animationFrameSkipCounter += 1
+                guard self.animationFrameSkipCounter >= cadence.timerFramesPerAdvance else {
+                    return
+                }
+                self.animationFrameSkipCounter = 0
+                self.animationClock.advance(by: cadence.tickAdvance)
             }
         }
-        animationTimer.tolerance = 0.05
+        animationTimer.tolerance = 0.15
         RunLoop.main.add(animationTimer, forMode: .common)
         self.animationTimer = animationTimer
-
-        let presentationTimer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.presentationRefreshTick &+= 1
-            }
-        }
-        presentationTimer.tolerance = 0.25
-        RunLoop.main.add(presentationTimer, forMode: .common)
-        self.presentationTimer = presentationTimer
 
         let codexDesktopTimer = Timer(timeInterval: Self.agentPollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.pollCodexDesktopActivity()
             }
         }
-        codexDesktopTimer.tolerance = 0.1
+        codexDesktopTimer.tolerance = 0.75
         RunLoop.main.add(codexDesktopTimer, forMode: .common)
         self.codexDesktopTimer = codexDesktopTimer
 
@@ -1467,7 +1496,7 @@ final class MenuBarStatusModel: ObservableObject {
                 self?.pollDesktopAppPresence()
             }
         }
-        desktopAppTimer.tolerance = 0.75
+        desktopAppTimer.tolerance = 5.0
         RunLoop.main.add(desktopAppTimer, forMode: .common)
         self.desktopAppTimer = desktopAppTimer
 
@@ -1605,6 +1634,40 @@ final class MenuBarStatusModel: ObservableObject {
             }
         case .needsReview, .permission, .blocked, .stale:
             return true
+        }
+    }
+
+    private var animationTickCadenceForCurrentSignal: AnimationTickCadence {
+        if !isNewZealandTrafficLightModeEnabled {
+            return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+        }
+
+        let aggregate = lightSnapshot.aggregate
+        switch aggregate.displayState {
+        case .active:
+            let effect = aggregate == .thinking ? thinkingSignalEffect : activeSignalEffect
+            switch effect {
+            case .greenSlowFlash:
+                // New Zealand original mode: 0.9s on / 0.9s off, one green flash every 1.8s.
+                return AnimationTickCadence(timerFramesPerAdvance: 2, tickAdvance: 3)
+            case .trafficCycle:
+                return AnimationTickCadence(timerFramesPerAdvance: 4, tickAdvance: 4)
+            case .greenBreathing:
+                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+            case .greenFastFlash:
+                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+            case .greenSteady:
+                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+            }
+        case .completed:
+            switch completedSignalEffect {
+            case .greenPulse, .yellowPulse, .allPulse:
+                return AnimationTickCadence(timerFramesPerAdvance: 2, tickAdvance: 2)
+            case .greenSteady, .yellowSteady, .allSteady:
+                return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
+            }
+        case .ready, .needsReview, .permission, .blocked, .stale, .paused:
+            return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 1)
         }
     }
 

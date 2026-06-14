@@ -2430,6 +2430,48 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testNewZealandTrafficLightModeDefaultsOffAndPersists() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "isNewZealandTrafficLightModeEnabled",
+            "isLowPowerModeEnabled",
+            "floatingSignalCompletionSound",
+            "isFloatingSignalCompletionSoundEnabled",
+            "floatingSignalWaitingSound",
+            "isFloatingSignalWaitingSoundEnabled"
+        ]
+        let previousValues = keys.map { defaults.object(forKey: $0) }
+        keys.forEach(defaults.removeObject(forKey:))
+        defer {
+            for (key, value) in zip(keys, previousValues) {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let model = MenuBarStatusModel()
+        model.setFloatingSignalCompletionSound(.aiGlow)
+        model.setFloatingSignalWaitingSound(.aiTick)
+
+        XCTAssertFalse(model.isNewZealandTrafficLightModeEnabled)
+        model.setNewZealandTrafficLightModeEnabled(true)
+        XCTAssertTrue(model.isNewZealandTrafficLightModeEnabled)
+        XCTAssertTrue(defaults.bool(forKey: "isNewZealandTrafficLightModeEnabled"))
+        XCTAssertNil(defaults.object(forKey: "isLowPowerModeEnabled"))
+        XCTAssertEqual(model.floatingSignalCompletionSound, .newZealandCrossing)
+        XCTAssertEqual(model.floatingSignalWaitingSound, .newZealandCrossing)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalCompletionSound"), FloatingSignalCompletionSound.newZealandCrossing.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "floatingSignalWaitingSound"), FloatingSignalWaitingSound.newZealandCrossing.rawValue)
+
+        model.setNewZealandTrafficLightModeEnabled(false)
+        XCTAssertFalse(model.isNewZealandTrafficLightModeEnabled)
+        XCTAssertFalse(defaults.bool(forKey: "isNewZealandTrafficLightModeEnabled"))
+    }
+
+    @MainActor
     func testActivitySessionSubtitleUsesSameRealEventTextAsRecentEvents() {
         let model = MenuBarStatusModel()
         model.appLanguage = .zhHans

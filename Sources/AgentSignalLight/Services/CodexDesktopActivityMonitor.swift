@@ -43,8 +43,8 @@ final class CodexDesktopActivityMonitor: @unchecked Sendable {
         initialLookbackSeconds: TimeInterval = 30 * 60,
         completedLookbackSeconds: TimeInterval = 15,
         maxInitialTailBytes: UInt64 = 512 * 1024,
-        fullScanInterval: TimeInterval = 1.5,
-        vsCodeHintScanInterval: TimeInterval = 5,
+        fullScanInterval: TimeInterval = 10,
+        vsCodeHintScanInterval: TimeInterval = 30,
         vsCodeHintLookbackSeconds: TimeInterval = 24 * 60 * 60,
         maxVSCodeLogBytes: UInt64 = 256 * 1024,
         replaysInitialHistory: Bool = false

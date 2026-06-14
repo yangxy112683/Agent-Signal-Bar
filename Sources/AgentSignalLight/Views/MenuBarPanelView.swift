@@ -304,7 +304,8 @@ private final class MenuBarPanelViewState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        model.$presentationRefreshTick
+        Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
             .sink { [weak self, weak model] _ in
                 guard let model else { return }
                 self?.refreshSnapshots(from: model)

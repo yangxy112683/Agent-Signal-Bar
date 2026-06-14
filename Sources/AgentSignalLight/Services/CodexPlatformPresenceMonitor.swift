@@ -24,6 +24,14 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
     }
 
     private static let processScanTimeoutSeconds: TimeInterval = 0.7
+    private let processScanInterval: TimeInterval
+    private let processCacheLock = NSLock()
+    private var cachedProcesses: [RunningProcessInfo] = []
+    private var lastProcessScanAt: Date?
+
+    init(processScanInterval: TimeInterval = 20) {
+        self.processScanInterval = max(processScanInterval, 0)
+    }
 
     func detectSessions(now: Date = Date()) -> [SessionStatus] {
         Self.detectSessions(
@@ -33,7 +41,7 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
                     localizedName: $0.localizedName
                 )
             },
-            processes: Self.runningProcesses(),
+            processes: runningProcesses(now: now),
             now: now
         )
     }
@@ -205,6 +213,26 @@ final class CodexPlatformPresenceMonitor: @unchecked Sendable {
         }
 
         return parseProcesses(from: output)
+    }
+
+    private func runningProcesses(now: Date) -> [RunningProcessInfo] {
+        processCacheLock.lock()
+        if let lastProcessScanAt,
+           now.timeIntervalSince(lastProcessScanAt) < processScanInterval {
+            let processes = cachedProcesses
+            processCacheLock.unlock()
+            return processes
+        }
+        processCacheLock.unlock()
+
+        let processes = Self.runningProcesses()
+
+        processCacheLock.lock()
+        cachedProcesses = processes
+        lastProcessScanAt = now
+        processCacheLock.unlock()
+
+        return processes
     }
 
     static func parseProcesses(from output: String) -> [RunningProcessInfo] {
