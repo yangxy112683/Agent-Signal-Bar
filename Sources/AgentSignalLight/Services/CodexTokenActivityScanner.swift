@@ -436,6 +436,9 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         }
 
         let modelContextsByPath = RipgrepRelevantJSONLLineScanner.scanTurnContextModels(fileURLs: urls) ?? [:]
+        guard modelContextsByPath.values.contains(where: { !$0.isEmpty }) else {
+            return nil
+        }
         guard let parsedBytes = RipgrepRelevantJSONLLineScanner.scanNumbered(
             fileURLs: urls,
             needles: ["token_count"],
@@ -521,6 +524,9 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         today: Date
     ) -> UInt64? {
         let modelContexts = RipgrepRelevantJSONLLineScanner.scanTurnContextModels(fileURLs: [url])?[url.path] ?? []
+        guard modelContexts.isEmpty == false else {
+            return nil
+        }
         guard let parsedBytes = RipgrepRelevantJSONLLineScanner.scanNumbered(
             fileURLs: [url],
             needles: ["token_count"],
