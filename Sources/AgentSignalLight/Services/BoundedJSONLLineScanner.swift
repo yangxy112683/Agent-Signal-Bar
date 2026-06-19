@@ -412,74 +412,35 @@ enum RipgrepRelevantJSONLLineScanner {
         fileURLs: [URL],
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: [(lineNumber: Int, model: String, turnID: String?)]]? {
-        guard fileURLs.isEmpty == false,
-              let rgURL = ripgrepURL(environment: environment),
-              FileManager.default.isExecutableFile(atPath: rgURL.path)
-        else {
-            return nil
-        }
-
-        let process = Process()
-        process.executableURL = rgURL
-        process.arguments = [
-            "--no-heading",
-            "--color",
-            "never",
-            "--text",
-            "--mmap",
-            "--no-messages",
-            "--with-filename",
-            "--null",
-            "--line-number",
-            "--only-matching",
-            "--replace",
-            "$1\t$2",
-            "-e",
-            #""type":"turn_context".*?"model":"([^"]+)"(?:.*?"turn_id":"([^"]+)")?"#
-        ] + fileURLs.map(\.path)
-
-        let stdout = Pipe()
-        process.standardOutput = stdout
-        process.standardError = FileHandle.nullDevice
-
         var results: [String: [(lineNumber: Int, model: String, turnID: String?)]] = [:]
-
-        do {
-            try process.run()
-            try parseNumberedNullSeparatedRipgrepOutput(
-                from: stdout.fileHandleForReading
-            ) { url, lineNumber, data in
-                guard let raw = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                    raw.isEmpty == false
+        guard scanNumbered(
+            fileURLs: fileURLs,
+            needles: ["turn_context"],
+            environment: environment,
+            onLine: { url, lineNumber, data in
+                guard case let .turnContext(record) = CodexTokenActivityFastParser.parseLine(data),
+                      let model = record.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      model.isEmpty == false
                 else {
                     return
                 }
-                let parts = raw.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
-                let model = parts.first.map(String.init)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let turnID = parts.dropFirst().first.map(String.init)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                guard model.isEmpty == false else { return }
+
+                let turnID = record.turnID?.trimmingCharacters(in: .whitespacesAndNewlines)
                 results[url.path, default: []].append((
                     lineNumber: lineNumber,
                     model: model,
                     turnID: turnID?.isEmpty == false ? turnID : nil
                 ))
             }
-            process.waitUntilExit()
-
-            guard process.terminationStatus == 0 || process.terminationStatus == 1 else {
-                return nil
-            }
-
-            for path in results.keys {
-                results[path]?.sort { $0.lineNumber < $1.lineNumber }
-            }
-            return results
-        } catch {
+        ) != nil
+        else {
             return nil
         }
+
+        for path in results.keys {
+            results[path]?.sort { $0.lineNumber < $1.lineNumber }
+        }
+        return results
     }
 
     private static func parseNullSeparatedRipgrepOutput(
