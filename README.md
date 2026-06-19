@@ -54,10 +54,10 @@ Agent Signal Bar is a local-first macOS app that uses three red, yellow, and gre
 ## Floating Signal Light
 
 <p align="center">
-  <img src="docs/assets/floating-signal-light-v1.3.0.png" alt="Agent Signal Bar floating desktop signal light with all three lights on and a running-agent badge" width="260">
+  <img src="docs/assets/floating-signal-light-v1.4.1.png" alt="Agent Signal Bar floating desktop signal light with quota, running-agent, and token badges" width="286">
 </p>
 
-The floating signal light stays visible on the desktop, syncs with the menu bar light, and supports dragging, resizing, vertical or horizontal layouts, a compact running-agent badge, and a small current-session popover. Sound alerts can be configured separately for completion, green flashing, and warning states.
+The floating signal light stays visible on the desktop, syncs with the menu bar light, and supports dragging, resizing, vertical or horizontal layouts, compact running-agent, quota, and token badges, plus small popovers for current sessions and usage. Sound alerts can be configured separately for completion, green flashing, and warning states.
 
 Listen to the bundled New Zealand crossing sounds: [green flash sound](Sources/AgentSignalLight/Resources/waiting-signal-nz.m4a) · [completion sound](Sources/AgentSignalLight/Resources/completion-signal-nz.m4a).
 
@@ -90,6 +90,14 @@ Developers can also download the source code and run `./script/build_and_run.sh`
 </table>
 
 Click the menu bar signal light to open either the detailed panel or the simple native-style menu. Both show the current status and live agent activity. The detailed panel keeps the quick actions focused on pausing monitoring, opening settings, and quitting; the simple menu can also show open-agent shortcuts when relevant.
+
+## Usage Dashboard
+
+<p align="center">
+  <img src="docs/assets/settings-usage-v1.4.1-en.png" alt="Agent Signal Bar Usage page with Codex quota, token usage chart, and tool call totals" width="720">
+</p>
+
+The Usage page combines Codex quota, local token usage, and tool-call totals from local Codex logs. Daily bars support hover details, including per-model token and estimated cost breakdowns.
 
 ## Settings Liquid Glass Comparison
 
