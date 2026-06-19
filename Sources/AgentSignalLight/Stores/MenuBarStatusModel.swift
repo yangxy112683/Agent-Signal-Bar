@@ -2305,7 +2305,7 @@ final class MenuBarStatusModel: ObservableObject {
         let fetcher = codexRateLimitFetcher
         let store = store
 
-        Task.detached(priority: .utility) { [fetcher, store, weak self] in
+        Task(priority: .utility) { [fetcher, store, weak self] in
             do {
                 let quota = try await fetcher.fetchQuota()
                 let snapshot = try store.applySessionQuota(
@@ -2314,22 +2314,18 @@ final class MenuBarStatusModel: ObservableObject {
                     agent: "Codex",
                     updatedAt: quota.updatedAt
                 )
-                await MainActor.run {
-                    guard let self else { return }
-                    self.isCodexRateLimitFetchInFlight = false
-                    guard self.isCodexDesktopMonitoringEnabled,
-                          !self.isMonitoringPaused
-                    else {
-                        return
-                    }
+                guard let self else { return }
+                self.isCodexRateLimitFetchInFlight = false
+                guard self.isCodexDesktopMonitoringEnabled,
+                      !self.isMonitoringPaused
+                else {
+                    return
+                }
 
-                    self.updateLatestAgentQuota(quota)
-                    self.snapshot = snapshot
-                }
+                self.updateLatestAgentQuota(quota)
+                self.snapshot = snapshot
             } catch {
-                await MainActor.run {
-                    self?.isCodexRateLimitFetchInFlight = false
-                }
+                self?.isCodexRateLimitFetchInFlight = false
             }
         }
     }
