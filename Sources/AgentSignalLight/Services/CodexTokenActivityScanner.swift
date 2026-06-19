@@ -51,6 +51,7 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
     private static let sessionMetaNeedle = Data("session_meta".utf8)
     private static let turnContextNeedle = Data("turn_context".utf8)
     private static let cacheVersion = 18
+    private static let ripgrepContextFastPathMinimumBytes: Int64 = 1_000_000
 
     private let sessionRootURLs: [URL]
     private let fileManager: FileManager
@@ -154,7 +155,8 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
                     currentTurnID: result.currentTurnID ?? cached.currentTurnID,
                     days: fileDays
                 )
-            } else if cached == nil {
+            } else if cached == nil,
+                      shouldUseRipgrepContextFastPath(metadata: metadata) {
                 batchScanURLs.append(url)
                 batchMetadataByPath[path] = metadata
                 continue
@@ -413,6 +415,12 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         startDay: Date,
         today: Date
     ) -> [String: CodexTokenActivityFileScanResult]? {
+        guard urls.allSatisfy({ url in
+            fileMetadata(for: url).map(shouldUseRipgrepContextFastPath(metadata:)) ?? false
+        }) else {
+            return nil
+        }
+
         var states = Dictionary(
             uniqueKeysWithValues: urls.map { ($0.path, CodexTokenActivityFileScanState()) }
         )
@@ -524,6 +532,12 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         startDay: Date,
         today: Date
     ) -> UInt64? {
+        guard let metadata = fileMetadata(for: url),
+              shouldUseRipgrepContextFastPath(metadata: metadata)
+        else {
+            return nil
+        }
+
         let modelContexts = RipgrepRelevantJSONLLineScanner.scanTurnContextModels(fileURLs: [url])?[url.path] ?? []
         guard modelContexts.isEmpty == false else {
             return nil
@@ -842,14 +856,17 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
             return UInt64(max(0, parsedBytes))
         }
 
-        let parsedBytes = try? RelevantJSONLLineScanner.scan(
+        let needleData = needles.map { Data($0.utf8) }
+        let parsedBytes = try? BoundedJSONLLineScanner.scan(
             fileURL: url,
             offset: Int64(startOffset),
-            chunkBytes: readChunkBytes,
             maximumLineBytes: 256 * 1024,
-            needles: needles.map { Data($0.utf8) }
-        ) { lineData in
-            body(lineData)
+            retainedPrefixBytes: 256 * 1024
+        ) { line in
+            guard needleData.contains(where: { line.data.firstRange(of: $0) != nil }) else {
+                return
+            }
+            body(line.data)
         }
         return UInt64(max(Int64(startOffset), parsedBytes ?? Int64(startOffset)))
     }
@@ -1178,6 +1195,10 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
             mtimeUnixMs: Int64(modifiedAt.timeIntervalSince1970 * 1_000),
             modifiedAt: modifiedAt
         )
+    }
+
+    private func shouldUseRipgrepContextFastPath(metadata: CodexTokenActivityFileMetadata) -> Bool {
+        metadata.size >= Self.ripgrepContextFastPathMinimumBytes
     }
 
     private func merge(
