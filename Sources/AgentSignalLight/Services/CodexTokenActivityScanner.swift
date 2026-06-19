@@ -365,7 +365,8 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
             parsedBytes = forEachLineData(
                 in: url,
                 startOffset: UInt64(startOffset),
-                needles: ["token_count", "turn_context"]
+                needles: ["token_count", "turn_context"],
+                useRipgrep: false
             ) { lineData in
                 applyTokenActivityLine(
                     lineData,
@@ -828,9 +829,11 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         in url: URL,
         startOffset: UInt64,
         needles: [String] = ["token_count"],
+        useRipgrep: Bool = true,
         _ body: (Data) -> Void
     ) -> UInt64 {
-        if startOffset == 0,
+        if useRipgrep,
+           startOffset == 0,
            let parsedBytes = RipgrepRelevantJSONLLineScanner.scan(
             fileURL: url,
             needles: needles,
