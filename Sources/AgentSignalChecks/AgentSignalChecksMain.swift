@@ -19,6 +19,7 @@ struct AgentSignalChecks {
         try checkSessionEndPreservesCompletedAndWarningSessions()
         try checkOffClearsAllSessions()
         try checkSessionTTLPrunesStaleSessions()
+        try checkAttentionTTLPrunesStaleSessionsSoonerThanWorking()
         try checkCompletedTTLReturnsToIdle()
         try checkRecentEventsAreStoredAndCapped()
         try checkStateFileSchemaRoundTrip()
@@ -523,6 +524,40 @@ struct AgentSignalChecks {
         )
     }
 
+    private static func checkAttentionTTLPrunesStaleSessionsSoonerThanWorking() throws {
+        // Attention-class signals (needs_review / permission / blocked) are
+        // "protected" against normal working/done events, so a zombie session
+        // left behind by an exited agent (e.g. a stray `--agent cursor`
+        // attention event) would otherwise linger for the full working TTL.
+        // It must expire on its own, shorter, attention TTL — independent of the
+        // (much longer) working sessionTTLSeconds.
+        let store = makeStore(sessionTTLSeconds: 10_000, attentionTTLSeconds: 0.01)
+        let oldDate = Date(timeIntervalSince1970: 100)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .attention,
+                updatedAt: oldDate,
+                sessions: ["cursor:ghost": SessionRecord(
+                    agent: "cursor",
+                    signal: .attention,
+                    lastEvent: "NeedsReview",
+                    updatedAt: oldDate
+                )]
+            ),
+            in: store
+        )
+        let snapshot = store.readSnapshot()
+        let storedDocument = try storedDocument(in: store)
+
+        try expect(
+            snapshot.aggregate == .stale,
+            "expired attention sessions should produce stale aggregate even when working TTL is far from elapsing"
+        )
+        try expect(snapshot.sessions.isEmpty, "stale attention sessions should be pruned from snapshot")
+        try expect(storedDocument.sessions.isEmpty, "stale attention sessions should be pruned from persisted state")
+    }
+
     private static func checkCompletedTTLReturnsToIdle() throws {
         let store = makeStore(completedTTLSeconds: 0.01)
         let oldDate = Date(timeIntervalSince1970: 100)
@@ -667,6 +702,7 @@ struct AgentSignalChecks {
     private static func makeStore(
         sessionTTLSeconds: Double = 60,
         completedTTLSeconds: Double = 30,
+        attentionTTLSeconds: Double? = nil,
         eventLimit: Int = 50
     ) -> SignalStateStore {
         let directory = FileManager.default.temporaryDirectory
@@ -676,6 +712,7 @@ struct AgentSignalChecks {
             stateFileURL: file,
             sessionTTLSeconds: sessionTTLSeconds,
             completedTTLSeconds: completedTTLSeconds,
+            attentionTTLSeconds: attentionTTLSeconds ?? sessionTTLSeconds,
             eventLimit: eventLimit
         )
     }

@@ -75,6 +75,7 @@ export AGENT_SIGNAL_LIGHT_STATE_FILE=/path/to/status.json
 export AGENT_SIGNAL_LIGHT_STATE_DIR=/tmp/agent-signal
 export AGENT_SIGNAL_LIGHT_EVENT_LIMIT=50
 export AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS=90
+export AGENT_SIGNAL_LIGHT_ATTENTION_TTL_SECONDS=300
 export SIGNAL_LIGHT_SESSION_TTL_SECONDS=1800
 ```
 
@@ -83,6 +84,8 @@ If the JSON is missing, the app falls back to `ready` / `idle`. If the JSON is d
 `aggregate` is a fallback when there are no active sessions. A stale or paused aggregate does not lock the state forever; once a new non-paused session is written, the aggregate is recomputed from sessions.
 
 Completed sessions use a shorter TTL than normal sessions. By default `done` stays visible for 30 seconds, then the runtime prunes that completed session and returns to `idle` / `ready` instead of `stale`. Snapshot reads persist TTL pruning back into the JSON so direct file readers, the CLI, and the menu bar converge on the same aggregate. When pruning changes the aggregate, `updated_at` is refreshed to the prune time so the menu and CLI do not show the old event time as the current status update time.
+
+Attention-class sessions (`needs_review` / `permission` / `blocked`) use their own TTL (`AGENT_SIGNAL_LIGHT_ATTENTION_TTL_SECONDS`, default 5 minutes), shorter than the normal session TTL of 30 minutes. These states are protected against normal working/done events, so a session left behind by an agent that has already exited (for example a stray `--agent <name>` attention event) would otherwise linger for the full 30-minute session TTL. The shorter attention TTL lets such zombie sessions expire to `stale` on their own; `agent-signal reset` still clears them immediately.
 
 ## CLI Status Output
 

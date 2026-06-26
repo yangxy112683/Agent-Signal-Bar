@@ -22,6 +22,7 @@ public final class SignalStateStore: @unchecked Sendable {
     public let stateFileURL: URL
     public let sessionTTLSeconds: Double
     public let completedTTLSeconds: Double
+    public let attentionTTLSeconds: Double
     public let eventLimit: Int
     private static let duplicateEventWindow: TimeInterval = 4
 
@@ -32,11 +33,13 @@ public final class SignalStateStore: @unchecked Sendable {
         stateFileURL: URL = SignalStateStore.defaultStateFileURL(),
         sessionTTLSeconds: Double = SignalStateStore.defaultSessionTTL(),
         completedTTLSeconds: Double = SignalStateStore.defaultCompletedTTL(),
+        attentionTTLSeconds: Double = SignalStateStore.defaultAttentionTTL(),
         eventLimit: Int = SignalStateStore.defaultEventLimit()
     ) {
         self.stateFileURL = stateFileURL
         self.sessionTTLSeconds = sessionTTLSeconds
         self.completedTTLSeconds = completedTTLSeconds
+        self.attentionTTLSeconds = attentionTTLSeconds
         self.eventLimit = eventLimit
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom(Self.decodeDate)
@@ -80,6 +83,23 @@ public final class SignalStateStore: @unchecked Sendable {
               value > 0
         else {
             return 30
+        }
+        return value
+    }
+
+    /// TTL for "attention-class" signals (needs_review / permission / blocked).
+    /// These are protected against normal working/done events, so without their
+    /// own shorter TTL a session left behind by an exited agent would linger for
+    /// the full `defaultSessionTTL` (30 min). Defaults to 5 minutes.
+    public static func defaultAttentionTTL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Double {
+        guard let rawValue = environment["AGENT_SIGNAL_LIGHT_ATTENTION_TTL_SECONDS"]
+                ?? environment["SIGNAL_LIGHT_ATTENTION_TTL_SECONDS"],
+              let value = Double(rawValue),
+              value > 0
+        else {
+            return 5 * 60
         }
         return value
     }
@@ -383,7 +403,12 @@ private extension SignalStateStore {
         case .done, .toolDone, .subagentStop:
             return completedTTLSeconds
         default:
-            return sessionTTLSeconds
+            switch signal.displayState {
+            case .needsReview, .permission, .blocked:
+                return attentionTTLSeconds
+            default:
+                return sessionTTLSeconds
+            }
         }
     }
 
