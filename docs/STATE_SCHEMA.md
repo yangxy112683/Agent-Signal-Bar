@@ -8,19 +8,21 @@ Agent Signal Bar 默认读取和写入：
 
 当前 schema 版本是 `1`。缺失 `events` 或 `schema_version` 的旧文件仍可读取；新写出的文件会补齐这些字段。
 
+所有 `updated_at` 时间戳以**北京时间**（`Asia/Shanghai`，`+08:00` 偏移）写出，例如 `2026-05-28T11:45:00+08:00`。这只改变可读呈现，不改变所代表的绝对时刻，因此 TTL 计算与状态聚合不受影响。读取端同时兼容历史的 UTC `Z` 格式（如 `2026-05-28T03:45:00Z`），两者解析为同一时刻。
+
 ## Document
 
 ```json
 {
   "schema_version": 1,
   "aggregate": "working",
-  "updated_at": "2026-05-28T03:45:00Z",
+  "updated_at": "2026-05-28T11:45:00+08:00",
   "sessions": {
     "codex-main": {
       "agent": "codex",
       "signal": "working",
       "last_event": "PreToolUse",
-      "updated_at": "2026-05-28T03:45:00Z"
+      "updated_at": "2026-05-28T11:45:00+08:00"
     }
   },
   "events": [
@@ -30,7 +32,7 @@ Agent Signal Bar 默认读取和写入：
       "agent": "codex",
       "signal": "working",
       "event": "PreToolUse",
-      "updated_at": "2026-05-28T03:45:00Z"
+      "updated_at": "2026-05-28T11:45:00+08:00"
     }
   ]
 }
@@ -42,7 +44,7 @@ Agent Signal Bar 默认读取和写入：
 | --- | --- | --- |
 | `schema_version` | yes | Schema version. Current value is `1`. |
 | `aggregate` | yes | Current aggregate signal shown by the menu bar. |
-| `updated_at` | yes | ISO-8601 document update time. |
+| `updated_at` | yes | ISO-8601 document update time (Beijing time, `+08:00`). |
 | `sessions` | yes | Map of session id to latest session state. |
 | `events` | yes | Recent event history, newest displayed first by the app. |
 
@@ -53,7 +55,7 @@ Session fields:
 | `agent` | no | Agent source, such as `codex`, `claude-code`, `local-script`, or `script`. |
 | `signal` | yes | One of the supported signal names. |
 | `last_event` | no | Last source event that produced the signal. |
-| `updated_at` | yes | ISO-8601 session update time. |
+| `updated_at` | yes | ISO-8601 session update time (Beijing time, `+08:00`). |
 
 Bare CLI signal commands that do not pass `--session` are stored as session id `manual` with agent `manual` and event `ManualSet`. This keeps manual testing and menu buttons inside the same aggregation model as Codex, Claude Code, and local scripts. Manual `idle` / `reset` clears sessions instead of leaving a stale manual session behind.
 
@@ -66,7 +68,7 @@ Event fields:
 | `agent` | no | Agent source. |
 | `signal` | yes | Signal written by the event. |
 | `event` | no | Source event name. |
-| `updated_at` | yes | ISO-8601 event time. |
+| `updated_at` | yes | ISO-8601 event time (Beijing time, `+08:00`). |
 
 ## Environment
 
@@ -104,14 +106,14 @@ Attention-class sessions (`needs_review` / `permission` / `blocked`) use their o
   "summary": "Agent 正在读写文件、跑工具或测试。",
   "action": "不用处理",
   "state_file": "/tmp/agent-signal/status.json",
-  "updated_at": "2026-05-28T03:45:00Z",
+  "updated_at": "2026-05-28T11:45:00+08:00",
   "sessions": [
     {
       "session_id": "codex-main",
       "agent": "codex",
       "signal": "working",
       "last_event": "PreToolUse",
-      "updated_at": "2026-05-28T03:45:00Z"
+      "updated_at": "2026-05-28T11:45:00+08:00"
     }
   ],
   "recent_events": [
@@ -121,7 +123,7 @@ Attention-class sessions (`needs_review` / `permission` / `blocked`) use their o
       "agent": "codex",
       "signal": "working",
       "event": "PreToolUse",
-      "updated_at": "2026-05-28T03:45:00Z"
+      "updated_at": "2026-05-28T11:45:00+08:00"
     }
   ]
 }

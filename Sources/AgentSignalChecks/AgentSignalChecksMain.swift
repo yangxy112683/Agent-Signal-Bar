@@ -23,6 +23,8 @@ struct AgentSignalChecks {
         try checkCompletedTTLReturnsToIdle()
         try checkRecentEventsAreStoredAndCapped()
         try checkStateFileSchemaRoundTrip()
+        try checkStateFileTimestampsUseBeijingOffset()
+        try checkLegacyUTCAndBeijingTimestampsDecodeToSameInstant()
         try checkAllSignalsAreCodable()
         try checkLegacyStatusFileCompatibility()
         try checkCorruptStatusFileFallsBackToStale()
@@ -615,6 +617,77 @@ struct AgentSignalChecks {
         try expect(object?["updated_at"] is String, "status JSON should include ISO updated_at")
         try expect(object?["sessions"] is [String: Any], "status JSON should include sessions")
         try expect(object?["events"] is [Any], "status JSON should include events")
+    }
+
+    private static func checkStateFileTimestampsUseBeijingOffset() throws {
+        let store = makeStore()
+
+        _ = try store.applySessionSignal(.working, sessionID: "codex-main", agent: "codex", lastEvent: "PreToolUse")
+        let rawJSON = try String(contentsOf: store.stateFileURL, encoding: .utf8)
+
+        try expect(
+            rawJSON.contains("+08:00"),
+            "status JSON timestamps should be written in Beijing time with +08:00 offset"
+        )
+        try expect(
+            !rawJSON.contains("Z\""),
+            "status JSON timestamps should not be written as UTC Z literals"
+        )
+
+        // The on-disk Beijing-time string must still round-trip to the same
+        // absolute instant, so TTL math and aggregation are unaffected.
+        let object = try JSONSerialization.jsonObject(with: Data(rawJSON.utf8)) as? [String: Any]
+        let updatedAt = object?["updated_at"] as? String ?? ""
+        try expect(
+            updatedAt.contains("+08:00") && !updatedAt.contains("Z"),
+            "document updated_at should be a +08:00 string, got: \(updatedAt)"
+        )
+    }
+
+    private static func checkLegacyUTCAndBeijingTimestampsDecodeToSameInstant() throws {
+        // A legacy file written in UTC (Z) and a new file written in Beijing
+        // time (+08:00) for the same instant must decode to the same Date, so
+        // switching the on-disk rendering never shifts TTL math or ordering.
+        // Use a huge session TTL so the fixed-date session is not pruned on read.
+        let utcStore = makeStore(sessionTTLSeconds: .greatestFiniteMagnitude)
+        let beijingStore = makeStore(sessionTTLSeconds: .greatestFiniteMagnitude)
+
+        let utcJSON = """
+        {
+          "aggregate": "working",
+          "updated_at": "2026-06-26T08:15:09Z",
+          "sessions": {
+            "s": { "agent": "codex", "signal": "working", "last_event": "PreToolUse", "updated_at": "2026-06-26T08:15:09Z" }
+          }
+        }
+        """
+        let beijingJSON = """
+        {
+          "aggregate": "working",
+          "updated_at": "2026-06-26T16:15:09+08:00",
+          "sessions": {
+            "s": { "agent": "codex", "signal": "working", "last_event": "PreToolUse", "updated_at": "2026-06-26T16:15:09+08:00" }
+          }
+        }
+        """
+
+        for (store, json) in [(utcStore, utcJSON), (beijingStore, beijingJSON)] {
+            try FileManager.default.createDirectory(
+                at: store.stateFileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try json.write(to: store.stateFileURL, atomically: true, encoding: .utf8)
+        }
+
+        let utcSession = utcStore.readSnapshot().sessions.first { $0.sessionID == "s" }
+        let beijingSession = beijingStore.readSnapshot().sessions.first { $0.sessionID == "s" }
+
+        try expect(utcSession != nil, "UTC legacy session should decode and survive (no prune)")
+        try expect(beijingSession != nil, "Beijing session should decode and survive (no prune)")
+        try expect(
+            utcSession?.updatedAt == beijingSession?.updatedAt,
+            "Z and +08:00 timestamps for the same instant must decode to the same Date"
+        )
     }
 
     private static func checkAllSignalsAreCodable() throws {

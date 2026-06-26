@@ -333,7 +333,7 @@ private func printStatus(_ snapshot: SignalSnapshot, asJSON: Bool = false) {
 
 private func printStatusJSON(_ snapshot: SignalSnapshot) {
     let encoder = JSONEncoder()
-    encoder.dateEncodingStrategy = .iso8601
+    encoder.dateEncodingStrategy = SignalStateStore.beijingTimeEncodingStrategy
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
     do {

@@ -44,7 +44,7 @@ public final class SignalStateStore: @unchecked Sendable {
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom(Self.decodeDate)
         encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .custom(Self.encodeDate)
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     }
 
@@ -126,6 +126,32 @@ public final class SignalStateStore: @unchecked Sendable {
             return nil
         }
         return value
+    }
+
+    /// Beijing time (UTC+8) used when writing timestamps to the state file.
+    /// Output looks like `2026-06-26T16:15:09+08:00`. The stored instant is
+    /// unchanged versus UTC `Z` — only the human-readable rendering differs —
+    /// so TTL math and aggregation are unaffected.
+    private static let beijingTimeZone = TimeZone(identifier: "Asia/Shanghai")
+        ?? TimeZone(secondsFromGMT: 8 * 3600)!
+
+    private static func beijingISO8601String(from date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = beijingTimeZone
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
+    private static func encodeDate(_ date: Date, to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(beijingISO8601String(from: date))
+    }
+
+    /// Date encoding strategy that renders timestamps as Beijing-time ISO-8601
+    /// strings with a `+08:00` offset. Shared so the state-file writer and any
+    /// status-display encoders (e.g. the CLI) stay consistent.
+    public static var beijingTimeEncodingStrategy: JSONEncoder.DateEncodingStrategy {
+        .custom(encodeDate)
     }
 
     private static func decodeDate(from decoder: Decoder) throws -> Date {
