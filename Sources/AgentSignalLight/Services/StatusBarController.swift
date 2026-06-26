@@ -9,6 +9,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     private let model: MenuBarStatusModel
     private let updater: SparkleUpdaterService
     private var statusItem: NSStatusItem?
+    private var isActivated = false
     private lazy var nativeStatusMenu: NSMenu = {
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -67,6 +68,15 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         self.updater = updater
         super.init()
         bind()
+    }
+
+    /// 在 `applicationDidFinishLaunching` 之后调用。此时 NSApplication 已完成
+    /// activation policy 设置并与窗口服务器(WindowServer/SkyLight)建立连接，
+    /// 创建 NSStatusItem 才是安全的。若在 App.init() 阶段就创建会触发 SkyLight
+    /// 断言并 abort。
+    func activate() {
+        guard !isActivated else { return }
+        isActivated = true
         floatingSignalController.start()
         updateStatusItem()
     }
@@ -188,6 +198,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func updateStatusItem() {
+        // 激活前(App.init 阶段)不创建任何状态栏图标，避免在 WindowServer
+        // 连接就绪前调用 NSStatusBar 触发 SkyLight 断言 abort。绑定的 Combine
+        // 回调可能在 activate() 之前就触发，这里统一拦截。
+        guard isActivated else { return }
+
         guard model.isStatusBarIconEnabled else {
             if !didPresentRecoveryWindowForCurrentDisable {
                 showRecoveryWindow()

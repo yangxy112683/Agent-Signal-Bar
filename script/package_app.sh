@@ -196,6 +196,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
+  <key>LSUIElement</key>
+  <true/>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>SUFeedURL</key>

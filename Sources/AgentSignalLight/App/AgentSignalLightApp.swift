@@ -29,11 +29,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if DebugLaunchOptions.shouldOpenDebugWindow {
             NSApp.setActivationPolicy(.regular)
+            AgentSignalAppServices.statusBarController.activate()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 AgentSignalAppServices.statusBarController.showDebugWindow()
             }
         } else {
             NSApp.setActivationPolicy(.accessory)
+            AgentSignalAppServices.statusBarController.activate()
         }
     }
 
