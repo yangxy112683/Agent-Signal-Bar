@@ -11,7 +11,7 @@ permissions:
 jobs:
   release:
     name: Build release artifacts
-    runs-on: macos-latest
+    runs-on: macos-26
 
     steps:
       - name: Checkout
@@ -22,10 +22,12 @@ jobs:
       - name: Select Xcode
         run: |
           DEVELOPER_DIR_PATH=""
-          if [ -d /Applications/Xcode.app/Contents/Developer ]; then
-            DEVELOPER_DIR_PATH="/Applications/Xcode.app/Contents/Developer"
-          else
+          DEVELOPER_DIR_PATH="$(ls -d /Applications/Xcode_26*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
+          if [ -z "$DEVELOPER_DIR_PATH" ]; then
             DEVELOPER_DIR_PATH="$(ls -d /Applications/Xcode_*.app/Contents/Developer 2>/dev/null | sort | tail -n 1 || true)"
+          fi
+          if [ -z "$DEVELOPER_DIR_PATH" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
+            DEVELOPER_DIR_PATH="/Applications/Xcode.app/Contents/Developer"
           fi
           if [ -n "$DEVELOPER_DIR_PATH" ]; then
             sudo xcode-select -s "$DEVELOPER_DIR_PATH"
