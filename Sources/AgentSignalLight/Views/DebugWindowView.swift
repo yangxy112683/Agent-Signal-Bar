@@ -19,6 +19,7 @@ struct DebugWindowView: View {
     @State private var isFloatingLightDebugTargetEnabled = true
     @State private var selectedLightDebugTest: LightDebugTest?
     @State private var isUsageAccountDetailsExpanded = false
+    @State private var isShowingDiagnosticsExportConfirmation = false
     private let activityRecentEventLimit = 50
 
     var body: some View {
@@ -52,6 +53,21 @@ struct DebugWindowView: View {
         }
         .frame(width: 600, height: 840)
         .preferredColorScheme(model.appTheme.colorScheme)
+        .confirmationDialog(
+            model.text("导出诊断包？", "Export diagnostics package?"),
+            isPresented: $isShowingDiagnosticsExportConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(model.text("导出诊断", "Export Diagnostics")) {
+                model.exportDiagnostics()
+            }
+            Button(model.text("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(model.text(
+                "诊断包会包含状态快照和本机路径信息，例如项目目录、状态文件和导出路径；不会复制 Codex 或 Claude 凭据配置。",
+                "The diagnostics package includes status snapshots and local paths such as project root, state file, and export path. It does not copy Codex or Claude credential configuration."
+            ))
+        }
         .onChange(of: model.isDebugSettingsVisible) { _, isVisible in
             if !isVisible && selectedSettingsTab == .debug {
                 selectedSettingsTab = .advanced
@@ -321,6 +337,7 @@ struct DebugWindowView: View {
     private enum LightDebugTest: Hashable {
         case signal(AgentSignal)
         case activeEffect(ActiveSignalEffect)
+        case alertEffect(AgentSignal, AlertSignalEffect)
         case completedEffect(CompletedSignalEffect)
     }
 
@@ -341,6 +358,9 @@ struct DebugWindowView: View {
         case usagePlatform
         case thinkingEffect
         case workingEffect
+        case needsReviewEffect
+        case permissionEffect
+        case blockedEffect
         case doneEffect
         case completionSound
         case waitingSound
@@ -664,6 +684,63 @@ struct DebugWindowView: View {
                         width: effectMenuWidth
                     ) {
                         model.setCompletedSignalEffect(effect)
+                    }
+                }
+            }
+        }
+    }
+
+    private var needsReviewEffectMenu: some View {
+        alertEffectMenu(
+            id: .needsReviewEffect,
+            selectedEffect: model.needsReviewSignalEffect,
+            color: .yellow
+        ) { effect in
+            model.setNeedsReviewSignalEffect(effect)
+        }
+    }
+
+    private var permissionEffectMenu: some View {
+        alertEffectMenu(
+            id: .permissionEffect,
+            selectedEffect: model.permissionSignalEffect,
+            color: .red
+        ) { effect in
+            model.setPermissionSignalEffect(effect)
+        }
+    }
+
+    private var blockedEffectMenu: some View {
+        alertEffectMenu(
+            id: .blockedEffect,
+            selectedEffect: model.blockedSignalEffect,
+            color: .red
+        ) { effect in
+            model.setBlockedSignalEffect(effect)
+        }
+    }
+
+    private func alertEffectMenu(
+        id: SettingsDropdownID,
+        selectedEffect: AlertSignalEffect,
+        color: SignalLampColor,
+        setEffect: @escaping (AlertSignalEffect) -> Void
+    ) -> some View {
+        inlineDropdown(
+            id: id,
+            title: model.displayName(for: selectedEffect, color: color),
+            width: effectMenuWidth,
+            opensUpward: true,
+            optionsHeight: dropdownOptionsHeight(optionCount: AlertSignalEffect.allCases.count)
+        ) {
+            dropdownOptions(width: effectMenuWidth) {
+                ForEach(AlertSignalEffect.allCases, id: \.self) { effect in
+                    dropdownOption(
+                        model.displayName(for: effect, color: color),
+                        isSelected: selectedEffect == effect,
+                        width: effectMenuWidth
+                    ) {
+                        setEffect(effect)
                     }
                 }
             }
@@ -2437,25 +2514,31 @@ struct DebugWindowView: View {
     }
 
     private var activitySessions: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let sessionRows = activitySessionRows
+
+        return VStack(alignment: .leading, spacing: 8) {
             Text(model.text("当前会话", "Active Sessions"))
                 .font(settingsBodyStrongFont)
                 .foregroundStyle(.secondary)
 
-            if visibleActivitySessions.isEmpty {
+            if sessionRows.isEmpty {
                 emptyActivityRow(
                     icon: "checkmark.circle",
-                    title: model.text("暂无运行中的 Agent", "No active agent sessions"),
-                    subtitle: model.text("启动 Agent 后，这里会显示所有 Agent 的实时状态。", "Launch an agent to show live status from all agents here.")
+                    title: model.text("当前没有正在工作的 Agent", "No agent is working right now"),
+                    subtitle: model.text("空闲时不会点亮状态栏和悬浮信号灯。", "Idle agents do not light the status bar or floating signal.")
                 )
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(visibleActivitySessions) { session in
+                    ForEach(sessionRows) { session in
                         activitySessionRow(session)
                     }
                 }
             }
         }
+    }
+
+    private var activitySessionRows: [SessionStatus] {
+        visibleActivitySessions.isEmpty ? selectedIdleActivitySessions : visibleActivitySessions
     }
 
     private var visibleActivitySessions: [SessionStatus] {
@@ -2464,6 +2547,75 @@ struct DebugWindowView: View {
             limit: ActivityPresentation.currentSessionLimit
         )
         .filter(isVisibleActivitySession)
+    }
+
+    private var selectedIdleActivitySessions: [SessionStatus] {
+        guard model.signalLightAgentSelectionMode == .manual,
+              !model.isMonitoringPaused
+        else {
+            return []
+        }
+
+        return model.signalLightAgentScopes
+            .intersection(visibleSignalLightAgentScopeSet)
+            .sorted { $0.sortOrder < $1.sortOrder }
+            .compactMap(idleActivitySession)
+    }
+
+    private func idleActivitySession(for scope: SignalLightAgentScope) -> SessionStatus? {
+        guard shouldShowIdleActivitySession(for: scope) else { return nil }
+
+        let agent: String
+        let sessionID: String
+        let event: String
+
+        switch scope {
+        case .codexDesktop:
+            agent = "codex-desktop"
+            sessionID = "idle:codex-desktop"
+            event = "PlatformPresence:Desktop"
+        case .codexCLI:
+            agent = "codex-cli"
+            sessionID = "idle:codex-cli"
+            event = "PlatformPresence:CLI"
+        case .codexVSCode:
+            agent = "codex-vscode"
+            sessionID = "idle:codex-vscode"
+            event = "PlatformPresence:VSCode"
+        case .codexXcode:
+            agent = "codex-xcode"
+            sessionID = "idle:codex-xcode"
+            event = "PlatformPresence:Xcode"
+        case .codexIDEA:
+            agent = "codex-idea"
+            sessionID = "idle:codex-idea"
+            event = "PlatformPresence:IDEA"
+        case .claudeCode:
+            agent = "claude-code"
+            sessionID = "idle:claude-code"
+            event = "PlatformPresence:Desktop"
+        case .codex, .claude, .claudeDesktop, .localScript:
+            return nil
+        }
+
+        return SessionStatus(
+            sessionID: sessionID,
+            signal: .idle,
+            updatedAt: Date(),
+            agent: agent,
+            lastEvent: event
+        )
+    }
+
+    private func shouldShowIdleActivitySession(for scope: SignalLightAgentScope) -> Bool {
+        switch scope.group {
+        case .codex:
+            return model.isCodexDesktopMonitoringEnabled
+        case .claude:
+            return model.isClaudeDesktopMonitoringEnabled
+        case .other:
+            return false
+        }
     }
 
     private var activityEvents: some View {
@@ -2873,10 +3025,11 @@ struct DebugWindowView: View {
                     debugLightTestButton(.activeEffect(.greenSteady), title: model.text("绿灯常亮", "Green steady"), systemImage: "circle.fill")
                     debugLightTestButton(.activeEffect(.greenSlowFlash), title: model.text("绿灯慢闪", "Green slow"), systemImage: "slowmo")
                     debugLightTestButton(.activeEffect(.greenFastFlash), title: model.text("绿灯快闪", "Green fast"), systemImage: "bolt.fill")
-                    debugLightTestButton(.signal(.permission), title: model.text("红灯慢闪", "Red slow"), systemImage: "circle.dotted")
-                    debugLightTestButton(.signal(.blocked), title: model.text("红灯快闪", "Red fast"), systemImage: "circle.dotted")
+                    debugLightTestButton(.alertEffect(.attention, .slowFlash), title: model.text("黄灯慢闪", "Yellow slow"), systemImage: "circle.dotted")
+                    debugLightTestButton(.alertEffect(.attention, .fastFlash), title: model.text("黄灯快闪", "Yellow fast"), systemImage: "circle.dotted")
+                    debugLightTestButton(.alertEffect(.permission, .slowFlash), title: model.text("红灯慢闪", "Red slow"), systemImage: "circle.dotted")
+                    debugLightTestButton(.alertEffect(.blocked, .fastFlash), title: model.text("红灯快闪", "Red fast"), systemImage: "circle.dotted")
                     debugLightTestButton(.completedEffect(.greenPulse), title: model.text("绿灯脉冲", "Green pulse"), systemImage: "circle.dotted")
-                    debugLightTestButton(.completedEffect(.yellowPulse), title: model.text("黄灯慢闪", "Yellow slow"), systemImage: "circle.dotted")
                     debugLightTestButton(.completedEffect(.yellowSteady), title: model.text("黄灯常亮", "Yellow steady"), systemImage: "circle.fill")
                     debugLightTestButton(.activeEffect(.trafficCycle), title: model.text("红黄绿依次亮灯", "R/Y/G sequence"), systemImage: "circle.grid.3x1.fill")
                     debugLightTestButton(.completedEffect(.allSteady), title: model.text("三灯全亮", "All steady"), systemImage: "circle.grid.3x1.fill")
@@ -3002,37 +3155,25 @@ struct DebugWindowView: View {
                     }
                     .zIndex(expandedSettingsDropdown == .workingEffect ? 1000 : 0)
 
-                    settingRow(model.text("工作灯效速度", "Work effect speed")) {
-                        compactSegmentedControl(
-                            options: SignalEffectSpeed.allCases,
-                            selection: activeEffectSpeedBinding
-                        ) { speed in
-                            model.displayName(for: speed)
-                        }
+                    settingRow(model.text("需确认灯效", "Needs review effect")) {
+                        needsReviewEffectMenu
                     }
+                    .zIndex(expandedSettingsDropdown == .needsReviewEffect ? 1000 : 0)
 
-                    settingRow(model.text("提醒闪烁速度", "Alert flash speed")) {
-                        compactSegmentedControl(
-                            options: SignalEffectSpeed.allCases,
-                            selection: alertEffectSpeedBinding
-                        ) { speed in
-                            model.displayName(for: speed)
-                        }
+                    settingRow(model.text("授权灯效", "Permission effect")) {
+                        permissionEffectMenu
                     }
+                    .zIndex(expandedSettingsDropdown == .permissionEffect ? 1000 : 0)
+
+                    settingRow(model.text("阻塞灯效", "Blocked effect")) {
+                        blockedEffectMenu
+                    }
+                    .zIndex(expandedSettingsDropdown == .blockedEffect ? 1000 : 0)
 
                     settingRow(model.text("完成灯效", "Done effect")) {
                         doneEffectMenu
                     }
                     .zIndex(expandedSettingsDropdown == .doneEffect ? 1000 : 0)
-
-                    settingRow(model.text("呼吸强度", "Breathing strength")) {
-                        compactSegmentedControl(
-                            options: MacOSBreathingStrength.allCases,
-                            selection: macOSBreathingStrengthBinding
-                        ) { strength in
-                            model.displayName(for: strength)
-                        }
-                    }
                 }
 
             }
@@ -3058,7 +3199,7 @@ struct DebugWindowView: View {
                                 systemImage: "archivebox",
                                 disabled: model.isDiagnosticsExportRunning
                             ) {
-                                model.exportDiagnostics()
+                                isShowingDiagnosticsExportConfirmation = true
                             }
 
                             diagnosticActionButton(model.text("状态文件", "State File"), systemImage: "folder") {
@@ -3220,9 +3361,14 @@ struct DebugWindowView: View {
 
             settingRow(model.text("自动检查更新", "Automatically check for updates")) {
                 settingsSwitch(automaticUpdateCheckBinding)
+                    .disabled(!updater.isConfigured)
                     .help(model.text(
-                        "由 Sparkle 定期检查更新，可直接下载并重启安装。",
-                        "Sparkle checks periodically and can download the update, then relaunch to install."
+                        updater.isConfigured
+                            ? "由 Sparkle 定期检查更新，可直接下载并重启安装。"
+                            : "当前构建未配置 Sparkle 更新源和公钥；正式发布包才可启用自动检查。",
+                        updater.isConfigured
+                            ? "Sparkle checks periodically and can download the update, then relaunch to install."
+                            : "This build does not include a Sparkle feed URL and public key. Automatic checks are available in release packages."
                     ))
             }
 
@@ -3636,6 +3782,23 @@ struct DebugWindowView: View {
             customization.activeEffect = effect
             model.previewDebugLight(
                 signal: .working,
+                effectCustomization: customization,
+                targets: selectedLightDebugTargets
+            )
+        case .alertEffect(let signal, let effect):
+            var customization = model.signalEffectCustomization
+            switch signal.displayState {
+            case .needsReview:
+                customization.needsReviewEffect = effect
+            case .permission:
+                customization.permissionEffect = effect
+            case .blocked:
+                customization.blockedEffect = effect
+            case .ready, .active, .completed, .stale, .paused:
+                break
+            }
+            model.previewDebugLight(
+                signal: signal,
                 effectCustomization: customization,
                 targets: selectedLightDebugTargets
             )
@@ -4613,13 +4776,6 @@ struct DebugWindowView: View {
         )
     }
 
-    private var macOSBreathingStrengthBinding: Binding<MacOSBreathingStrength> {
-        Binding(
-            get: { model.macOSBreathingStrength },
-            set: { model.setMacOSBreathingStrength($0) }
-        )
-    }
-
     private var activeSignalEffectBinding: Binding<ActiveSignalEffect> {
         Binding(
             get: { model.activeSignalEffect },
@@ -4631,20 +4787,6 @@ struct DebugWindowView: View {
         Binding(
             get: { model.thinkingSignalEffect },
             set: { model.setThinkingSignalEffect($0) }
-        )
-    }
-
-    private var activeEffectSpeedBinding: Binding<SignalEffectSpeed> {
-        Binding(
-            get: { model.activeEffectSpeed },
-            set: { model.setActiveEffectSpeed($0) }
-        )
-    }
-
-    private var alertEffectSpeedBinding: Binding<SignalEffectSpeed> {
-        Binding(
-            get: { model.alertEffectSpeed },
-            set: { model.setAlertEffectSpeed($0) }
         )
     }
 
@@ -4958,10 +5100,12 @@ private struct PureActivitySignalLampView: View {
             return activeLampType
         case .completed:
             return completedLampType
-        case .needsReview, .stale:
+        case .needsReview:
+            return alertLampType(defaultColor: .yellow)
+        case .stale:
             return .yellow
         case .permission, .blocked:
-            return .red
+            return alertLampType(defaultColor: .red)
         case .paused:
             return .green
         }
@@ -4983,6 +5127,35 @@ private struct PureActivitySignalLampView: View {
             ) > 0
         }
         return litColor ?? .green
+    }
+
+    private func alertLampType(defaultColor: SignalLampColor) -> SignalLampColor {
+        let effect: AlertSignalEffect
+        switch signal.displayState {
+        case .needsReview:
+            effect = effectCustomization.needsReviewEffect
+        case .permission:
+            effect = effectCustomization.permissionEffect
+        case .blocked:
+            effect = effectCustomization.blockedEffect
+        case .ready, .active, .completed, .stale, .paused:
+            effect = .slowFlash
+        }
+
+        guard effect == .trafficCycle else {
+            return defaultColor
+        }
+
+        let litColor = SignalLampColor.allCases.first {
+            SignalLampAnimation.intensity(
+                $0,
+                signal: signal,
+                tick: tick,
+                allLightsOn: allLightsOn,
+                customization: effectCustomization
+            ) > 0
+        }
+        return litColor ?? defaultColor
     }
 
     private var completedLampType: SignalLampColor {

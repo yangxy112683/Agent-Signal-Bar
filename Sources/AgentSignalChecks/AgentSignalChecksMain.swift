@@ -11,8 +11,8 @@ struct AgentSignalChecks {
         try checkBlockedWinsOverPermissionWhenBothArePresent()
         try checkV2AggregatePriority()
         try checkStopHooksMapToCompleted()
-        try checkTurnEndDoesNotClearRedSession()
-        try checkDoneDoesNotOverrideAlertSession()
+        try checkTurnEndClearsPermissionSession()
+        try checkDoneClearsPermissionSession()
         try checkManualSignalsParticipateInAggregation()
         try checkNonPausedSignalResumesFromPausedAggregate()
         try checkSessionEndRemovesSession()
@@ -248,14 +248,15 @@ struct AgentSignalChecks {
         )
     }
 
-    private static func checkTurnEndDoesNotClearRedSession() throws {
+    private static func checkTurnEndClearsPermissionSession() throws {
         let store = makeStore()
 
         _ = try store.applySessionSignal(.permission, sessionID: "codex-1")
         let snapshot = try store.applySessionSignal(.turnEnd, sessionID: "codex-1")
 
-        try expect(snapshot.aggregate == .permission, "turn_end should preserve permission")
-        try expect(snapshot.sessions.count == 1, "turn_end should leave red session")
+        try expect(snapshot.aggregate == .idle, "turn_end should clear permission")
+        try expect(snapshot.sessions.isEmpty, "turn_end should remove the red session")
+        try expect(snapshot.recentEvents.first?.signal == .turnEnd, "turn_end event should still be recorded")
     }
 
     private static func checkStopHooksMapToCompleted() throws {
@@ -363,14 +364,14 @@ struct AgentSignalChecks {
         )
     }
 
-    private static func checkDoneDoesNotOverrideAlertSession() throws {
+    private static func checkDoneClearsPermissionSession() throws {
         let store = makeStore()
 
         _ = try store.applySessionSignal(.permission, sessionID: "codex-1")
         let snapshot = try store.applySessionSignal(.done, sessionID: "codex-1")
 
-        try expect(snapshot.aggregate == .permission, "done should not clear permission")
-        try expect(snapshot.sessions.first?.signal == .permission, "done should preserve the alert session")
+        try expect(snapshot.aggregate == .done, "done should clear permission into completed")
+        try expect(snapshot.sessions.first?.signal == .done, "done should replace the alert session")
         try expect(snapshot.recentEvents.first?.signal == .done, "done event should still be recorded")
     }
 
@@ -481,6 +482,14 @@ struct AgentSignalChecks {
 
         try expect(warningSnapshot.aggregate == .blocked, "session_end should not clear blocked state")
         try expect(warningSnapshot.sessions.first?.signal == .blocked, "blocked session should remain for review")
+
+        let permissionStore = makeStore()
+
+        _ = try permissionStore.applySessionSignal(.permission, sessionID: "codex-main")
+        let permissionSnapshot = try permissionStore.applySessionSignal(.sessionEnd, sessionID: "codex-main")
+
+        try expect(permissionSnapshot.aggregate == .idle, "session_end should clear permission")
+        try expect(permissionSnapshot.sessions.isEmpty, "permission session should be removed on session_end")
     }
 
     private static func checkOffClearsAllSessions() throws {

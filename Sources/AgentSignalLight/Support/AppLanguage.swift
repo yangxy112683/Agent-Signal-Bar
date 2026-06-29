@@ -551,6 +551,52 @@ extension MenuBarStatusModel {
         }
     }
 
+    func displayName(for effect: AlertSignalEffect) -> String {
+        switch effect {
+        case .pulse:
+            return text("慢闪", "Slow flash")
+        case .steady:
+            return text("常亮", "Steady")
+        case .slowFlash:
+            return text("慢闪", "Slow flash")
+        case .fastFlash:
+            return text("快闪", "Fast flash")
+        case .breathing:
+            return text("呼吸", "Breathe")
+        case .trafficCycle:
+            return text("红黄绿依次亮灯", "R/Y/G sequence")
+        }
+    }
+
+    func displayName(for effect: AlertSignalEffect, color: SignalLampColor) -> String {
+        if effect == .trafficCycle {
+            return text("红黄绿依次亮灯", "R/Y/G sequence")
+        }
+
+        let lampName: String
+        switch color {
+        case .red:
+            lampName = text("红灯", "Red")
+        case .yellow:
+            lampName = text("黄灯", "Yellow")
+        case .green:
+            lampName = text("绿灯", "Green")
+        }
+
+        switch effect {
+        case .pulse, .slowFlash:
+            return text("\(lampName)慢闪", "\(lampName) slow")
+        case .steady:
+            return text("\(lampName)常亮", "\(lampName) steady")
+        case .fastFlash:
+            return text("\(lampName)快闪", "\(lampName) fast")
+        case .breathing:
+            return text("\(lampName)呼吸", "\(lampName) breathe")
+        case .trafficCycle:
+            return text("红黄绿依次亮灯", "R/Y/G sequence")
+        }
+    }
+
     func friendlyAgentName(_ rawValue: String?) -> String {
         guard let rawValue, !rawValue.isEmpty else { return "Agent" }
         let normalized = rawValue

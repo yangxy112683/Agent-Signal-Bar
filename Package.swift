@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "AgentSignalLight", targets: ["AgentSignalLight"]),
+        .executable(name: "agent-signal-light", targets: ["AgentSignalCLI"]),
         .executable(name: "agent-signal", targets: ["AgentSignalCLI"]),
         .executable(name: "agent-signal-checks", targets: ["AgentSignalChecks"]),
         .executable(name: "agent-signal-icon-preview", targets: ["AgentSignalIconPreview"]),

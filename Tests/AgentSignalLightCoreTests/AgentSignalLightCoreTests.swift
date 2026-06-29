@@ -62,6 +62,51 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(horizontalBacking.height, (16 + 12) * scale.visualScale, accuracy: 0.01)
     }
 
+    func testFloatingAlertSoundRepeatLimiterCapsSingleEpisode() {
+        var limiter = FloatingAlertSoundRepeatLimiter(maximumRepeats: 3)
+
+        limiter.startEpisode("permission:codex-cli")
+        XCTAssertTrue(limiter.canPlay)
+        limiter.recordPlay()
+        XCTAssertTrue(limiter.canPlay)
+        limiter.recordPlay()
+        XCTAssertTrue(limiter.canPlay)
+        limiter.recordPlay()
+        XCTAssertFalse(limiter.canPlay)
+
+        limiter.startEpisode("permission:claude-cli")
+        XCTAssertTrue(limiter.canPlay)
+        XCTAssertEqual(limiter.repeatCount, 0)
+
+        limiter.recordPlay()
+        limiter.reset()
+        XCTAssertTrue(limiter.canPlay)
+        XCTAssertNil(limiter.episodeKey)
+        XCTAssertEqual(limiter.repeatCount, 0)
+    }
+
+    func testSoundRepeatLimitDoesNotClearLampState() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        var limiter = FloatingAlertSoundRepeatLimiter(maximumRepeats: 3)
+
+        _ = try fixture.store.applySessionSignal(
+            .permissionRequest,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "PermissionRequest"
+        )
+        limiter.startEpisode("permission:codex-cli:thread")
+        limiter.recordPlay()
+        limiter.recordPlay()
+        limiter.recordPlay()
+
+        let snapshot = fixture.store.readSnapshot()
+        XCTAssertFalse(limiter.canPlay)
+        XCTAssertEqual(snapshot.aggregate, .permission)
+        XCTAssertEqual(snapshot.sessions.first?.signal, .permissionRequest)
+    }
+
     func testSignalNormalizationAcceptsHumanInputVariants() {
         XCTAssert(AgentSignal.normalized("tool-done") == .toolDone)
         XCTAssert(AgentSignal.normalized(" session start ") == .sessionStart)
@@ -123,6 +168,20 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssert(activity?.signal == .attention)
         XCTAssert(activity?.event == "DesktopToolCall:request_user_input")
+    }
+
+    func testCodexDesktopSessionParserMapsEscalatedSandboxApprovalToPermission() {
+        let line = """
+        {"timestamp":"2026-06-29T02:00:33.647Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"swift test\\",\\"sandbox_permissions\\":\\"require_escalated\\",\\"justification\\":\\"Run outside sandbox?\\"}","call_id":"call_1"}}
+        """
+
+        let activity = CodexDesktopSessionParser.activity(
+            from: line,
+            defaultSessionID: "codex-desktop:thread"
+        )
+
+        XCTAssert(activity?.signal == .permissionRequest)
+        XCTAssert(activity?.event == "DesktopToolCall:exec_command")
     }
 
     func testCodexDesktopSessionParserDoesNotTreatPermissionProfileAsPermissionRequest() {
@@ -1426,7 +1485,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     @MainActor
     func testLongQuotaWindowResetTextIncludesDateAndDynamicTitle() {
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
         let window = AgentQuotaWindowStatus(
             remainingPercent: 84,
@@ -1466,7 +1525,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     @MainActor
     func testCompactTokenUsageTextUsesTwoDecimalPlaces() {
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
 
         XCTAssertEqual(model.compactTokenCountText(6_500_000_000), "65.00亿")
@@ -1479,7 +1538,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     @MainActor
     func testFloatingSignalDebugLightUsesLiveTickForTargetedOverride() {
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
 
         model.setDebugLight(signal: .working, targets: [.floatingSignal])
         XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate, .working)
@@ -2018,7 +2077,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
-    func testTurnEndDoesNotClearPermissionAlert() throws {
+    func testTurnEndClearsPermissionAlert() throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
@@ -2035,11 +2094,12 @@ final class AgentSignalLightCoreTests: XCTestCase {
             lastEvent: "Stop"
         )
 
-        XCTAssert(snapshot.aggregate == .permission)
-        XCTAssert(snapshot.sessions.map(\.sessionID) == ["codex-main"])
+        XCTAssert(snapshot.aggregate == .idle)
+        XCTAssert(snapshot.sessions.isEmpty)
+        XCTAssert(snapshot.recentEvents.first?.signal == .turnEnd)
     }
 
-    func testSuccessfulStopCompletesActiveSessionWithoutClearingAlerts() throws {
+    func testSuccessfulStopCompletesActiveSessionAndClearsPermissionAlert() throws {
         let activeFixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: activeFixture.directory) }
 
@@ -2086,12 +2146,42 @@ final class AgentSignalLightCoreTests: XCTestCase {
             lastEvent: "Stop"
         )
 
-        XCTAssert(alertSnapshot.aggregate == .permission)
-        XCTAssert(alertSnapshot.sessions.first?.signal == .permission)
+        XCTAssert(alertSnapshot.aggregate == .done)
+        XCTAssert(alertSnapshot.sessions.first?.signal == .done)
         XCTAssert(alertSnapshot.recentEvents.first?.signal == .done)
     }
 
-    func testSessionEndPreservesCompletedAndAlertSessions() throws {
+    func testDoneClearsNeedsReviewAlertWithoutHidingActiveSessions() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        _ = try fixture.store.applySessionSignal(
+            .thinking,
+            sessionID: "codex-desktop:active",
+            agent: "codex-desktop",
+            lastEvent: "DesktopThinking"
+        )
+        _ = try fixture.store.applySessionSignal(
+            .attention,
+            sessionID: "codex-xcode:needs-review",
+            agent: "codex-xcode",
+            lastEvent: "Elicitation"
+        )
+        let snapshot = try fixture.store.applySessionSignal(
+            .done,
+            sessionID: "codex-xcode:needs-review",
+            agent: "codex-xcode",
+            lastEvent: "ManualTestDone"
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .thinking)
+        XCTAssertEqual(snapshot.sessions.first { $0.sessionID == "codex-xcode:needs-review" }?.signal, .done)
+        XCTAssertEqual(snapshot.sessions.first { $0.sessionID == "codex-desktop:active" }?.signal, .thinking)
+        XCTAssertFalse(snapshot.sessions.contains { $0.signal.displayState == .needsReview })
+        XCTAssertEqual(snapshot.recentEvents.first?.signal, .done)
+    }
+
+    func testSessionEndPreservesCompletedAndClearsPermissionAlertSessions() throws {
         let completedFixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: completedFixture.directory) }
 
@@ -2119,6 +2209,24 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(alertSnapshot.aggregate == .blocked)
         XCTAssert(alertSnapshot.sessions.first?.signal == .blocked)
         XCTAssert(alertSnapshot.recentEvents.first?.signal == .sessionEnd)
+
+        let permissionFixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: permissionFixture.directory) }
+
+        _ = try permissionFixture.store.applySessionSignal(
+            .permission,
+            sessionID: "codex-main",
+            lastEvent: "PermissionRequest"
+        )
+        let permissionSnapshot = try permissionFixture.store.applySessionSignal(
+            .sessionEnd,
+            sessionID: "codex-main",
+            lastEvent: "SessionEnd"
+        )
+
+        XCTAssert(permissionSnapshot.aggregate == .idle)
+        XCTAssert(permissionSnapshot.sessions.isEmpty)
+        XCTAssert(permissionSnapshot.recentEvents.first?.signal == .sessionEnd)
     }
 
     func testSessionEndDoesNotClearPausedAggregate() throws {
@@ -2310,6 +2418,114 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(snapshot.sessions.first?.signal, .permission)
         XCTAssertEqual(snapshot.sessions.first?.updatedAt, newerDate)
         XCTAssertEqual(snapshot.recentEvents.map(\.event), ["PermissionRequest"])
+    }
+
+    func testPermissionRequestIsNotDowngradedByImmediateToolEvent() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let permissionDate = Date()
+        let toolDate = permissionDate.addingTimeInterval(1)
+
+        _ = try fixture.store.applySessionSignal(
+            .permissionRequest,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "PermissionRequest",
+            updatedAt: permissionDate
+        )
+        let snapshot = try fixture.store.applySessionSignal(
+            .attention,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "DesktopToolCall:exec_command",
+            updatedAt: toolDate
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .permission)
+        XCTAssertEqual(snapshot.sessions.first?.signal, .permissionRequest)
+        XCTAssertEqual(snapshot.sessions.first?.lastEvent, "PermissionRequest")
+        XCTAssertEqual(snapshot.recentEvents.first?.event, "DesktopToolCall:exec_command")
+    }
+
+    func testPermissionRequestResolvesToLaterToolProgress() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let permissionDate = Date()
+        let toolDate = permissionDate.addingTimeInterval(10)
+
+        _ = try fixture.store.applySessionSignal(
+            .permissionRequest,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "PermissionRequest",
+            updatedAt: permissionDate
+        )
+        let snapshot = try fixture.store.applySessionSignal(
+            .working,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "PreToolUse",
+            updatedAt: toolDate
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .working)
+        XCTAssertEqual(snapshot.sessions.first?.signal, .working)
+        XCTAssertEqual(snapshot.sessions.first?.lastEvent, "PreToolUse")
+    }
+
+    func testPermissionRequestResolvesToLaterToolDone() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let permissionDate = Date()
+        let toolDoneDate = permissionDate.addingTimeInterval(10)
+
+        _ = try fixture.store.applySessionSignal(
+            .permissionRequest,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "PermissionRequest",
+            updatedAt: permissionDate
+        )
+        let snapshot = try fixture.store.applySessionSignal(
+            .toolDone,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "DesktopToolDone",
+            updatedAt: toolDoneDate
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .toolDone)
+        XCTAssertEqual(snapshot.sessions.first?.signal, .toolDone)
+        XCTAssertEqual(snapshot.sessions.first?.lastEvent, "DesktopToolDone")
+    }
+
+    func testDoneClearsUnresolvedAttentionSession() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let attentionDate = Date()
+        let doneDate = attentionDate.addingTimeInterval(30)
+
+        _ = try fixture.store.applySessionSignal(
+            .attention,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "ManualYellowTest",
+            updatedAt: attentionDate
+        )
+        let snapshot = try fixture.store.applySessionSignal(
+            .done,
+            sessionID: "codex-cli:thread",
+            agent: "codex-cli",
+            lastEvent: "ManualYellowDone",
+            updatedAt: doneDate
+        )
+
+        XCTAssertEqual(snapshot.aggregate, .done)
+        XCTAssertEqual(snapshot.sessions.first?.signal, .done)
+        XCTAssertEqual(snapshot.sessions.first?.lastEvent, "ManualYellowDone")
+        let storedTimestamp = snapshot.sessions.first?.updatedAt.timeIntervalSince1970 ?? 0
+        XCTAssertEqual(storedTimestamp, doneDate.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(snapshot.recentEvents.first?.signal, .done)
     }
 
     func testDuplicateRecentEventsAreCollapsedBeforeCapping() throws {
@@ -2618,6 +2834,87 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(SignalLampAnimation.intensity(.green, signal: .done, tick: 2, customization: allFlash) == 0)
     }
 
+    func testAlertLampEffectsCustomizeRedAndYellowStates() {
+        XCTAssertFalse(AlertSignalEffect.allCases.contains(.pulse))
+        XCTAssertTrue(AlertSignalEffect.allCases.contains(.trafficCycle))
+
+        let slowAlert = SignalEffectCustomization(
+            activeEffect: .greenSlowFlash,
+            needsReviewEffect: .slowFlash,
+            permissionEffect: .slowFlash,
+            blockedEffect: .slowFlash
+        )
+        for tick in 0..<6 {
+            let greenSlow = SignalLampAnimation.intensity(
+                .green,
+                signal: .working,
+                tick: tick,
+                customization: slowAlert
+            )
+            XCTAssertEqual(
+                SignalLampAnimation.intensity(.yellow, signal: .attention, tick: tick, customization: slowAlert),
+                greenSlow
+            )
+            XCTAssertEqual(
+                SignalLampAnimation.intensity(.red, signal: .permission, tick: tick, customization: slowAlert),
+                greenSlow
+            )
+            XCTAssertEqual(
+                SignalLampAnimation.intensity(.red, signal: .blocked, tick: tick, customization: slowAlert),
+                greenSlow
+            )
+        }
+
+        let fastAlert = SignalEffectCustomization(
+            activeEffect: .greenFastFlash,
+            needsReviewEffect: .fastFlash,
+            permissionEffect: .fastFlash,
+            blockedEffect: .fastFlash
+        )
+        for tick in 0..<4 {
+            let greenFast = SignalLampAnimation.intensity(
+                .green,
+                signal: .working,
+                tick: tick,
+                customization: fastAlert
+            )
+            XCTAssertEqual(
+                SignalLampAnimation.intensity(.yellow, signal: .attention, tick: tick, customization: fastAlert),
+                greenFast
+            )
+            XCTAssertEqual(
+                SignalLampAnimation.intensity(.red, signal: .permission, tick: tick, customization: fastAlert),
+                greenFast
+            )
+            XCTAssertEqual(
+                SignalLampAnimation.intensity(.red, signal: .blocked, tick: tick, customization: fastAlert),
+                greenFast
+            )
+        }
+
+        let steadyPermission = SignalEffectCustomization(permissionEffect: .steady)
+        XCTAssertEqual(SignalLampAnimation.intensity(.red, signal: .permission, tick: 0, customization: steadyPermission), 1)
+        XCTAssertEqual(SignalLampAnimation.intensity(.red, signal: .permission, tick: 8, customization: steadyPermission), 1)
+        XCTAssertEqual(SignalLampAnimation.intensity(.yellow, signal: .permission, tick: 0, customization: steadyPermission), 0)
+
+        let breathingBlocked = SignalEffectCustomization(blockedEffect: .breathing)
+        XCTAssertLessThan(
+            SignalLampAnimation.intensity(.red, signal: .blocked, tick: 0, customization: breathingBlocked),
+            SignalLampAnimation.intensity(.red, signal: .blocked, tick: 5, customization: breathingBlocked)
+        )
+
+        let trafficCycleAlert = SignalEffectCustomization(
+            needsReviewEffect: .trafficCycle,
+            permissionEffect: .trafficCycle,
+            blockedEffect: .trafficCycle
+        )
+        XCTAssertEqual(SignalLampAnimation.intensity(.red, signal: .attention, tick: 0, customization: trafficCycleAlert), 1)
+        XCTAssertEqual(SignalLampAnimation.intensity(.yellow, signal: .attention, tick: 4, customization: trafficCycleAlert), 1)
+        XCTAssertEqual(SignalLampAnimation.intensity(.green, signal: .attention, tick: 8, customization: trafficCycleAlert), 1)
+        XCTAssertEqual(SignalLampAnimation.intensity(.red, signal: .permission, tick: 0, customization: trafficCycleAlert), 1)
+        XCTAssertEqual(SignalLampAnimation.intensity(.yellow, signal: .blocked, tick: 4, customization: trafficCycleAlert), 1)
+    }
+
     func testMacOSVisualScaleStrengthsAreMeaningfullySeparated() {
         let breathing = SignalEffectCustomization(activeEffect: .greenBreathing)
         let baseScale = SignalLampAnimation.scale(.green, signal: .working, tick: 0, customization: breathing)
@@ -2679,7 +2976,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssert(SignalLampAnimation.isLit(.yellow, signal: .attention, tick: 0))
         XCTAssert(!SignalLampAnimation.isLit(.yellow, signal: .attention, tick: 4))
-        XCTAssert(SignalLampAnimation.scale(.yellow, signal: .attention, tick: 0) < SignalLampAnimation.scale(.yellow, signal: .attention, tick: 2))
+        XCTAssertEqual(SignalLampAnimation.scale(.yellow, signal: .attention, tick: 0), 1)
 
         XCTAssert(SignalLampAnimation.isLit(.red, signal: .permission, tick: 0))
         XCTAssert(!SignalLampAnimation.isLit(.red, signal: .permission, tick: 4))
@@ -3166,6 +3463,87 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(visible.first?.signal, .idle)
     }
 
+    func testActivityPresentationKeepsUnresolvedPermissionRequestOverPresence() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let visible = ActivityPresentation.visibleSessions(
+            from: [
+                SessionStatus(
+                    sessionID: "codex-cli:old-permission",
+                    signal: .permission,
+                    updatedAt: now.addingTimeInterval(-10 * 60),
+                    agent: "codex-cli",
+                    lastEvent: "PermissionRequest"
+                ),
+                SessionStatus(
+                    sessionID: "platform-presence:codex-cli",
+                    signal: .idle,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "PlatformPresence:CLI"
+                )
+            ],
+            now: now
+        )
+
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertEqual(visible.first?.sessionID, "codex-cli:old-permission")
+        XCTAssertEqual(visible.first?.signal, .permission)
+    }
+
+    func testActivityPresentationPrefersNewerCompletedSessionOverPermissionRequest() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let visible = ActivityPresentation.visibleSessions(
+            from: [
+                SessionStatus(
+                    sessionID: "codex-cli:old-permission",
+                    signal: .permission,
+                    updatedAt: now.addingTimeInterval(-5),
+                    agent: "codex-cli",
+                    lastEvent: "PermissionRequest"
+                ),
+                SessionStatus(
+                    sessionID: "codex-cli:done",
+                    signal: .done,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "Stop"
+                )
+            ],
+            now: now
+        )
+
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertEqual(visible.first?.signal, .done)
+        XCTAssertEqual(visible.first?.lastEvent, "Stop")
+    }
+
+    func testActivityPresentationPrefersNewerProgressOverPermissionRequest() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let visible = ActivityPresentation.visibleSessions(
+            from: [
+                SessionStatus(
+                    sessionID: "codex-cli:old-permission",
+                    signal: .permission,
+                    updatedAt: now.addingTimeInterval(-5),
+                    agent: "codex-cli",
+                    lastEvent: "PermissionRequest"
+                ),
+                SessionStatus(
+                    sessionID: "codex-cli:tool",
+                    signal: .toolDone,
+                    updatedAt: now,
+                    agent: "codex-cli",
+                    lastEvent: "PostToolUse"
+                )
+            ],
+            now: now
+        )
+
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertEqual(visible.first?.signal, .toolDone)
+        XCTAssertEqual(visible.first?.lastEvent, "PostToolUse")
+    }
+
     @MainActor
     func testRecentDesktopActivityOverridesPresenceOnlySession() throws {
         let savedDefaults = clearSignalLightSelectionDefaults()
@@ -3200,7 +3578,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             in: fixture.store
         )
 
-        let model = MenuBarStatusModel(store: fixture.store)
+        let model = makeMenuBarStatusModel(store: fixture.store)
         model.setSignalLightAgentScopes([.codexDesktop])
 
         let visible = ActivityPresentation.visibleSessions(from: model.activitySnapshot, now: now, limit: nil)
@@ -3211,6 +3589,155 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(desktopSession.signal, .working)
         XCTAssertEqual(desktopSession.lastEvent, "DesktopToolCall:exec_command")
         XCTAssertEqual(model.displaySnapshot.aggregate, .working)
+    }
+
+    @MainActor
+    func testCompletedRecentEventClearsPermissionDisplayForSameSource() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .permission,
+                updatedAt: now,
+                sessions: [
+                    "codex-cli:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .permission,
+                        lastEvent: "PermissionRequest",
+                        updatedAt: now.addingTimeInterval(-20)
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "codex-done",
+                        sessionID: "codex-cli:thread",
+                        agent: "codex-cli",
+                        signal: .done,
+                        event: "Stop",
+                        updatedAt: now.addingTimeInterval(-1)
+                    ),
+                    SignalEventRecord(
+                        id: "codex-permission",
+                        sessionID: "codex-cli:thread",
+                        agent: "codex-cli",
+                        signal: .permission,
+                        event: "PermissionRequest",
+                        updatedAt: now.addingTimeInterval(-20)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.activitySnapshot.aggregate, .done)
+        XCTAssertEqual(model.displaySnapshot.aggregate, .done)
+        XCTAssertEqual(model.displaySnapshot.sessions.map(\.signal), [.done])
+    }
+
+    @MainActor
+    func testToolDoneRecentEventClearsCurrentPermissionDisplayForSameSource() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .permission,
+                updatedAt: now,
+                sessions: [
+                    "codex-cli:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .permission,
+                        lastEvent: "PermissionRequest",
+                        updatedAt: now.addingTimeInterval(-20)
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "codex-tool-done",
+                        sessionID: "codex-cli:thread",
+                        agent: "codex-cli",
+                        signal: .toolDone,
+                        event: "PostToolUse",
+                        updatedAt: now.addingTimeInterval(-1)
+                    ),
+                    SignalEventRecord(
+                        id: "codex-permission",
+                        sessionID: "codex-cli:thread",
+                        agent: "codex-cli",
+                        signal: .permission,
+                        event: "PermissionRequest",
+                        updatedAt: now.addingTimeInterval(-20)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.activitySnapshot.aggregate, .toolDone)
+        XCTAssertEqual(model.displaySnapshot.aggregate, .toolDone)
+        XCTAssertEqual(model.displaySnapshot.sessions.map(\.signal), [.toolDone])
+    }
+
+    @MainActor
+    func testOlderCompletedRecentEventStillPreventsPermissionFallback() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .permission,
+                updatedAt: now,
+                sessions: [
+                    "codex-cli:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .permission,
+                        lastEvent: "PermissionRequest",
+                        updatedAt: now.addingTimeInterval(-120)
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "codex-done",
+                        sessionID: "codex-cli:thread",
+                        agent: "codex-cli",
+                        signal: .done,
+                        event: "Stop",
+                        updatedAt: now.addingTimeInterval(-60)
+                    ),
+                    SignalEventRecord(
+                        id: "codex-permission",
+                        sessionID: "codex-cli:thread",
+                        agent: "codex-cli",
+                        signal: .permission,
+                        event: "PermissionRequest",
+                        updatedAt: now.addingTimeInterval(-120)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.activitySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
+        XCTAssertFalse(
+            model.displaySnapshot.sessions.contains { $0.signal.displayState == .permission }
+        )
     }
 
     @MainActor
@@ -3243,7 +3770,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             in: fixture.store
         )
 
-        let model = MenuBarStatusModel(store: fixture.store)
+        let model = makeMenuBarStatusModel(store: fixture.store)
 
         XCTAssertEqual(model.signalLightAgentSelectionMode, .following)
         XCTAssertEqual(model.displaySignalLightAgentScopes, [.claudeCode])
@@ -3287,7 +3814,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             in: fixture.store
         )
 
-        let model = MenuBarStatusModel(store: fixture.store)
+        let model = makeMenuBarStatusModel(store: fixture.store)
         model.setSignalLightAgentScopes([.codexDesktop, .codexCLI])
 
         XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
@@ -3296,6 +3823,92 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(
             Set(model.displaySnapshot.sessions.map(\.sessionID)),
             ["codex-desktop:thread", "codex-cli:thread"]
+        )
+    }
+
+    @MainActor
+    func testManualSignalLightSelectionKeepsCLIPermissionAboveDesktopWork() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .permission,
+                updatedAt: now,
+                sessions: [
+                    "codex-desktop:thread": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .working,
+                        lastEvent: "DesktopToolCall:exec_command",
+                        updatedAt: now
+                    ),
+                    "codex-cli:approval": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .permissionRequest,
+                        lastEvent: "PermissionRequest",
+                        updatedAt: now.addingTimeInterval(-1)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.codexDesktop, .codexCLI])
+
+        XCTAssertEqual(model.displaySnapshot.aggregate, .permission)
+        XCTAssertEqual(
+            Set(model.displaySnapshot.sessions.map(\.sessionID)),
+            ["codex-desktop:thread", "codex-cli:approval"]
+        )
+    }
+
+    @MainActor
+    func testManualSignalLightSelectionKeepsCodexIDEEntrypointsDistinct() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .blocked,
+                updatedAt: now,
+                sessions: [
+                    "codex-vscode:notice": SessionRecord(
+                        agent: "codex-vscode",
+                        signal: .attention,
+                        lastEvent: "Notification",
+                        updatedAt: now
+                    ),
+                    "codex-xcode:block": SessionRecord(
+                        agent: "codex-xcode",
+                        signal: .blocked,
+                        lastEvent: "StopFailure",
+                        updatedAt: now.addingTimeInterval(-1)
+                    ),
+                    "codex-idea:work": SessionRecord(
+                        agent: "codex-idea",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now.addingTimeInterval(-2)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.codexVSCode, .codexXcode, .codexIDEA])
+
+        XCTAssertEqual(model.displaySnapshot.aggregate, .blocked)
+        XCTAssertEqual(
+            Set(model.displaySnapshot.sessions.map(ActivityPresentation.activitySourceKey(for:))),
+            ["codex:ide:vs-code", "codex:ide:xcode", "codex:ide:idea"]
         )
     }
 
@@ -3323,7 +3936,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             in: fixture.store
         )
 
-        let model = MenuBarStatusModel(store: fixture.store)
+        let model = makeMenuBarStatusModel(store: fixture.store)
         model.setSignalLightAgentScopes([.localScript])
 
         XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
@@ -3334,7 +3947,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testRecentPassiveThinkingDoesNotRemainFallbackSessionForFiveMinutes() {
+    func testRecentPassiveDesktopEventsDoNotRemainFallbackSessionForFiveMinutes() {
         let now = Date(timeIntervalSince1970: 1_000)
         let freshThinking = RecentSignalEvent(
             id: "fresh-thinking",
@@ -3352,6 +3965,22 @@ final class AgentSignalLightCoreTests: XCTestCase {
             agent: "codex-cli",
             event: "DesktopThinking"
         )
+        let freshMessage = RecentSignalEvent(
+            id: "fresh-message",
+            sessionID: "codex-cli:thread",
+            signal: .working,
+            updatedAt: now.addingTimeInterval(-30),
+            agent: "codex-cli",
+            event: "DesktopMessage"
+        )
+        let staleMessage = RecentSignalEvent(
+            id: "stale-message",
+            sessionID: "codex-cli:thread",
+            signal: .working,
+            updatedAt: now.addingTimeInterval(-60),
+            agent: "codex-cli",
+            event: "DesktopMessage"
+        )
         let activeToolCall = RecentSignalEvent(
             id: "tool-call",
             sessionID: "codex-cli:thread",
@@ -3363,6 +3992,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshThinking, now: now))
         XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleThinking, now: now))
+        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshMessage, now: now))
+        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleMessage, now: now))
         XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(activeToolCall, now: now))
 
         let freshCompleted = RecentSignalEvent(
@@ -3394,6 +4025,215 @@ final class AgentSignalLightCoreTests: XCTestCase {
             event: "ManualSet"
         )
         XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(manualIdleEvent, now: now))
+    }
+
+    @MainActor
+    func testStaleDesktopMessageDoesNotDriveStatusBarOrFloatingLight() throws {
+        let savedSelectionDefaults = clearSignalLightSelectionDefaults()
+        let savedMonitoringDefaults = [
+            "isCodexDesktopMonitoringEnabled",
+            "isClaudeDesktopMonitoringEnabled"
+        ].map { ($0, UserDefaults.standard.object(forKey: $0)) }
+        defer {
+            restoreSignalLightSelectionDefaults(savedSelectionDefaults)
+            restoreSignalLightSelectionDefaults(savedMonitoringDefaults)
+        }
+        UserDefaults.standard.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        UserDefaults.standard.set(false, forKey: "isClaudeDesktopMonitoringEnabled")
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let staleUpdatedAt = now.addingTimeInterval(-60)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: staleUpdatedAt,
+                sessions: [
+                    "codex-desktop:thread": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .working,
+                        lastEvent: "DesktopMessage",
+                        updatedAt: staleUpdatedAt
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "codex-output",
+                        sessionID: "codex-desktop:thread",
+                        agent: "codex-desktop",
+                        signal: .working,
+                        event: "DesktopMessage",
+                        updatedAt: staleUpdatedAt
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.activitySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.statusBarLightSnapshot.aggregate, .idle)
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate, .idle)
+        XCTAssertEqual(model.activitySnapshot.sessions, [])
+    }
+
+    @MainActor
+    func testStaleDesktopThinkingDoesNotDriveStatusBarOrFloatingLight() throws {
+        let savedSelectionDefaults = clearSignalLightSelectionDefaults()
+        let savedMonitoringDefaults = [
+            "isCodexDesktopMonitoringEnabled",
+            "isClaudeDesktopMonitoringEnabled"
+        ].map { ($0, UserDefaults.standard.object(forKey: $0)) }
+        defer {
+            restoreSignalLightSelectionDefaults(savedSelectionDefaults)
+            restoreSignalLightSelectionDefaults(savedMonitoringDefaults)
+        }
+        UserDefaults.standard.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        UserDefaults.standard.set(false, forKey: "isClaudeDesktopMonitoringEnabled")
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let staleUpdatedAt = now.addingTimeInterval(-60)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .thinking,
+                updatedAt: staleUpdatedAt,
+                sessions: [
+                    "codex-desktop:thread": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .thinking,
+                        lastEvent: "DesktopThinking",
+                        updatedAt: staleUpdatedAt
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "codex-thinking",
+                        sessionID: "codex-desktop:thread",
+                        agent: "codex-desktop",
+                        signal: .thinking,
+                        event: "DesktopThinking",
+                        updatedAt: staleUpdatedAt
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.activitySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.statusBarLightSnapshot.aggregate, .idle)
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate, .idle)
+        XCTAssertEqual(model.activitySnapshot.sessions, [])
+    }
+
+    @MainActor
+    func testOldDesktopToolCallDoesNotDriveStatusBarOrFloatingLightAfterLiveWindow() throws {
+        let savedSelectionDefaults = clearSignalLightSelectionDefaults()
+        let savedMonitoringDefaults = [
+            "isCodexDesktopMonitoringEnabled",
+            "isClaudeDesktopMonitoringEnabled"
+        ].map { ($0, UserDefaults.standard.object(forKey: $0)) }
+        defer {
+            restoreSignalLightSelectionDefaults(savedSelectionDefaults)
+            restoreSignalLightSelectionDefaults(savedMonitoringDefaults)
+        }
+        UserDefaults.standard.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        UserDefaults.standard.set(false, forKey: "isClaudeDesktopMonitoringEnabled")
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let staleUpdatedAt = now.addingTimeInterval(-6 * 60)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: staleUpdatedAt,
+                sessions: [
+                    "codex-desktop:thread": SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .working,
+                        lastEvent: "DesktopToolCall:exec_command",
+                        updatedAt: staleUpdatedAt
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "codex-tool-call",
+                        sessionID: "codex-desktop:thread",
+                        agent: "codex-desktop",
+                        signal: .working,
+                        event: "DesktopToolCall:exec_command",
+                        updatedAt: staleUpdatedAt
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.activitySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.statusBarLightSnapshot.aggregate, .idle)
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate, .idle)
+        XCTAssertEqual(model.activitySnapshot.sessions, [])
+    }
+
+    @MainActor
+    func testExpiredStaleAggregateWithoutVisibleSessionsDoesNotDriveLights() throws {
+        let savedSelectionDefaults = clearSignalLightSelectionDefaults()
+        let savedMonitoringDefaults = [
+            "isCodexDesktopMonitoringEnabled",
+            "isClaudeDesktopMonitoringEnabled"
+        ].map { ($0, UserDefaults.standard.object(forKey: $0)) }
+        defer {
+            restoreSignalLightSelectionDefaults(savedSelectionDefaults)
+            restoreSignalLightSelectionDefaults(savedMonitoringDefaults)
+        }
+        UserDefaults.standard.set(false, forKey: "isCodexDesktopMonitoringEnabled")
+        UserDefaults.standard.set(false, forKey: "isClaudeDesktopMonitoringEnabled")
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let staleUpdatedAt = now.addingTimeInterval(-1_800)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .stale,
+                updatedAt: staleUpdatedAt,
+                sessions: [:],
+                events: [
+                    SignalEventRecord(
+                        id: "old-tool-call",
+                        sessionID: "codex-desktop:thread",
+                        agent: "codex-desktop",
+                        signal: .working,
+                        event: "DesktopToolCall:exec_command",
+                        updatedAt: staleUpdatedAt
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.activitySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
+        XCTAssertEqual(model.statusBarLightSnapshot.aggregate, .idle)
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate, .idle)
+        XCTAssertEqual(model.activitySnapshot.sessions, [])
     }
 
     @MainActor
@@ -3476,7 +4316,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             in: fixture.store
         )
 
-        let model = MenuBarStatusModel(store: fixture.store)
+        let model = makeMenuBarStatusModel(store: fixture.store)
         let snapshot = model.activitySnapshot
 
         for item in cases {
@@ -3498,6 +4338,123 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 "Older active fallback should not revive after completion for \(item.agent)."
             )
         }
+    }
+
+    @MainActor
+    func testActivitySnapshotKeepsCurrentCLIPermissionOverLaterToolEvent() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let permissionAt = now.addingTimeInterval(-10 * 60)
+        let sessionID = "codex-cli:permission-thread"
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .permission,
+                updatedAt: now,
+                sessions: [
+                    sessionID: SessionRecord(
+                        agent: "codex-cli",
+                        signal: .permission,
+                        lastEvent: "PermissionRequest",
+                        updatedAt: permissionAt
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "permission",
+                        sessionID: sessionID,
+                        agent: "codex-cli",
+                        signal: .permission,
+                        event: "PermissionRequest",
+                        updatedAt: permissionAt
+                    ),
+                    SignalEventRecord(
+                        id: "tool-call",
+                        sessionID: sessionID,
+                        agent: "codex-cli",
+                        signal: .attention,
+                        event: "DesktopToolCall:exec_command",
+                        updatedAt: permissionAt.addingTimeInterval(1)
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let snapshot = model.activitySnapshot
+
+        XCTAssertEqual(snapshot.aggregate, .permission)
+        XCTAssertEqual(
+            snapshot.sessions.first { $0.sessionID == sessionID }?.lastEvent,
+            "PermissionRequest"
+        )
+        XCTAssertFalse(
+            snapshot.sessions.contains { session in
+                session.sessionID.hasPrefix("recent-activity:")
+                    && session.lastEvent == "DesktopToolCall:exec_command"
+            }
+        )
+    }
+
+    @MainActor
+    func testActivitySnapshotSuppressesResolvedDesktopPermissionAfterLaterWork() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let permissionAt = now.addingTimeInterval(-6 * 60)
+        let newerWorkAt = now.addingTimeInterval(-30)
+        let permissionSessionID = "codex-desktop:old-permission"
+        let currentSessionID = "codex-desktop:current-work"
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .permission,
+                updatedAt: now,
+                sessions: [
+                    permissionSessionID: SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .permissionRequest,
+                        lastEvent: "DesktopToolCall:exec_command",
+                        updatedAt: permissionAt
+                    ),
+                    currentSessionID: SessionRecord(
+                        agent: "codex-desktop",
+                        signal: .thinking,
+                        lastEvent: "DesktopThinking",
+                        updatedAt: newerWorkAt
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "permission",
+                        sessionID: permissionSessionID,
+                        agent: "codex-desktop",
+                        signal: .permissionRequest,
+                        event: "DesktopToolCall:exec_command",
+                        updatedAt: permissionAt
+                    ),
+                    SignalEventRecord(
+                        id: "work",
+                        sessionID: currentSessionID,
+                        agent: "codex-desktop",
+                        signal: .thinking,
+                        event: "DesktopThinking",
+                        updatedAt: newerWorkAt
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let snapshot = model.activitySnapshot
+
+        XCTAssertNotEqual(snapshot.aggregate.displayState, .permission)
+        XCTAssertFalse(snapshot.sessions.contains { $0.signal.displayState == .permission })
+        XCTAssertEqual(snapshot.sessions.first?.sessionID, currentSessionID)
+        XCTAssertEqual(snapshot.sessions.first?.signal, .thinking)
     }
 
     func testCodexPlatformPresenceMonitorRecognizesCodexEntrypoints() {
@@ -3735,7 +4692,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertTrue(visible.contains { $0.sessionID == "platform-presence:codex-cli" })
 
         let cliSession = try XCTUnwrap(visible.first { $0.sessionID == "platform-presence:codex-cli" })
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
         XCTAssertEqual(model.activitySessionTitle(for: cliSession), "Codex · 终端运行中")
         XCTAssertEqual(model.activitySessionStatusSubtitle(for: cliSession), "空闲")
@@ -3743,7 +4700,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     @MainActor
     func testActivityPresentationEventTitleIncludesCodexEntrypoint() {
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
         let xcodeEvent = RecentSignalEvent(
             id: "xcode-event",
@@ -3770,7 +4727,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     @MainActor
     func testActivityPresenceSubtitleDoesNotExposeInternalEventName() {
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
         let session = SessionStatus(
             sessionID: "platform-presence:codex-vscode",
@@ -3787,7 +4744,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     @MainActor
     func testPlatformPresenceFilteringRespectsCodexAndClaudeToggles() {
         let now = Date(timeIntervalSince1970: 1_000)
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         let codexSession = SessionStatus(
             sessionID: "platform-presence:codex-desktop",
             signal: .idle,
@@ -3837,7 +4794,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             }
         }
 
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
 
         XCTAssertTrue(model.isCodexDesktopMonitoringEnabled)
         XCTAssertTrue(model.isClaudeDesktopMonitoringEnabled)
@@ -3868,7 +4825,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             }
         }
 
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         XCTAssertTrue(model.isFloatingSignalInfoBadgeEnabled)
         XCTAssertTrue(model.isFloatingSignalQuotaBadgeEnabled)
         XCTAssertTrue(model.isFloatingSignalTokenBadgeEnabled)
@@ -3911,7 +4868,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "floatingSignalQuotaBadgeWindow"), FloatingSignalQuotaBadgeWindow.weekly.rawValue)
         XCTAssertEqual(defaults.string(forKey: "floatingSignalTokenBadgeWindow"), FloatingSignalTokenBadgeWindow.last30Days.rawValue)
 
-        let restoredModel = MenuBarStatusModel()
+        let restoredModel = makeMenuBarStatusModel()
         XCTAssertFalse(restoredModel.isFloatingSignalInfoBadgeEnabled)
         XCTAssertFalse(restoredModel.isFloatingSignalQuotaBadgeEnabled)
         XCTAssertFalse(restoredModel.isFloatingSignalTokenBadgeEnabled)
@@ -3920,6 +4877,51 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(restoredModel.floatingSignalTokenBadgeCorner, .topLeft)
         XCTAssertEqual(restoredModel.floatingSignalQuotaBadgeWindow, .weekly)
         XCTAssertEqual(restoredModel.floatingSignalTokenBadgeWindow, .last30Days)
+    }
+
+    @MainActor
+    func testAlertSignalEffectSettingsDefaultAndPersist() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "needsReviewSignalEffect",
+            "permissionSignalEffect",
+            "blockedSignalEffect"
+        ]
+        let previousValues = keys.map { ($0, defaults.object(forKey: $0)) }
+        keys.forEach(defaults.removeObject(forKey:))
+        defer {
+            for (key, value) in previousValues {
+                if let value {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let model = makeMenuBarStatusModel()
+        XCTAssertEqual(model.needsReviewSignalEffect, .slowFlash)
+        XCTAssertEqual(model.permissionSignalEffect, .slowFlash)
+        XCTAssertEqual(model.blockedSignalEffect, .fastFlash)
+        XCTAssertEqual(defaults.string(forKey: "needsReviewSignalEffect"), AlertSignalEffect.slowFlash.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "permissionSignalEffect"), AlertSignalEffect.slowFlash.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "blockedSignalEffect"), AlertSignalEffect.fastFlash.rawValue)
+
+        model.setNeedsReviewSignalEffect(.slowFlash)
+        model.setPermissionSignalEffect(.steady)
+        model.setBlockedSignalEffect(.breathing)
+
+        XCTAssertEqual(defaults.string(forKey: "needsReviewSignalEffect"), AlertSignalEffect.slowFlash.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "permissionSignalEffect"), AlertSignalEffect.steady.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "blockedSignalEffect"), AlertSignalEffect.breathing.rawValue)
+
+        let restoredModel = makeMenuBarStatusModel()
+        XCTAssertEqual(restoredModel.needsReviewSignalEffect, .slowFlash)
+        XCTAssertEqual(restoredModel.permissionSignalEffect, .steady)
+        XCTAssertEqual(restoredModel.blockedSignalEffect, .breathing)
+        XCTAssertEqual(restoredModel.signalEffectCustomization.needsReviewEffect, .slowFlash)
+        XCTAssertEqual(restoredModel.signalEffectCustomization.permissionEffect, .steady)
+        XCTAssertEqual(restoredModel.signalEffectCustomization.blockedEffect, .breathing)
     }
 
     @MainActor
@@ -3945,7 +4947,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             }
         }
 
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         XCTAssertTrue(model.isNewZealandTrafficLightModeEnabled)
         XCTAssertTrue(defaults.bool(forKey: "isNewZealandTrafficLightModeEnabled"))
         XCTAssertNil(defaults.object(forKey: "isLowPowerModeEnabled"))
@@ -3995,7 +4997,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             }
         }
 
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.setFloatingSignalCompletionSound(.aiGlow)
         model.setFloatingSignalWaitingSound(.aiTick)
 
@@ -4052,7 +5054,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             }
         }
 
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
 
         model.setStatusBarIconEnabled(false)
         model.setFloatingSignalEnabled(false)
@@ -4065,6 +5067,78 @@ final class AgentSignalLightCoreTests: XCTestCase {
         model.setStatusBarIconEnabled(false)
         model.setFloatingSignalEnabled(true)
         XCTAssertTrue(model.isSignalSoundSurfaceEnabled)
+    }
+
+    @MainActor
+    func testMenuBarStatusModelLaunchLoadsCodexAccountMetadataOnly() {
+        let manager = CountingCodexAccountManager()
+        _ = MenuBarStatusModel(codexAccountManager: manager)
+
+        XCTAssertEqual(manager.metadataLoadCount, 1)
+        XCTAssertEqual(manager.fullLoadCount, 0)
+    }
+
+    @MainActor
+    func testCodexUsageRefreshDoesNotRefreshSavedAccountCredentials() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CodexRateLimitFetcherURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        CodexRateLimitFetcherURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "session=manual")
+            let data = Data("""
+            {
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 15,
+                  "reset_at": 1781788782,
+                  "limit_window_seconds": 18000
+                }
+              }
+            }
+            """.utf8)
+            let response = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, data)
+        }
+        defer { CodexRateLimitFetcherURLProtocol.handler = nil }
+
+        let manager = CountingCodexAccountManager()
+        let model = MenuBarStatusModel(
+            store: fixture.store,
+            codexDesktopActivityMonitor: CodexDesktopActivityMonitor(replaysInitialHistory: false),
+            codexAccountManager: manager,
+            codexRateLimitFetcher: CodexRateLimitFetcher(
+                environment: ["CODEX_HOME": fixture.directory.path],
+                session: session
+            )
+        )
+        model.codexUsageDataSource = .automatic
+        model.codexOpenAICookieMode = .manual
+        model.codexManualOpenAICookieHeader = "session=manual"
+        model.isCodexDesktopMonitoringEnabled = true
+        model.isMonitoringPaused = false
+
+        model.pollCodexRateLimitsIfNeeded(force: true)
+
+        for _ in 0..<50 {
+            if !model.isCodexRateLimitFetchInFlight,
+               model.latestAgentQuota != nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        XCTAssertEqual(model.latestAgentQuota?.usedPercent ?? -1, 15, accuracy: 0.01)
+        XCTAssertEqual(manager.refreshSavedCurrentAccountCount, 0)
+        XCTAssertEqual(manager.fullLoadCount, 0)
+        XCTAssertGreaterThanOrEqual(manager.metadataLoadCount, 2)
     }
 
     func testFloatingSignalSoundResolverFindsWAVWhenM4AIsMissing() throws {
@@ -4099,7 +5173,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     @MainActor
     func testActivitySessionSubtitleUsesSameRealEventTextAsRecentEvents() {
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
         let session = SessionStatus(
             sessionID: "codex-xcode:thread",
@@ -4119,6 +5193,21 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertEqual(model.activitySessionStatusSubtitle(for: session), "正在执行步骤 exec_command")
         XCTAssertEqual(model.activitySessionStatusSubtitle(for: session), model.activityEventSubtitle(for: event))
+    }
+
+    @MainActor
+    func testPermissionToolCallSubtitleShowsStatusInsteadOfRunningStep() {
+        let model = makeMenuBarStatusModel()
+        model.appLanguage = .zhHans
+        let session = SessionStatus(
+            sessionID: "codex-desktop:thread",
+            signal: .permissionRequest,
+            updatedAt: Date(),
+            agent: "codex-desktop",
+            lastEvent: "DesktopToolCall:exec_command"
+        )
+
+        XCTAssertEqual(model.activitySessionStatusSubtitle(for: session), "等待授权 · exec_command")
     }
 
     func testSignalLightAgentScopesMatchSupportedSources() throws {
@@ -4220,14 +5309,14 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertTrue(SignalLightAgentScope.claudeCode.matches(session: claudeDesktopSession))
 
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.setAppLanguage(.zhHans)
         XCTAssertEqual(model.displayName(for: SignalLightAgentScope.claudeCode), "Claude 桌面版")
     }
 
     @MainActor
     func testCodexCLISessionKeepsTerminalRuntimeForDesktopNamedEvents() {
-        let model = MenuBarStatusModel()
+        let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
         let session = SessionStatus(
             sessionID: "codex-cli:terminal-thread",
@@ -4404,6 +5493,93 @@ final class AgentSignalLightCoreTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try encoder.encode(document).write(to: store.stateFileURL)
+    }
+}
+
+@MainActor
+private func makeMenuBarStatusModel(
+    store: SignalStateStore = SignalStateStore()
+) -> MenuBarStatusModel {
+    MenuBarStatusModel(
+        store: store,
+        codexAccountManager: EmptyCodexAccountManager()
+    )
+}
+
+private final class EmptyCodexAccountManager: CodexAccountManaging, @unchecked Sendable {
+    private let state = CodexAccountState(
+        currentAccount: nil,
+        savedAccounts: [],
+        activeSavedAccountID: nil
+    )
+
+    func loadState() throws -> CodexAccountState {
+        state
+    }
+
+    func loadMetadataState() throws -> CodexAccountState {
+        state
+    }
+
+    func saveCurrentAccount(label _: String?) throws -> CodexAccountProfile {
+        throw CodexAccountManagerError.accountNotFound
+    }
+
+    func switchToAccount(id _: UUID) throws -> CodexAccountProfile {
+        throw CodexAccountManagerError.accountNotFound
+    }
+
+    func authenticateManagedAccount(timeout _: TimeInterval) async throws -> CodexAccountProfile {
+        throw CodexAccountManagerError.accountNotFound
+    }
+
+    func removeAccount(id _: UUID) throws {}
+
+    func refreshSavedCurrentAccountIfPossible() throws -> CodexAccountProfile? {
+        nil
+    }
+}
+
+private final class CountingCodexAccountManager: CodexAccountManaging, @unchecked Sendable {
+    var fullLoadCount = 0
+    var metadataLoadCount = 0
+    var refreshSavedCurrentAccountCount = 0
+
+    func loadState() throws -> CodexAccountState {
+        fullLoadCount += 1
+        return emptyState
+    }
+
+    func loadMetadataState() throws -> CodexAccountState {
+        metadataLoadCount += 1
+        return emptyState
+    }
+
+    func saveCurrentAccount(label _: String?) throws -> CodexAccountProfile {
+        throw CodexAccountManagerError.accountNotFound
+    }
+
+    func switchToAccount(id _: UUID) throws -> CodexAccountProfile {
+        throw CodexAccountManagerError.accountNotFound
+    }
+
+    func authenticateManagedAccount(timeout _: TimeInterval) async throws -> CodexAccountProfile {
+        throw CodexAccountManagerError.accountNotFound
+    }
+
+    func removeAccount(id _: UUID) throws {}
+
+    func refreshSavedCurrentAccountIfPossible() throws -> CodexAccountProfile? {
+        refreshSavedCurrentAccountCount += 1
+        return nil
+    }
+
+    private var emptyState: CodexAccountState {
+        CodexAccountState(
+            currentAccount: nil,
+            savedAccounts: [],
+            activeSavedAccountID: nil
+        )
     }
 }
 

@@ -64,7 +64,7 @@ final class SparkleUpdaterService: NSObject, ObservableObject {
 
     func setAutomaticallyChecksForUpdates(_ isEnabled: Bool) {
         guard let updater = updaterController?.updater else {
-            automaticallyChecksForUpdates = isEnabled
+            automaticallyChecksForUpdates = false
             return
         }
 

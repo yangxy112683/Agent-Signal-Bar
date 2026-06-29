@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 protocol SecretStoring: Sendable {
@@ -43,6 +44,31 @@ final class KeychainSecretStore: SecretStoring, @unchecked Sendable {
             throw StoreError.unexpectedStatus(status)
         }
         return result as? Data
+    }
+
+    func nonInteractiveData(for key: String) throws -> Data? {
+        var query = baseQuery(for: key)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        switch status {
+        case errSecSuccess:
+            return result as? Data
+        case errSecItemNotFound, errSecInteractionNotAllowed, errSecUserCanceled, errSecAuthFailed:
+            return nil
+        default:
+            throw StoreError.unexpectedStatus(status)
+        }
+    }
+
+    func nonInteractiveString(for key: String) throws -> String? {
+        guard let data = try nonInteractiveData(for: key) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     func string(for key: String) throws -> String? {

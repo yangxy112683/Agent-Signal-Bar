@@ -642,10 +642,14 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             return preferredActiveLampColor(for: signal)
         case .completed:
             return preferredCompletedLampColor()
-        case .needsReview, .stale, .paused:
+        case .needsReview:
+            return preferredAlertLampColor(defaultColor: .yellow, effect: model.needsReviewSignalEffect)
+        case .stale, .paused:
             return .yellow
-        case .permission, .blocked:
-            return .red
+        case .permission:
+            return preferredAlertLampColor(defaultColor: .red, effect: model.permissionSignalEffect)
+        case .blocked:
+            return preferredAlertLampColor(defaultColor: .red, effect: model.blockedSignalEffect)
         }
     }
 
@@ -660,6 +664,20 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         case .greenBreathing, .greenSteady, .greenSlowFlash, .greenFastFlash:
             return .green
         }
+    }
+
+    private func preferredAlertLampColor(
+        defaultColor: SignalLampColor,
+        effect: AlertSignalEffect
+    ) -> SignalLampColor {
+        guard effect == .trafficCycle else {
+            return defaultColor
+        }
+
+        let alertTick = max(model.tick, 0)
+        let ticksPerColor = 4
+        let phaseColors: [SignalLampColor] = [.red, .yellow, .green]
+        return phaseColors[(alertTick / ticksPerColor) % phaseColors.count]
     }
 
     private func preferredCompletedLampColor() -> SignalLampColor {

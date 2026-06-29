@@ -54,6 +54,33 @@ private enum FloatingSignalPanelLayout {
     }
 }
 
+struct FloatingAlertSoundRepeatLimiter {
+    static let defaultMaximumRepeats = 3
+
+    var maximumRepeats = Self.defaultMaximumRepeats
+    private(set) var episodeKey: String?
+    private(set) var repeatCount = 0
+
+    var canPlay: Bool {
+        repeatCount < maximumRepeats
+    }
+
+    mutating func startEpisode(_ key: String) {
+        guard episodeKey != key else { return }
+        episodeKey = key
+        repeatCount = 0
+    }
+
+    mutating func recordPlay() {
+        repeatCount += 1
+    }
+
+    mutating func reset() {
+        episodeKey = nil
+        repeatCount = 0
+    }
+}
+
 @MainActor
 final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     private let model: MenuBarStatusModel
@@ -64,6 +91,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     private let soundPlayer = FloatingSignalSoundPlayer()
     private var lastSoundSignature: String?
     private var lastAlertSoundAt = Date.distantPast
+    private var alertSoundRepeatLimiter = FloatingAlertSoundRepeatLimiter()
     private var didPrimeSoundState = false
     private var isApplyingFrame = false
     private var nextScaleResizeAnchor: ResizeAnchor?
@@ -421,10 +449,14 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         guard mode != .none else {
             didPrimeSoundState = true
             lastSoundSignature = nil
+            alertSoundRepeatLimiter.reset()
             return
         }
 
         let signature = soundSignature()
+        let episodeKey = soundEpisodeKey()
+        alertSoundRepeatLimiter.startEpisode(episodeKey)
+
         if !didPrimeSoundState {
             didPrimeSoundState = true
             lastSoundSignature = signature
@@ -439,6 +471,7 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         case .once:
             guard signature != lastSoundSignature else { return }
         case .repeating:
+            guard alertSoundRepeatLimiter.canPlay else { return }
             guard signature != lastSoundSignature || now.timeIntervalSince(lastAlertSoundAt) >= 12 else {
                 return
             }
@@ -446,6 +479,9 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
 
         lastSoundSignature = signature
         lastAlertSoundAt = now
+        if mode == .repeating {
+            alertSoundRepeatLimiter.recordPlay()
+        }
         playAlertSound(force: false, cue: soundCue(for: model.floatingSignalLightSnapshot.aggregate))
     }
 
@@ -551,6 +587,27 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         let snapshot = model.floatingSignalLightSnapshot
         let updatedAt = snapshot.updatedAt?.timeIntervalSince1970 ?? 0
         return "\(snapshot.aggregate.rawValue)|\(Int(updatedAt))|\(snapshot.sessions.count)"
+    }
+
+    private func soundEpisodeKey() -> String {
+        let snapshot = model.floatingSignalLightSnapshot
+        let alertSessions = snapshot.sessions
+            .filter { $0.signal.displayState == snapshot.aggregate.displayState }
+            .map { session in
+                [
+                    session.sessionID,
+                    session.signal.rawValue,
+                    session.agent ?? "",
+                    session.lastEvent ?? ""
+                ].joined(separator: "|")
+            }
+            .sorted()
+
+        guard !alertSessions.isEmpty else {
+            return snapshot.aggregate.rawValue
+        }
+
+        return "\(snapshot.aggregate.rawValue):\(alertSessions.joined(separator: ","))"
     }
 }
 

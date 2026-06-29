@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR="${AGENT_SIGNAL_LIGHT_DIST_DIR:-${DIST_DIR:-$ROOT_DIR/dist}}"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 STAGING_DIR="$(mktemp -d)"
 STAGED_APP_BUNDLE="$STAGING_DIR/$APP_NAME.app"
@@ -82,6 +82,7 @@ clear_extended_attributes() {
   local path="$1"
   local pass
   [[ -e "$path" ]] || return 0
+  chmod -R u+w "$path" 2>/dev/null || true
   xattr -cr "$path" 2>/dev/null || true
   while IFS= read -r item; do
     xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
@@ -108,10 +109,102 @@ clear_extended_attributes() {
     )
     [[ "$found" -eq 0 ]] && break
   done
+
+  /usr/bin/python3 - "$path" <<'PY'
+import os
+import stat
+import subprocess
+import sys
+
+root = sys.argv[1]
+dangerous_attrs = (
+    "com.apple.FinderInfo",
+    "com.apple.ResourceFork",
+    "com.apple.fileprovider.fpfs#P",
+)
+
+def clear_path(path):
+    targets = [False]
+    if os.path.islink(path):
+        targets.append(True)
+
+    for symlink in targets:
+        for attr in dangerous_attrs:
+            command = ["xattr"]
+            if symlink:
+                command.append("-s")
+            command.extend(["-d", attr, path])
+            result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if result.returncode == 0:
+                continue
+
+            try:
+                mode = os.lstat(path).st_mode if symlink else os.stat(path).st_mode
+                os.chmod(path, mode | stat.S_IWUSR, follow_symlinks=not symlink)
+            except Exception:
+                pass
+            subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+clear_path(root)
+for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+    for name in dirs + files:
+        clear_path(os.path.join(current, name))
+PY
+
+  for pass in 1 2 3 4 5 6 7 8 9 10; do
+    local dirty_paths
+    dirty_paths="$(mktemp)"
+    xattr -lr "$path" 2>/dev/null \
+      | awk -F': ' '/com[.]apple[.](FinderInfo|ResourceFork|fileprovider[.]fpfs#P)/ { print $1 }' \
+      | sort -u >"$dirty_paths"
+
+    if [[ ! -s "$dirty_paths" ]]; then
+      rm -f "$dirty_paths"
+      break
+    fi
+
+    while IFS= read -r item; do
+      chmod u+w "$item" 2>/dev/null || true
+      xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
+      xattr -d com.apple.ResourceFork "$item" 2>/dev/null || true
+      xattr -d "com.apple.fileprovider.fpfs#P" "$item" 2>/dev/null || true
+      xattr -s -d com.apple.FinderInfo "$item" 2>/dev/null || true
+      xattr -s -d com.apple.ResourceFork "$item" 2>/dev/null || true
+      xattr -s -d "com.apple.fileprovider.fpfs#P" "$item" 2>/dev/null || true
+    done <"$dirty_paths"
+    rm -f "$dirty_paths"
+  done
+}
+
+clear_signature_detritus() {
+  local path="$1"
+  local pass
+  [[ -e "$path" ]] || return 0
+
+  for pass in 1 2 3 4 5; do
+    local dirty_paths
+    dirty_paths="$(mktemp)"
+    xattr -lr "$path" 2>/dev/null \
+      | awk -F': ' '/com[.]apple[.](FinderInfo|ResourceFork|fileprovider[.]fpfs#P)/ { print $1 }' \
+      | sort -u >"$dirty_paths"
+
+    if [[ ! -s "$dirty_paths" ]]; then
+      rm -f "$dirty_paths"
+      break
+    fi
+
+    while IFS= read -r item; do
+      chmod u+w "$item" 2>/dev/null || true
+      xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
+      xattr -d com.apple.ResourceFork "$item" 2>/dev/null || true
+      xattr -d "com.apple.fileprovider.fpfs#P" "$item" 2>/dev/null || true
+    done <"$dirty_paths"
+    rm -f "$dirty_paths"
+  done
 }
 
 BUILD_ARGS=(--product "$APP_NAME")
-CLI_BUILD_ARGS=(--product agent-signal)
+CLI_BUILD_ARGS=(--product agent-signal-light)
 if [[ "$CONFIGURATION" == "release" ]]; then
   BUILD_ARGS=(-c release "${BUILD_ARGS[@]}")
   CLI_BUILD_ARGS=(-c release "${CLI_BUILD_ARGS[@]}")
@@ -122,7 +215,7 @@ swift_tool build "${CLI_BUILD_ARGS[@]}" >&2
 BUILD_BIN_DIR="$(swift_tool build "${BUILD_ARGS[@]}" --show-bin-path)"
 CLI_BIN_DIR="$(swift_tool build "${CLI_BUILD_ARGS[@]}" --show-bin-path)"
 BUILD_BINARY="$BUILD_BIN_DIR/$APP_NAME"
-CLI_BINARY="$CLI_BIN_DIR/agent-signal"
+CLI_BINARY="$CLI_BIN_DIR/agent-signal-light"
 SPARKLE_FRAMEWORK="$BUILD_BIN_DIR/Sparkle.framework"
 if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
   SPARKLE_FRAMEWORK="$(find "$ROOT_DIR/.build" -path '*/Sparkle.framework' -type d -print | head -n 1 || true)"
@@ -135,8 +228,9 @@ fi
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_RESOURCES" "$APP_RESOURCES/script" "$APP_RESOURCES/scripts" "$APP_RESOURCES/dist/bin"
 cp "$BUILD_BINARY" "$APP_BINARY"
-cp "$CLI_BINARY" "$APP_RESOURCES/dist/bin/agent-signal"
-ditto --norsrc "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
+cp "$CLI_BINARY" "$APP_RESOURCES/dist/bin/agent-signal-light"
+ln -sf agent-signal-light "$APP_RESOURCES/dist/bin/agent-signal"
+ditto --norsrc --noextattr "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
 cp "$ROOT_DIR/script/export_diagnostics.sh" "$APP_RESOURCES/script/export_diagnostics.sh"
 cp "$ROOT_DIR/script/install_hooks.py" "$APP_RESOURCES/script/install_hooks.py"
 cp "$ROOT_DIR/scripts/agent-signal" "$APP_RESOURCES/scripts/agent-signal"
@@ -178,7 +272,8 @@ else
 fi
 cp "$VERSION_FILE" "$VERSION_RESOURCE"
 chmod +x "$APP_BINARY"
-chmod +x "$APP_RESOURCES/dist/bin/agent-signal" \
+chmod +x "$APP_RESOURCES/dist/bin/agent-signal-light" \
+  "$APP_RESOURCES/dist/bin/agent-signal" \
   "$APP_RESOURCES/script/export_diagnostics.sh" \
   "$APP_RESOURCES/script/install_hooks.py" \
   "$APP_RESOURCES/scripts/agent-signal" \
@@ -283,7 +378,7 @@ clear_extended_attributes "$APP_BUNDLE"
 clear_extended_attributes "$STAGED_APP_BUNDLE"
 if [[ -n "$SIGN_IDENTITY" ]]; then
   codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_FRAMEWORKS/Sparkle.framework" >/dev/null
-  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_RESOURCES/dist/bin/agent-signal" >/dev/null
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_RESOURCES/dist/bin/agent-signal-light" >/dev/null
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$STAGED_APP_BUNDLE" >/dev/null
 else
   codesign --force --deep --sign - "$APP_FRAMEWORKS/Sparkle.framework" >/dev/null
@@ -292,7 +387,28 @@ fi
 clear_extended_attributes "$STAGED_APP_BUNDLE"
 
 mkdir -p "$DIST_DIR"
-ditto --norsrc "$STAGED_APP_BUNDLE" "$APP_BUNDLE"
+ditto --norsrc --noextattr "$STAGED_APP_BUNDLE" "$APP_BUNDLE"
+rm -rf "$STAGING_DIR"
+trap - EXIT
 clear_extended_attributes "$APP_BUNDLE"
+sleep 2
+clear_extended_attributes "$APP_BUNDLE"
+chmod -R u+w "$APP_BUNDLE" 2>/dev/null || true
+/usr/bin/xattr -cr "$APP_BUNDLE" 2>/dev/null || true
+clear_signature_detritus "$APP_BUNDLE"
+if [[ "${AGENT_SIGNAL_LIGHT_STRICT_PACKAGE_VERIFY:-0}" == "1" ]]; then
+  for pass in 1 2 3 4 5; do
+    if codesign --verify --deep --strict "$APP_BUNDLE" >/dev/null 2>&1; then
+      break
+    fi
+
+    if [[ "$pass" -eq 5 ]]; then
+      codesign --verify --deep --strict "$APP_BUNDLE"
+    fi
+
+    sleep 1
+    clear_signature_detritus "$APP_BUNDLE"
+  done
+fi
 
 echo "$APP_BUNDLE"

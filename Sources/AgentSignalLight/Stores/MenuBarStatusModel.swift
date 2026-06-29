@@ -390,6 +390,9 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var activeEffectSpeed: SignalEffectSpeed
     @Published var alertEffectSpeed: SignalEffectSpeed
     @Published var completedSignalEffect: CompletedSignalEffect
+    @Published var needsReviewSignalEffect: AlertSignalEffect
+    @Published var permissionSignalEffect: AlertSignalEffect
+    @Published var blockedSignalEffect: AlertSignalEffect
     @Published var macOSHorizontalUsesTrafficLightSize: Bool
     @Published var trafficLightVerticalUsesMacOSSize: Bool
     @Published var isStatusBarIconEnabled: Bool
@@ -479,7 +482,7 @@ final class MenuBarStatusModel: ObservableObject {
     private let hookInstallManager: HookInstallManager
     private let diagnosticsExportManager: DiagnosticsExportManager
     private let codexDesktopActivityMonitor: CodexDesktopActivityMonitor
-    private let codexAccountManager: CodexAccountManager
+    private let codexAccountManager: any CodexAccountManaging
     private let codexUsageSnapshotStore: CodexAccountUsageSnapshotStore
     private let codexCLIStatusProbe: CodexCLIStatusProbe
     private let codexRPCStatusProbe: CodexRPCStatusProbe
@@ -503,6 +506,7 @@ final class MenuBarStatusModel: ObservableObject {
     private static let completedDisplayWindow: TimeInterval = 30
     private static let recentActivityFallbackWindow: TimeInterval = 5 * 60
     private static let desktopPresenceSuppressionWindow: TimeInterval = 5 * 60
+    private static let transientAlertDisplayWindow: TimeInterval = 5 * 60
     private static let passiveActiveDisplayWindow: TimeInterval = 45
     private var statusLightSequence: [StatusLightOverrideFrame] = []
     private var statusLightSequenceIndex = 0
@@ -536,7 +540,7 @@ final class MenuBarStatusModel: ObservableObject {
     private static let cachedLatestAgentTokenUsageKey = "cachedLatestAgentTokenUsage"
     private static let manualOpenAICookieKey = "manualOpenAICookieHeader"
     private static let legacyManualOpenAICookieUserDefaultsKey = "codexManualOpenAICookieHeader"
-    private static let activeDisplayWindow: TimeInterval = SignalStateStore.defaultSessionTTL()
+    private static let activeDisplayWindow: TimeInterval = 5 * 60
     private static let debugLogFileName = "AgentSignalLight.log"
 
     private struct LaunchAtLoginUpdateResult: Sendable {
@@ -556,8 +560,8 @@ final class MenuBarStatusModel: ObservableObject {
         launchAtLoginManager: LaunchAtLoginManager = LaunchAtLoginManager(),
         hookInstallManager: HookInstallManager = HookInstallManager(),
         diagnosticsExportManager: DiagnosticsExportManager = DiagnosticsExportManager(),
-        codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor(),
-        codexAccountManager: CodexAccountManager = CodexAccountManager(),
+        codexDesktopActivityMonitor: CodexDesktopActivityMonitor = CodexDesktopActivityMonitor(replaysInitialHistory: true),
+        codexAccountManager: any CodexAccountManaging = CodexAccountManager(),
         codexUsageSnapshotStore: CodexAccountUsageSnapshotStore = CodexAccountUsageSnapshotStore(),
         codexCLIStatusProbe: CodexCLIStatusProbe = CodexCLIStatusProbe(),
         codexRPCStatusProbe: CodexRPCStatusProbe = CodexRPCStatusProbe(),
@@ -591,6 +595,9 @@ final class MenuBarStatusModel: ObservableObject {
         let storedActiveEffectSpeed = UserDefaults.standard.string(forKey: "activeEffectSpeed")
         let storedAlertEffectSpeed = UserDefaults.standard.string(forKey: "alertEffectSpeed")
         let storedCompletedSignalEffect = UserDefaults.standard.string(forKey: "completedSignalEffect")
+        let storedNeedsReviewSignalEffect = UserDefaults.standard.string(forKey: "needsReviewSignalEffect")
+        let storedPermissionSignalEffect = UserDefaults.standard.string(forKey: "permissionSignalEffect")
+        let storedBlockedSignalEffect = UserDefaults.standard.string(forKey: "blockedSignalEffect")
         let storedLanguage = UserDefaults.standard.string(forKey: "appLanguage")
         let storedTheme = UserDefaults.standard.string(forKey: "appTheme")
         let storedSettingsGlassEnabled = UserDefaults.standard.object(forKey: "isSettingsGlassEnabled") as? Bool
@@ -681,11 +688,38 @@ final class MenuBarStatusModel: ObservableObject {
             ? .greenSteady
             : storedCompletedSignalEffect.flatMap(CompletedSignalEffect.init(rawValue:)) ?? .greenSteady
         completedSignalEffect = resolvedCompletedSignalEffect
+        let resolvedNeedsReviewSignalEffect = Self.resolvedAlertSignalEffect(
+            rawValue: storedNeedsReviewSignalEffect,
+            defaultEffect: .slowFlash,
+            legacyPulseReplacement: .slowFlash
+        )
+        let resolvedPermissionSignalEffect = Self.resolvedAlertSignalEffect(
+            rawValue: storedPermissionSignalEffect,
+            defaultEffect: .slowFlash,
+            legacyPulseReplacement: .slowFlash
+        )
+        let resolvedBlockedSignalEffect = Self.resolvedAlertSignalEffect(
+            rawValue: storedBlockedSignalEffect,
+            defaultEffect: .fastFlash,
+            legacyPulseReplacement: .fastFlash
+        )
+        needsReviewSignalEffect = resolvedNeedsReviewSignalEffect
+        permissionSignalEffect = resolvedPermissionSignalEffect
+        blockedSignalEffect = resolvedBlockedSignalEffect
         if shouldApplyEffectDefaults {
             UserDefaults.standard.set(resolvedThinkingSignalEffect.rawValue, forKey: "thinkingSignalEffect")
             UserDefaults.standard.set(resolvedActiveSignalEffect.rawValue, forKey: "activeSignalEffect")
             UserDefaults.standard.set(resolvedCompletedSignalEffect.rawValue, forKey: "completedSignalEffect")
             UserDefaults.standard.set(Self.effectDefaultsVersion, forKey: "signalEffectDefaultsVersion")
+        }
+        if storedNeedsReviewSignalEffect == nil || storedNeedsReviewSignalEffect == AlertSignalEffect.pulse.rawValue {
+            UserDefaults.standard.set(resolvedNeedsReviewSignalEffect.rawValue, forKey: "needsReviewSignalEffect")
+        }
+        if storedPermissionSignalEffect == nil || storedPermissionSignalEffect == AlertSignalEffect.pulse.rawValue {
+            UserDefaults.standard.set(resolvedPermissionSignalEffect.rawValue, forKey: "permissionSignalEffect")
+        }
+        if storedBlockedSignalEffect == nil || storedBlockedSignalEffect == AlertSignalEffect.pulse.rawValue {
+            UserDefaults.standard.set(resolvedBlockedSignalEffect.rawValue, forKey: "blockedSignalEffect")
         }
         appLanguage = storedLanguage.flatMap(AppLanguage.init(rawValue:)) ?? .system
         appTheme = storedTheme.flatMap(AppTheme.init(rawValue:)) ?? .system
@@ -829,7 +863,10 @@ final class MenuBarStatusModel: ObservableObject {
         codexOpenAICookieMode =
             (storedCodexOpenAICookieMode.flatMap(CodexOpenAICookieMode.init(rawValue:)) ?? .off)
             .resolvedSelectableValue
-        codexManualOpenAICookieHeader = Self.loadManualOpenAICookieHeader(secretStore: openAICookieStore)
+        codexManualOpenAICookieHeader = Self.loadManualOpenAICookieHeader(
+            secretStore: openAICookieStore,
+            allowsUserInteraction: false
+        )
         let storedStatusMenuModeValue = storedStatusMenuMode.flatMap(StatusMenuMode.init(rawValue:))
         let resolvedStatusMenuMode = storedStatusMenuModeValue ?? .simple
         statusMenuMode = resolvedStatusMenuMode
@@ -869,7 +906,6 @@ final class MenuBarStatusModel: ObservableObject {
         }
         watcher?.start()
         startTimers()
-        startMonitoringResumeLightSequence()
     }
 
     func reload() {
@@ -888,7 +924,7 @@ final class MenuBarStatusModel: ObservableObject {
 
     func refreshCodexAccounts() {
         do {
-            let state = try codexAccountManager.loadState()
+            let state = try codexAccountManager.loadMetadataState()
             applyCodexAccountState(state)
             codexAccountMessage = nil
         } catch {
@@ -1110,13 +1146,40 @@ final class MenuBarStatusModel: ObservableObject {
         UserDefaults.standard.set(effect.rawValue, forKey: "completedSignalEffect")
     }
 
+    private static func resolvedAlertSignalEffect(
+        rawValue: String?,
+        defaultEffect: AlertSignalEffect,
+        legacyPulseReplacement: AlertSignalEffect
+    ) -> AlertSignalEffect {
+        let effect = rawValue.flatMap(AlertSignalEffect.init(rawValue:)) ?? defaultEffect
+        return effect == .pulse ? legacyPulseReplacement : effect
+    }
+
+    func setNeedsReviewSignalEffect(_ effect: AlertSignalEffect) {
+        needsReviewSignalEffect = effect
+        UserDefaults.standard.set(effect.rawValue, forKey: "needsReviewSignalEffect")
+    }
+
+    func setPermissionSignalEffect(_ effect: AlertSignalEffect) {
+        permissionSignalEffect = effect
+        UserDefaults.standard.set(effect.rawValue, forKey: "permissionSignalEffect")
+    }
+
+    func setBlockedSignalEffect(_ effect: AlertSignalEffect) {
+        blockedSignalEffect = effect
+        UserDefaults.standard.set(effect.rawValue, forKey: "blockedSignalEffect")
+    }
+
     var signalEffectCustomization: SignalEffectCustomization {
         SignalEffectCustomization(
             thinkingEffect: thinkingSignalEffect,
             activeEffect: activeSignalEffect,
             activeSpeed: activeEffectSpeed,
             alertSpeed: alertEffectSpeed,
-            completedEffect: completedSignalEffect
+            completedEffect: completedSignalEffect,
+            needsReviewEffect: needsReviewSignalEffect,
+            permissionEffect: permissionSignalEffect,
+            blockedEffect: blockedSignalEffect
         )
     }
 
@@ -2621,7 +2684,9 @@ final class MenuBarStatusModel: ObservableObject {
             case .greenPulse, .yellowPulse, .allPulse:
                 return true
             }
-        case .needsReview, .permission, .blocked, .stale:
+        case .needsReview, .permission, .blocked:
+            return alertEffect(for: aggregate.displayState) != .steady
+        case .stale:
             return true
         }
     }
@@ -2658,10 +2723,10 @@ final class MenuBarStatusModel: ObservableObject {
             case .greenSteady, .yellowSteady, .allSteady:
                 return .everyFrame
             }
-        case .needsReview, .permission, .stale:
+        case .needsReview, .permission, .blocked:
+            return lowPowerAnimationTickCadence(for: alertEffect(for: aggregate.displayState))
+        case .stale:
             return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 2)
-        case .blocked:
-            return .everyFrame
         case .ready, .paused:
             return .everyFrame
         }
@@ -2703,10 +2768,62 @@ final class MenuBarStatusModel: ObservableObject {
             case .greenSteady, .yellowSteady, .allSteady:
                 return .everyFrame
             }
-        case .ready, .needsReview, .permission, .blocked, .stale, .paused:
+        case .needsReview, .permission, .blocked:
+            return newZealandAnimationTickCadence(for: alertEffect(for: aggregate.displayState))
+        case .ready, .stale, .paused:
             return isLowPowerModeEnabled
                 ? lowPowerAnimationTickCadenceForCurrentSignal
                 : .everyFrame
+        }
+    }
+
+    private func alertEffect(for displayState: DisplayState) -> AlertSignalEffect {
+        switch displayState {
+        case .needsReview:
+            return needsReviewSignalEffect
+        case .permission:
+            return permissionSignalEffect
+        case .blocked:
+            return blockedSignalEffect
+        case .ready, .active, .completed, .stale, .paused:
+            return .slowFlash
+        }
+    }
+
+    private func lowPowerAnimationTickCadence(for effect: AlertSignalEffect) -> AnimationTickCadence {
+        switch effect {
+        case .pulse, .breathing, .slowFlash:
+            return AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 2)
+        case .fastFlash, .steady:
+            return .everyFrame
+        case .trafficCycle:
+            return AnimationTickCadence(timerFramesPerAdvance: 2, tickAdvance: 4)
+        }
+    }
+
+    private func newZealandAnimationTickCadence(for effect: AlertSignalEffect) -> AnimationTickCadence {
+        switch effect {
+        case .slowFlash:
+            // Match the green slow-flash strategy so red/yellow slow flash keep the same cadence.
+            return AnimationTickCadence(
+                timerFramesPerAdvance: isLowPowerModeEnabled ? 1 : 2,
+                tickAdvance: 3
+            )
+        case .breathing:
+            return isLowPowerModeEnabled
+                ? AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 2)
+                : .everyFrame
+        case .pulse:
+            return isLowPowerModeEnabled
+                ? AnimationTickCadence(timerFramesPerAdvance: 1, tickAdvance: 2)
+                : .everyFrame
+        case .trafficCycle:
+            return AnimationTickCadence(
+                timerFramesPerAdvance: isLowPowerModeEnabled ? 2 : 4,
+                tickAdvance: 4
+            )
+        case .fastFlash, .steady:
+            return .everyFrame
         }
     }
 
@@ -2941,7 +3058,6 @@ final class MenuBarStatusModel: ObservableObject {
                 self.updateLatestAgentQuota(quota)
                 self.latestCodexCredits = usageStatus.credits
                 self.persistCodexUsageSnapshotForCurrentAccount()
-                _ = try? self.codexAccountManager.refreshSavedCurrentAccountIfPossible()
                 self.refreshCodexAccounts()
                 self.persistCodexUsageSnapshotForCurrentAccount()
                 self.snapshot = snapshot
@@ -3010,11 +3126,16 @@ final class MenuBarStatusModel: ObservableObject {
         let now = Date()
         let visibleRecentEvents = snapshot.recentEvents.filter { !Self.isSignalTestEvent($0.event) }
         let completionCutoffsBySourceKey = Self.latestCompletionCutoffsBySourceKey(visibleRecentEvents)
+        let resolvingCutoffsBySourceKey = Self.latestResolvingCutoffsBySourceKey(visibleRecentEvents)
         var sessions = snapshot.sessions.filter { session in
             Self.shouldIncludeStoredSessionInDisplay(session, now: now)
                 && !Self.isSupersededByCompletedRecentEvent(
                     session,
                     completionCutoffsBySourceKey: completionCutoffsBySourceKey
+                )
+                && !Self.isSupersededByResolvingRecentEvent(
+                    session,
+                    resolvingCutoffsBySourceKey: resolvingCutoffsBySourceKey
                 )
         }
         sessions.append(
@@ -3022,6 +3143,7 @@ final class MenuBarStatusModel: ObservableObject {
                 from: visibleRecentEvents,
                 existingSessions: sessions,
                 completionCutoffsBySourceKey: completionCutoffsBySourceKey,
+                resolvingCutoffsBySourceKey: resolvingCutoffsBySourceKey,
                 now: now
             )
         )
@@ -3046,6 +3168,7 @@ final class MenuBarStatusModel: ObservableObject {
         from recentEvents: [RecentSignalEvent],
         existingSessions: [SessionStatus],
         completionCutoffsBySourceKey: [String: Date],
+        resolvingCutoffsBySourceKey: [String: Date],
         now: Date
     ) -> [SessionStatus] {
         let latestExistingSessionBySourceKey = Dictionary(
@@ -3070,9 +3193,17 @@ final class MenuBarStatusModel: ObservableObject {
                 continue
             }
 
-            if event.signal.displayState == .active,
-               let completedAt = completionCutoffsBySourceKey[sourceKey],
-               event.updatedAt <= completedAt {
+            if Self.isSupersededByCompletedRecentEvent(
+                event,
+                completionCutoffsBySourceKey: completionCutoffsBySourceKey
+            ) {
+                continue
+            }
+
+            if Self.isSupersededByResolvingRecentEvent(
+                event,
+                resolvingCutoffsBySourceKey: resolvingCutoffsBySourceKey
+            ) {
                 continue
             }
 
@@ -3136,6 +3267,13 @@ final class MenuBarStatusModel: ObservableObject {
             }
         }
 
+        if shouldResolvingDisplaySessionOverride(candidate, current: current) {
+            return true
+        }
+        if shouldResolvingDisplaySessionOverride(current, current: candidate) {
+            return false
+        }
+
         let candidateIsAlert = isPersistentAlert(candidate.signal.displayState)
         let currentIsAlert = isPersistentAlert(current.signal.displayState)
         if candidateIsAlert || currentIsAlert {
@@ -3151,6 +3289,15 @@ final class MenuBarStatusModel: ObservableObject {
         }
 
         return deduplicationPriority(for: candidate.signal) > deduplicationPriority(for: current.signal)
+    }
+
+    private static func shouldResolvingDisplaySessionOverride(
+        _ candidate: SessionStatus,
+        current: SessionStatus
+    ) -> Bool {
+        isResolvingSignal(candidate.signal)
+            && shouldResolvingEventSupersedeSessionDisplayState(current.signal.displayState)
+            && candidate.updatedAt >= current.updatedAt
     }
 
     private static func shouldPresenceOverrideStaleActivity(
@@ -3214,7 +3361,7 @@ final class MenuBarStatusModel: ObservableObject {
         guard event.signal.displayState == .active else { return false }
 
         switch event.event {
-        case "DesktopActivityHeartbeat", "DesktopThinking":
+        case "DesktopActivityHeartbeat", "DesktopThinking", "DesktopMessage":
             return true
         default:
             return false
@@ -3235,12 +3382,26 @@ final class MenuBarStatusModel: ObservableObject {
         return cutoffs
     }
 
+    private static func latestResolvingCutoffsBySourceKey(_ events: [RecentSignalEvent]) -> [String: Date] {
+        var cutoffs: [String: Date] = [:]
+
+        for event in events where isResolvingSignal(event.signal) {
+            let sourceKey = ActivityPresentation.activitySourceKey(for: event)
+            if let existing = cutoffs[sourceKey], existing >= event.updatedAt {
+                continue
+            }
+            cutoffs[sourceKey] = event.updatedAt
+        }
+
+        return cutoffs
+    }
+
     private static func isSupersededByCompletedRecentEvent(
         _ session: SessionStatus,
         completionCutoffsBySourceKey: [String: Date]
     ) -> Bool {
         guard !isPresenceSession(session),
-              session.signal.displayState == .active
+              shouldCompletedEventSupersedeDisplayState(session.signal.displayState)
         else {
             return false
         }
@@ -3251,6 +3412,103 @@ final class MenuBarStatusModel: ObservableObject {
         }
 
         return completedAt >= session.updatedAt
+    }
+
+    private static func isSupersededByCompletedRecentEvent(
+        _ event: RecentSignalEvent,
+        completionCutoffsBySourceKey: [String: Date]
+    ) -> Bool {
+        guard event.signal.displayState == .active else {
+            return false
+        }
+
+        let sourceKey = ActivityPresentation.activitySourceKey(for: event)
+        guard let completedAt = completionCutoffsBySourceKey[sourceKey] else {
+            return false
+        }
+
+        return completedAt >= event.updatedAt
+    }
+
+    private static func isSupersededByResolvingRecentEvent(
+        _ session: SessionStatus,
+        resolvingCutoffsBySourceKey: [String: Date]
+    ) -> Bool {
+        guard !isPresenceSession(session),
+              shouldResolvingEventSupersedeSessionDisplayState(session.signal.displayState)
+        else {
+            return false
+        }
+
+        let sourceKey = ActivityPresentation.activitySourceKey(for: session)
+        guard let resolvedAt = resolvingCutoffsBySourceKey[sourceKey] else {
+            return false
+        }
+
+        return resolvedAt >= session.updatedAt
+    }
+
+    private static func isSupersededByResolvingRecentEvent(
+        _ event: RecentSignalEvent,
+        resolvingCutoffsBySourceKey: [String: Date]
+    ) -> Bool {
+        guard shouldResolvingEventSupersedeDisplayState(event.signal.displayState) else {
+            return false
+        }
+
+        let sourceKey = ActivityPresentation.activitySourceKey(for: event)
+        guard let resolvedAt = resolvingCutoffsBySourceKey[sourceKey] else {
+            return false
+        }
+
+        return resolvedAt > event.updatedAt
+    }
+
+    private static func shouldResolvingEventSupersedeDisplayState(_ displayState: DisplayState) -> Bool {
+        switch displayState {
+        case .needsReview, .permission:
+            return true
+        case .ready, .active, .completed, .blocked, .stale, .paused:
+            return false
+        }
+    }
+
+    private static func shouldResolvingEventSupersedeSessionDisplayState(_ displayState: DisplayState) -> Bool {
+        switch displayState {
+        case .needsReview, .permission:
+            return true
+        case .ready, .active, .completed, .blocked, .stale, .paused:
+            return false
+        }
+    }
+
+    private static func shouldCompletedEventSupersedeDisplayState(_ displayState: DisplayState) -> Bool {
+        switch displayState {
+        case .active, .needsReview, .permission:
+            return true
+        case .ready, .completed, .blocked, .stale, .paused:
+            return false
+        }
+    }
+
+    private static func isResolvingDisplayState(_ displayState: DisplayState) -> Bool {
+        switch displayState {
+        case .active, .completed:
+            return true
+        case .ready, .needsReview, .permission, .blocked, .stale, .paused:
+            return false
+        }
+    }
+
+    private static func isResolvingSignal(_ signal: AgentSignal) -> Bool {
+        switch signal {
+        case .thinking, .working, .toolDone, .subagentStart, .subagentStop, .done:
+            return true
+        case .idle, .attention, .notification, .permission,
+             .permissionRequest, .blocked, .failure, .error, .exception, .maxTokens,
+             .stale, .sessionStart, .sessionEnd, .turnEnd, .off, .pause, .paused:
+            return false
+        }
     }
 
     private func deduplicatedRecentEvents(_ events: [RecentSignalEvent]) -> [RecentSignalEvent] {
@@ -3522,9 +3780,9 @@ final class MenuBarStatusModel: ObservableObject {
 
     private func fallbackForEmptyDisplaySessions(_ fallback: AgentSignal) -> AgentSignal {
         switch fallback.displayState {
-        case .paused, .stale, .needsReview, .permission, .blocked:
+        case .paused, .blocked:
             return fallback.normalizedAggregateSignal
-        case .ready, .active, .completed:
+        case .ready, .active, .completed, .needsReview, .permission, .stale:
             return .idle
         }
     }
@@ -3535,9 +3793,9 @@ final class MenuBarStatusModel: ObservableObject {
     ) -> AgentSignal {
         if signalLightAgentSelectionMode == .manual, !scopes.isEmpty {
             switch fallback.displayState {
-            case .paused, .stale:
+            case .paused:
                 return fallback.normalizedAggregateSignal
-            case .ready, .active, .completed, .needsReview, .permission, .blocked:
+            case .ready, .active, .completed, .needsReview, .permission, .blocked, .stale:
                 return .idle
             }
         }
@@ -3737,8 +3995,14 @@ final class MenuBarStatusModel: ObservableObject {
         cacheValue(usage, forKey: cachedLatestAgentTokenUsageKey)
     }
 
-    private static func loadManualOpenAICookieHeader(secretStore: KeychainSecretStore) -> String {
-        if let value = try? secretStore.string(for: manualOpenAICookieKey),
+    private static func loadManualOpenAICookieHeader(
+        secretStore: KeychainSecretStore,
+        allowsUserInteraction: Bool = true
+    ) -> String {
+        let storedValue = allowsUserInteraction
+            ? try? secretStore.string(for: manualOpenAICookieKey)
+            : try? secretStore.nonInteractiveString(for: manualOpenAICookieKey)
+        if let value = storedValue,
            !value.isEmpty {
             UserDefaults.standard.removeObject(forKey: legacyManualOpenAICookieUserDefaultsKey)
             return value
@@ -3749,6 +4013,10 @@ final class MenuBarStatusModel: ObservableObject {
         else {
             UserDefaults.standard.removeObject(forKey: legacyManualOpenAICookieUserDefaultsKey)
             return ""
+        }
+
+        guard allowsUserInteraction else {
+            return legacyValue
         }
 
         do {
@@ -3817,7 +4085,9 @@ final class MenuBarStatusModel: ObservableObject {
         switch session.signal.displayState {
         case .active:
             return now.timeIntervalSince(session.updatedAt) <= activeDisplayWindow(for: session)
-        case .needsReview, .permission, .blocked, .stale:
+        case .needsReview, .permission:
+            return now.timeIntervalSince(session.updatedAt) <= transientAlertDisplayWindow
+        case .blocked, .stale:
             return true
         case .ready, .completed, .paused:
             return false
@@ -3839,7 +4109,7 @@ final class MenuBarStatusModel: ObservableObject {
         guard session.signal.displayState == .active else { return false }
 
         switch session.lastEvent {
-        case "DesktopActivityHeartbeat", "DesktopThinking":
+        case "DesktopActivityHeartbeat", "DesktopThinking", "DesktopMessage":
             return true
         default:
             return false
@@ -3883,25 +4153,26 @@ final class MenuBarStatusModel: ObservableObject {
 
     private func bundledCLIURL() -> URL? {
         var candidates: [URL] = []
+        let cliNames = ["agent-signal-light", "agent-signal"]
 
         if let resourceURL = Bundle.main.resourceURL {
-            candidates.append(resourceURL.appendingPathComponent("dist/bin/agent-signal"))
+            candidates.append(contentsOf: cliNames.map { resourceURL.appendingPathComponent("dist/bin/\($0)") })
         }
 
         let bundleURL = Bundle.main.bundleURL.standardizedFileURL
         let distParent = bundleURL.deletingLastPathComponent()
         if distParent.lastPathComponent == "dist" {
-            candidates.append(
+            candidates.append(contentsOf: cliNames.map {
                 distParent
                     .deletingLastPathComponent()
-                    .appendingPathComponent("dist/bin/agent-signal")
-            )
+                    .appendingPathComponent("dist/bin/\($0)")
+            })
         }
 
-        candidates.append(
+        candidates.append(contentsOf: cliNames.map {
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent("dist/bin/agent-signal")
-        )
+                .appendingPathComponent("dist/bin/\($0)")
+        })
 
         let developmentBuildRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build")
@@ -3910,7 +4181,7 @@ final class MenuBarStatusModel: ObservableObject {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) {
-            for case let candidate as URL in enumerator where candidate.lastPathComponent == "agent-signal" {
+            for case let candidate as URL in enumerator where cliNames.contains(candidate.lastPathComponent) {
                 candidates.append(candidate)
             }
         }

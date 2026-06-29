@@ -24,6 +24,7 @@ public final class SignalStateStore: @unchecked Sendable {
     public let completedTTLSeconds: Double
     public let eventLimit: Int
     private static let duplicateEventWindow: TimeInterval = 4
+    private static let transientAlertHoldWindow: TimeInterval = 5
 
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
@@ -232,6 +233,12 @@ public final class SignalStateStore: @unchecked Sendable {
                 return document.snapshot(stateFileURL: stateFileURL)
             }
 
+            let shouldHoldCurrentAlert = shouldHoldTransientAlert(
+                existing: document.sessions[sessionID] ?? existingBeforePrune,
+                incomingSignal: signal,
+                updatedAt: eventDate
+            )
+
             switch signal {
             case .off, .pause, .paused:
                 document.sessions.removeAll()
@@ -271,13 +278,15 @@ public final class SignalStateStore: @unchecked Sendable {
                     )
                 }
             default:
-                document.sessions[sessionID] = SessionRecord(
-                    agent: agent,
-                    signal: signal,
-                    lastEvent: lastEvent,
-                    updatedAt: eventDate,
-                    quota: quota ?? existingBeforePrune?.quota
-                )
+                if !shouldHoldCurrentAlert {
+                    document.sessions[sessionID] = SessionRecord(
+                        agent: agent,
+                        signal: signal,
+                        lastEvent: lastEvent,
+                        updatedAt: eventDate,
+                        quota: quota ?? existingBeforePrune?.quota
+                    )
+                }
             }
 
             if signal.displayState != .paused {
@@ -336,18 +345,18 @@ public final class SignalStateStore: @unchecked Sendable {
 private extension AgentSignal {
     var preserveAgainstSessionEndSignal: Bool {
         switch displayState {
-        case .completed, .needsReview, .permission, .blocked, .stale, .paused:
+        case .completed, .needsReview, .blocked, .stale, .paused:
             return true
-        case .ready, .active:
+        case .ready, .active, .permission:
             return false
         }
     }
 
     var preserveAgainstCompletedSignal: Bool {
         switch displayState {
-        case .needsReview, .permission, .blocked, .stale, .paused:
+        case .blocked, .stale, .paused:
             return true
-        case .ready, .active, .completed:
+        case .ready, .active, .completed, .needsReview, .permission:
             return false
         }
     }
@@ -465,6 +474,34 @@ private extension SignalStateStore {
              "DesktopToolDone":
             return true
         default:
+            return false
+        }
+    }
+
+    func shouldHoldTransientAlert(
+        existing: SessionRecord?,
+        incomingSignal: AgentSignal,
+        updatedAt eventDate: Date
+    ) -> Bool {
+        guard let existing,
+              isTransientAlert(existing.signal.displayState),
+              isResolvingOrLowerPriorityAlert(incomingSignal.displayState)
+        else {
+            return false
+        }
+
+        return eventDate.timeIntervalSince(existing.updatedAt) <= Self.transientAlertHoldWindow
+    }
+
+    func isTransientAlert(_ displayState: DisplayState) -> Bool {
+        displayState == .permission || displayState == .needsReview
+    }
+
+    func isResolvingOrLowerPriorityAlert(_ displayState: DisplayState) -> Bool {
+        switch displayState {
+        case .active, .completed, .needsReview:
+            return true
+        case .ready, .permission, .blocked, .stale, .paused:
             return false
         }
     }

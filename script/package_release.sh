@@ -48,7 +48,13 @@ cleanup_duplicate_artifacts() {
 
 cleanup_duplicate_artifacts
 
-APP_BUNDLE="$("$ROOT_DIR/script/package_app.sh" --release)"
+PACKAGE_APP_DIST_DIR="$(mktemp -d /tmp/agent-signal-light-package.XXXXXX)"
+trap 'rm -rf "$PACKAGE_APP_DIST_DIR"' EXIT
+APP_BUNDLE="$(
+  AGENT_SIGNAL_LIGHT_DIST_DIR="$PACKAGE_APP_DIST_DIR" \
+  AGENT_SIGNAL_LIGHT_STRICT_PACKAGE_VERIFY=1 \
+  "$ROOT_DIR/script/package_app.sh" --release
+)"
 "$ROOT_DIR/script/install_cli.sh" >/dev/null
 swift_tool build -c release --product agent-signal-icon-preview >/dev/null
 PREVIEW_BINARY="$(swift_tool build -c release --show-bin-path)/agent-signal-icon-preview"
@@ -81,6 +87,9 @@ if [[ -d "$ROOT_DIR/.codex/environments" ]]; then
   cp -R "$ROOT_DIR/.codex/environments" "$PAYLOAD_DIR/.codex/environments"
 fi
 cp -R "$APP_BUNDLE" "$PAYLOAD_DIR/dist/$APP_NAME.app"
+rm -rf "$DIST_DIR/$APP_NAME.app"
+ditto --norsrc --noextattr "$APP_BUNDLE" "$DIST_DIR/$APP_NAME.app"
+cp "$ROOT_DIR/dist/bin/agent-signal-light" "$PAYLOAD_DIR/dist/bin/agent-signal-light"
 cp "$ROOT_DIR/dist/bin/agent-signal" "$PAYLOAD_DIR/dist/bin/agent-signal"
 cp "$ROOT_DIR/dist/bin/agent-signal-icon-preview" "$PAYLOAD_DIR/dist/bin/agent-signal-icon-preview"
 cp -R "$ROOT_DIR/dist/status-icon-preview" "$PAYLOAD_DIR/dist/status-icon-preview"
@@ -91,7 +100,8 @@ find "$PAYLOAD_DIR" -type f \( -name '*.pyc' -o -name '.DS_Store' \) -delete
 find "$PAYLOAD_DIR" -type d \( -name marketing -o -name social -o -name video \) -prune -exec rm -rf {} +
 rm -f "$PAYLOAD_DIR/.codex/hooks.json" "$PAYLOAD_DIR/.codex"/hooks.json.*
 
-chmod +x "$PAYLOAD_DIR/dist/bin/agent-signal" \
+chmod +x "$PAYLOAD_DIR/dist/bin/agent-signal-light" \
+  "$PAYLOAD_DIR/dist/bin/agent-signal" \
   "$PAYLOAD_DIR/dist/bin/agent-signal-icon-preview" \
   "$PAYLOAD_DIR/scripts/agent-signal" \
   "$PAYLOAD_DIR/scripts/codex-signal-hook" \

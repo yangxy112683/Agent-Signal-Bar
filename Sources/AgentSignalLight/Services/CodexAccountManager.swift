@@ -163,7 +163,31 @@ protocol CodexAccountLoginRunning: Sendable {
     func run(homePath: String, timeout: TimeInterval, environment: [String: String]) async -> CodexAccountLoginResult
 }
 
-final class CodexAccountManager: @unchecked Sendable {
+protocol CodexAccountManaging: AnyObject, Sendable {
+    func loadState() throws -> CodexAccountState
+    func loadMetadataState() throws -> CodexAccountState
+    func saveCurrentAccount(label requestedLabel: String?) throws -> CodexAccountProfile
+    func switchToAccount(id: UUID) throws -> CodexAccountProfile
+    func authenticateManagedAccount(timeout: TimeInterval) async throws -> CodexAccountProfile
+    func removeAccount(id: UUID) throws
+    func refreshSavedCurrentAccountIfPossible() throws -> CodexAccountProfile?
+}
+
+extension CodexAccountManaging {
+    func saveCurrentAccount() throws -> CodexAccountProfile {
+        try saveCurrentAccount(label: nil)
+    }
+
+    func loadMetadataState() throws -> CodexAccountState {
+        try loadState()
+    }
+
+    func authenticateManagedAccount() async throws -> CodexAccountProfile {
+        try await authenticateManagedAccount(timeout: 120)
+    }
+}
+
+final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
     private struct StoreDocument: Codable {
         var version: Int
         var accounts: [CodexAccountProfile]
@@ -216,6 +240,16 @@ final class CodexAccountManager: @unchecked Sendable {
 
     func loadState() throws -> CodexAccountState {
         let accounts = try loadAccounts()
+        let current = try? currentAccount()
+        return CodexAccountState(
+            currentAccount: current,
+            savedAccounts: accounts,
+            activeSavedAccountID: current.flatMap { activeAccountID(for: $0, in: accounts) }
+        )
+    }
+
+    func loadMetadataState() throws -> CodexAccountState {
+        let accounts = try loadAccountsWithoutCredentialMigration()
         let current = try? currentAccount()
         return CodexAccountState(
             currentAccount: current,
@@ -440,6 +474,17 @@ final class CodexAccountManager: @unchecked Sendable {
         let document = try JSONDecoder().decode(StoreDocument.self, from: data)
         guard document.version <= Self.currentStoreVersion else { return [] }
         return try migrateAccountsIfNeeded(document.accounts)
+    }
+
+    private func loadAccountsWithoutCredentialMigration() throws -> [CodexAccountProfile] {
+        guard fileManager.fileExists(atPath: storeURL.path) else { return [] }
+        let data = try Data(contentsOf: storeURL)
+        let document = try JSONDecoder().decode(StoreDocument.self, from: data)
+        guard document.version <= Self.currentStoreVersion else { return [] }
+        return document.accounts.sorted { lhs, rhs in
+            if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+        }
     }
 
     private func migrateAccountsIfNeeded(_ loadedAccounts: [CodexAccountProfile]) throws -> [CodexAccountProfile] {

@@ -131,11 +131,6 @@ enum CostUsagePricing {
             outputCostPerToken: 1.4e-5,
             cacheReadInputCostPerToken: 1.75e-7,
             displayLabel: nil),
-        "gpt-5.3-codex-spark": CodexPricing(
-            inputCostPerToken: 0,
-            outputCostPerToken: 0,
-            cacheReadInputCostPerToken: 0,
-            displayLabel: "Research Preview"),
         "gpt-5.4": CodexPricing(
             inputCostPerToken: 2.5e-6,
             outputCostPerToken: 1.5e-5,
@@ -365,6 +360,10 @@ enum CostUsagePricing {
             cacheReadInputCostPerTokenAboveThreshold: 6e-7),
     ]
 
+    private static let codexDisplayLabels: [String: String] = [
+        "gpt-5.3-codex-spark": "Research Preview"
+    ]
+
     private static let claudeFullContextStandardPricingCutoff = Date(timeIntervalSince1970: 1_773_360_000)
     private static let claudeHistoricalLongContext: [String: ClaudePricing] = [
         "claude-opus-4-6": ClaudePricing(
@@ -413,7 +412,7 @@ enum CostUsagePricing {
 
     static func codexDisplayLabel(model: String) -> String? {
         let key = self.normalizeCodexModel(model)
-        return self.codex[key]?.displayLabel
+        return self.codex[key]?.displayLabel ?? self.codexDisplayLabels[key]
     }
 
     static func normalizeClaudeModel(_ raw: String) -> String {

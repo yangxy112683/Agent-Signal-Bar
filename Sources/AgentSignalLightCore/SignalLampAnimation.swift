@@ -24,15 +24,29 @@ public enum SignalLampAnimation {
         case .completed:
             return completedIntensity(color, tick: tick, customization: customization)
         case .needsReview:
-            guard color == .yellow else { return 0 }
-            let values: [Double] = [0.45, 0.72, 1.0, 0.72, 0, 0, 0, 0]
-            return values[adjustedTick(tick, speed: customization.alertSpeed) % values.count]
+            return alertIntensity(
+                color,
+                expectedColor: .yellow,
+                tick: tick,
+                speed: customization.alertSpeed,
+                effect: customization.needsReviewEffect
+            )
         case .permission:
-            guard color == .red else { return 0 }
-            let values: [Double] = [0.45, 0.72, 1.0, 0.72, 0, 0, 0, 0]
-            return values[adjustedTick(tick, speed: customization.alertSpeed) % values.count]
+            return alertIntensity(
+                color,
+                expectedColor: .red,
+                tick: tick,
+                speed: customization.alertSpeed,
+                effect: customization.permissionEffect
+            )
         case .blocked:
-            return color == .red && blockedTick(tick, speed: customization.alertSpeed) % 2 == 0 ? 1 : 0
+            return alertIntensity(
+                color,
+                expectedColor: .red,
+                tick: tick,
+                speed: customization.alertSpeed,
+                effect: customization.blockedEffect
+            )
         case .stale:
             guard color == .yellow else { return 0 }
             let values: [Double] = [0.35, 0.5, 0.65, 0.5, 0, 0, 0, 0]
@@ -61,9 +75,9 @@ public enum SignalLampAnimation {
         }
 
         switch signal.displayState {
-        case .active, .completed, .needsReview, .permission, .stale:
+        case .active, .completed, .needsReview, .permission, .blocked, .stale:
             return 0.48 + intensity * 0.52
-        case .ready, .blocked, .paused:
+        case .ready, .paused:
             return 1
         }
     }
@@ -117,6 +131,42 @@ public enum SignalLampAnimation {
         }
     }
 
+    private static func alertIntensity(
+        _ color: SignalLampColor,
+        expectedColor: SignalLampColor,
+        tick: Int,
+        speed: SignalEffectSpeed,
+        effect: AlertSignalEffect
+    ) -> Double {
+        if effect != .trafficCycle {
+            guard color == expectedColor else { return 0 }
+        }
+
+        let alertTick = adjustedTick(tick, speed: speed)
+        switch effect {
+        case .pulse:
+            let values: [Double] = [0.45, 0.72, 1.0, 0.72, 0, 0, 0, 0]
+            return values[alertTick % values.count]
+        case .steady:
+            return 1
+        case .slowFlash:
+            let values: [Double] = [1, 1, 1, 0, 0, 0]
+            return values[alertTick % values.count]
+        case .fastFlash:
+            let values: [Double] = [1, 0]
+            return values[alertTick % values.count]
+        case .breathing:
+            let values: [Double] = [0.35, 0.42, 0.52, 0.66, 0.82, 1.0, 0.82, 0.66, 0.52, 0.42]
+            return values[alertTick % values.count]
+        case .trafficCycle:
+            let phaseColors: [SignalLampColor] = [.red, .yellow, .green]
+            let ticksPerColor = 4
+            let phase = (alertTick / ticksPerColor) % phaseColors.count
+            guard color == phaseColors[phase] else { return 0 }
+            return 1
+        }
+    }
+
     private static func completedIntensity(
         _ color: SignalLampColor,
         tick: Int,
@@ -152,16 +202,6 @@ public enum SignalLampAnimation {
             return tick
         case .fast:
             return tick * 2
-        }
-    }
-
-    private static func blockedTick(_ tick: Int, speed: SignalEffectSpeed) -> Int {
-        let tick = normalizedTick(tick)
-        switch speed {
-        case .slow:
-            return tick / 2
-        case .standard, .fast:
-            return tick
         }
     }
 
