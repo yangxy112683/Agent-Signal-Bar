@@ -38,8 +38,8 @@ if [[ ! "$TAG_NAME" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
   TAG_NAME="v$APP_VERSION"
 fi
 
-DOWNLOAD_URL_PREFIX="${SPARKLE_DOWNLOAD_URL_PREFIX:-https://github.com/guan-ops/Agent-Signal-Bar/releases/download/$TAG_NAME/}"
-FULL_RELEASE_NOTES_URL="${SPARKLE_FULL_RELEASE_NOTES_URL:-https://github.com/guan-ops/Agent-Signal-Bar/releases/tag/$TAG_NAME}"
+DOWNLOAD_URL_PREFIX="${SPARKLE_DOWNLOAD_URL_PREFIX:-https://github.com/yangxy112683/Agent-Signal-Bar/releases/download/$TAG_NAME/}"
+FULL_RELEASE_NOTES_URL="${SPARKLE_FULL_RELEASE_NOTES_URL:-https://github.com/yangxy112683/Agent-Signal-Bar/releases/tag/$TAG_NAME}"
 ARCHIVE_DIR="$(mktemp -d)"
 trap 'rm -rf "$ARCHIVE_DIR"' EXIT
 

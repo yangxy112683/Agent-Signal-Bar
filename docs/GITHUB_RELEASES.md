@@ -56,7 +56,7 @@ The release workflow runs tests, packages the app, verifies checksums, and uploa
 `appcast.xml` is the Sparkle update feed used by installed apps. The app points to:
 
 ```text
-https://github.com/guan-ops/Agent-Signal-Bar/releases/latest/download/appcast.xml
+https://github.com/yangxy112683/Agent-Signal-Bar/releases/latest/download/appcast.xml
 ```
 
 Before publishing Sparkle-enabled releases from GitHub Actions, configure the repository secret:
