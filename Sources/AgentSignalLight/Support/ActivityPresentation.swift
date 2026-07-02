@@ -12,6 +12,7 @@ enum ActivityPresentation {
     static let currentSessionLimit = 6
     private static let liveSessionWindow: TimeInterval = 5 * 60
     private static let passiveActiveSessionWindow: TimeInterval = 45
+    private static let alertResolutionGraceWindow: TimeInterval = 5
 
     static func visibleSessions(
         from snapshot: SignalSnapshot,
@@ -255,6 +256,12 @@ enum ActivityPresentation {
             return status
         }
 
+        if rawEvent.hasPrefix("DesktopToolCall:"),
+           session.signal.displayState == .needsReview || session.signal.displayState == .permission {
+            let toolName = String(rawEvent.dropFirst("DesktopToolCall:".count))
+            return toolName.isEmpty ? status : "\(status) · \(toolName)"
+        }
+
         let eventName = friendlyEventName(rawEvent)
         return eventName.isEmpty ? status : eventName
     }
@@ -316,6 +323,13 @@ enum ActivityPresentation {
             }
         }
 
+        if shouldResolvingSessionOverride(candidate, current: current) {
+            return true
+        }
+        if shouldResolvingSessionOverride(current, current: candidate) {
+            return false
+        }
+
         let candidateIsAlert = isPersistentAlert(candidate.signal.displayState)
         let currentIsAlert = isPersistentAlert(current.signal.displayState)
         if candidateIsAlert || currentIsAlert {
@@ -331,6 +345,25 @@ enum ActivityPresentation {
         }
 
         return candidate.signal.displayState.priority > current.signal.displayState.priority
+    }
+
+    private static func shouldResolvingSessionOverride(
+        _ candidate: SessionStatus,
+        current: SessionStatus
+    ) -> Bool {
+        guard isResolvingState(candidate.signal.displayState),
+              isResolvingOverrideableAlert(current.signal.displayState),
+              candidate.updatedAt >= current.updatedAt
+        else {
+            return false
+        }
+
+        if current.signal.displayState == .permission,
+           candidate.signal.displayState == .active {
+            return candidate.updatedAt.timeIntervalSince(current.updatedAt) >= alertResolutionGraceWindow
+        }
+
+        return true
     }
 
     private static func shouldPresenceOverrideStaleActivity(
@@ -352,7 +385,7 @@ enum ActivityPresentation {
         guard session.signal.displayState == .active else { return false }
 
         switch session.lastEvent {
-        case "DesktopActivityHeartbeat", "DesktopThinking":
+        case "DesktopActivityHeartbeat", "DesktopThinking", "DesktopMessage":
             return true
         default:
             return false
@@ -366,6 +399,14 @@ enum ActivityPresentation {
         case .ready, .active, .completed:
             return false
         }
+    }
+
+    private static func isResolvingOverrideableAlert(_ displayState: DisplayState) -> Bool {
+        displayState == .permission
+    }
+
+    private static func isResolvingState(_ displayState: DisplayState) -> Bool {
+        displayState == .active || displayState == .completed
     }
 
     private static func isPresenceSession(_ session: SessionStatus) -> Bool {

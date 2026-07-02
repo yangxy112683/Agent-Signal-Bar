@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "AgentSignalLight", targets: ["AgentSignalLight"]),
+        .executable(name: "agent-signal-light", targets: ["AgentSignalCLI"]),
         .executable(name: "agent-signal", targets: ["AgentSignalCLI"]),
         .executable(name: "agent-signal-checks", targets: ["AgentSignalChecks"]),
         .executable(name: "agent-signal-icon-preview", targets: ["AgentSignalIconPreview"]),
@@ -16,7 +17,8 @@ let package = Package(
         .library(name: "AgentSignalLightUI", targets: ["AgentSignalLightUI"])
     ],
     dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.3")
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.3"),
+        .package(url: "https://github.com/steipete/SweetCookieKit", from: "0.4.1")
     ],
     targets: [
         .target(name: "AgentSignalLightCore"),
@@ -29,6 +31,7 @@ let package = Package(
             dependencies: [
                 "AgentSignalLightCore",
                 "AgentSignalLightUI",
+                .product(name: "SweetCookieKit", package: "SweetCookieKit"),
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             resources: [

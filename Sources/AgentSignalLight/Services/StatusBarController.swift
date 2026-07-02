@@ -17,6 +17,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         return menu
     }()
     private var popover: NSPopover?
+    private var popoverOutsideLocalMonitor: Any?
+    private var popoverOutsideGlobalMonitor: Any?
+    private var popoverEscapeKeyMonitor: Any?
     private var recoveryWindow: NSWindow?
     private var didPresentRecoveryWindowForCurrentDisable = false
     private var lastRenderKey: StatusRenderKey?
@@ -217,11 +220,11 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         }
 
         didPresentRecoveryWindowForCurrentDisable = false
-        let lightSnapshot = model.lightSnapshot
-        let lightTick = model.lightTick
-        let lightAllLightsOn = model.lightAllLightsOn
-        let lightUsesSystemGrayLights = model.lightUsesSystemGrayLights
-        let lightEffectCustomization = model.lightEffectCustomization
+        let lightSnapshot = model.statusBarLightSnapshot
+        let lightTick = model.statusBarLightTick
+        let lightAllLightsOn = model.statusBarLightAllLightsOn
+        let lightUsesSystemGrayLights = model.statusBarLightUsesSystemGrayLights
+        let lightEffectCustomization = model.statusBarLightEffectCustomization
         let length = StatusBarIconRenderer.statusItemLength(
             layout: model.displayLayout,
             style: model.statusBarStyle,
@@ -378,9 +381,9 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     private func rebuildNativeStatusMenu(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        let snapshot = model.lightSnapshot
+        let snapshot = model.statusBarLightSnapshot
         let activitySnapshot = model.activitySnapshot
-        menu.addItem(infoMenuItem(title: "Agent Signal Bar", image: nativeStatusDotImage(for: model.lightSnapshot)))
+        menu.addItem(infoMenuItem(title: "Agent Signal Bar", image: nativeStatusDotImage(for: model.statusBarLightSnapshot)))
         menu.addItem(infoMenuItem(title: "\(model.displayName(for: snapshot.aggregate)) · \(model.humanAction(for: snapshot.aggregate))"))
 
         if let updatedAt = snapshot.updatedAt {
@@ -424,10 +427,10 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func addNativeQuotaMenuItems(to menu: NSMenu) {
-        menu.addItem(infoMenuItem(title: model.text("Codex 额度", "Codex Quota")))
+        menu.addItem(infoMenuItem(title: model.text("Codex 会话", "Codex Session")))
 
         guard let quota = model.latestAgentQuota else {
-            menu.addItem(infoMenuItem(title: model.text("暂无额度数据", "No quota data yet")))
+            menu.addItem(infoMenuItem(title: model.text("暂无会话数据", "No session data yet")))
             return
         }
 
@@ -642,7 +645,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func nativeStatusDotColor(for snapshot: SignalSnapshot) -> NSColor {
-        if model.lightUsesSystemGrayLights {
+        if model.statusBarLightUsesSystemGrayLights {
             return .systemGray
         }
 
@@ -657,10 +660,14 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             return preferredActiveLampColor(for: signal)
         case .completed:
             return preferredCompletedLampColor()
-        case .needsReview, .stale, .paused:
+        case .needsReview:
+            return preferredAlertLampColor(defaultColor: .yellow, effect: model.needsReviewSignalEffect)
+        case .stale, .paused:
             return .yellow
-        case .permission, .blocked:
-            return .red
+        case .permission:
+            return preferredAlertLampColor(defaultColor: .red, effect: model.permissionSignalEffect)
+        case .blocked:
+            return preferredAlertLampColor(defaultColor: .red, effect: model.blockedSignalEffect)
         }
     }
 
@@ -675,6 +682,20 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         case .greenBreathing, .greenSteady, .greenSlowFlash, .greenFastFlash:
             return .green
         }
+    }
+
+    private func preferredAlertLampColor(
+        defaultColor: SignalLampColor,
+        effect: AlertSignalEffect
+    ) -> SignalLampColor {
+        guard effect == .trafficCycle else {
+            return defaultColor
+        }
+
+        let alertTick = max(model.tick, 0)
+        let ticksPerColor = 4
+        let phaseColors: [SignalLampColor] = [.red, .yellow, .green]
+        return phaseColors[(alertTick / ticksPerColor) % phaseColors.count]
     }
 
     private func preferredCompletedLampColor() -> SignalLampColor {
@@ -753,7 +774,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             "length": statusItem?.length ?? 0,
             "layout": model.displayLayout.rawValue,
             "style": model.statusBarStyle.rawValue,
-            "aggregate": model.lightSnapshot.aggregate.rawValue,
+            "aggregate": model.statusBarLightSnapshot.aggregate.rawValue,
             "tooltip_exists": !(button?.toolTip ?? "").isEmpty,
             "updated_at": ISO8601DateFormatter().string(from: Date())
         ]
@@ -801,6 +822,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
         popover.contentViewController?.view.appearance = model.appTheme.nsAppearance
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         self.popover = popover
+        installPopoverAutoCloseMonitors()
 
         DispatchQueue.main.async { [weak self] in
             guard let self,
@@ -816,6 +838,7 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
     }
 
     private func closePopover() {
+        removePopoverAutoCloseMonitors()
         popover?.performClose(nil)
         popover = nil
         popoverOpenedAt = .distantPast
@@ -828,8 +851,87 @@ final class StatusBarController: NSObject, NSMenuDelegate, NSPopoverDelegate, NS
             return
         }
 
+        removePopoverAutoCloseMonitors()
         popover = nil
         popoverOpenedAt = .distantPast
+    }
+
+    private func installPopoverAutoCloseMonitors() {
+        removePopoverAutoCloseMonitors()
+
+        popoverOutsideLocalMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            guard let self else {
+                return event
+            }
+
+            if self.shouldClosePopover(for: event) {
+                self.closePopover()
+            }
+            return event
+        }
+
+        popoverOutsideGlobalMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.closePopover()
+            }
+        }
+
+        popoverEscapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  event.keyCode == 53,
+                  self.popover?.isShown == true
+            else {
+                return event
+            }
+
+            self.closePopover()
+            return nil
+        }
+    }
+
+    private func removePopoverAutoCloseMonitors() {
+        [
+            popoverOutsideLocalMonitor,
+            popoverOutsideGlobalMonitor,
+            popoverEscapeKeyMonitor
+        ]
+        .compactMap { $0 }
+        .forEach(NSEvent.removeMonitor)
+
+        popoverOutsideLocalMonitor = nil
+        popoverOutsideGlobalMonitor = nil
+        popoverEscapeKeyMonitor = nil
+    }
+
+    private func shouldClosePopover(for event: NSEvent) -> Bool {
+        guard popover?.isShown == true else {
+            return false
+        }
+
+        let screenPoint = Self.screenPoint(for: event)
+        if let popoverWindow = popover?.contentViewController?.view.window,
+           popoverWindow.frame.contains(screenPoint) {
+            return false
+        }
+
+        if let statusButtonWindow = statusItem?.button?.window,
+           statusButtonWindow.frame.contains(screenPoint) {
+            return false
+        }
+
+        return true
+    }
+
+    private static func screenPoint(for event: NSEvent) -> NSPoint {
+        guard let window = event.window else {
+            return NSEvent.mouseLocation
+        }
+
+        return window.convertPoint(toScreen: event.locationInWindow)
     }
 
     func showDebugWindow() {

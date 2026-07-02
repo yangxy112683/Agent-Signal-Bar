@@ -259,7 +259,7 @@ public extension AgentSignal {
     static let sessionEndSignals: Set<AgentSignal> = [.sessionEnd, .off, .pause, .paused]
 
     var blocksTurnEndClear: Bool {
-        displayState == .permission || displayState == .blocked
+        displayState == .blocked
     }
 
 }

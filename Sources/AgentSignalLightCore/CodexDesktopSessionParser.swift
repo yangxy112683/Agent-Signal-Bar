@@ -365,10 +365,35 @@ private extension CodexDesktopSessionParser {
 
     static func toolCallSignal(_ payload: [String: Any]) -> AgentSignal {
         let name = toolName(in: payload).lowercased()
+        if requiresEscalatedApproval(payload) {
+            return .permissionRequest
+        }
         if name == "request_user_input" {
             return .attention
         }
         return .working
+    }
+
+    static func requiresEscalatedApproval(_ payload: [String: Any]) -> Bool {
+        if let arguments = payload["arguments"] as? [String: Any],
+           (arguments["sandbox_permissions"] as? String) == "require_escalated" {
+            return true
+        }
+
+        guard let arguments = payload["arguments"] as? String,
+              arguments.contains("sandbox_permissions"),
+              arguments.contains("require_escalated")
+        else {
+            return false
+        }
+
+        if let data = arguments.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return (object["sandbox_permissions"] as? String) == "require_escalated"
+        }
+
+        return arguments.contains(#""sandbox_permissions":"require_escalated""#)
+            || arguments.contains(#""sandbox_permissions": "require_escalated""#)
     }
 
     static func toolName(in payload: [String: Any]) -> String {

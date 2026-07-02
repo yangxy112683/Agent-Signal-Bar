@@ -93,8 +93,8 @@ AGENT_SIGNAL_LIGHT_STATE_FILE="$STATE_FILE" ./scripts/agent-signal done \
   --agent local-script \
   --event AgentFinished \
   --json >"$OUTPUT_FILE"
-expect_json "local script done does not hide unresolved attention" \
-  'data["aggregate"] == "attention" and data["display_state"] == "needs_review" and data["recent_events"][0]["signal"] == "done" and sessions["local-script-main"]["signal"] == "attention"'
+expect_json "local script done clears resolved attention" \
+  'data["aggregate"] == "done" and data["display_state"] == "completed" and data["recent_events"][0]["signal"] == "done" and sessions["local-script-main"]["signal"] == "done" and sessions["local-script-main"]["last_event"] == "AgentFinished"'
 
 DONE_STATE="$STATE_ROOT/done-status.json"
 AGENT_SIGNAL_LIGHT_STATE_FILE="$DONE_STATE" ./scripts/agent-signal working \

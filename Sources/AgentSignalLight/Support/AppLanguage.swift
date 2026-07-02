@@ -198,6 +198,30 @@ extension MenuBarStatusModel {
         }
     }
 
+    func displayName(
+        for window: AgentQuotaWindowStatus?,
+        fallback quotaWindow: FloatingSignalQuotaBadgeWindow
+    ) -> String {
+        guard let minutes = window?.windowMinutes, minutes > 0 else {
+            return displayName(for: quotaWindow)
+        }
+
+        if minutes % (24 * 60) == 0 {
+            let days = minutes / (24 * 60)
+            if days == 7 {
+                return text("一周", "1 week")
+            }
+            return text("\(days) 天", "\(days)d")
+        }
+
+        if minutes % 60 == 0 {
+            let hours = minutes / 60
+            return text("\(hours) 小时", "\(hours) hours")
+        }
+
+        return text("\(minutes) 分钟", "\(minutes) minutes")
+    }
+
     func displayName(for tokenWindow: FloatingSignalTokenBadgeWindow) -> String {
         switch tokenWindow {
         case .today:
@@ -230,8 +254,9 @@ extension MenuBarStatusModel {
         for badgeWindow: FloatingSignalQuotaBadgeWindow,
         quota: AgentQuotaStatus
     ) -> String {
-        let title = displayName(for: badgeWindow)
-        let percent = quotaPercentText(for: quotaWindow(for: badgeWindow, quota: quota))
+        let window = quotaWindow(for: badgeWindow, quota: quota)
+        let title = displayName(for: window, fallback: badgeWindow)
+        let percent = quotaPercentText(for: window)
         return text(
             "\(title) · 剩余 \(percent)",
             "\(title) · \(percent) left"
@@ -245,7 +270,8 @@ extension MenuBarStatusModel {
         guard let resetsAt = window?.resetsAt else {
             return text("重置时间未知", "reset time unavailable")
         }
-        let resetTime = badgeWindow == .weekly
+        let shouldShowDate = badgeWindow == .weekly || (window?.windowMinutes ?? 0) >= 24 * 60
+        let resetTime = shouldShowDate
             ? localizedMonthDayTimeString(for: resetsAt)
             : localizedTimeString(for: resetsAt)
         return text("重置 \(resetTime)", "resets \(resetTime)")
@@ -440,19 +466,6 @@ extension MenuBarStatusModel {
         }
     }
 
-    func displayName(for sound: FloatingSignalAlertSound) -> String {
-        switch sound {
-        case .off:
-            return text("关闭", "Off")
-        case .defaultPulse:
-            return text("脉冲", "Pulse")
-        case .aiBeacon:
-            return text("提醒", "Beacon")
-        case .aiUrgent:
-            return text("警示", "Alert")
-        }
-    }
-
     func displayName(for layout: TrafficSignalLayout) -> String {
         switch layout {
         case .horizontal:
@@ -522,6 +535,52 @@ extension MenuBarStatusModel {
             return text("三灯全亮", "All steady")
         case .allPulse:
             return text("三灯同步闪", "All flash")
+        }
+    }
+
+    func displayName(for effect: AlertSignalEffect) -> String {
+        switch effect {
+        case .pulse:
+            return text("慢闪", "Slow flash")
+        case .steady:
+            return text("常亮", "Steady")
+        case .slowFlash:
+            return text("慢闪", "Slow flash")
+        case .fastFlash:
+            return text("快闪", "Fast flash")
+        case .breathing:
+            return text("呼吸", "Breathe")
+        case .trafficCycle:
+            return text("红黄绿依次亮灯", "R/Y/G sequence")
+        }
+    }
+
+    func displayName(for effect: AlertSignalEffect, color: SignalLampColor) -> String {
+        if effect == .trafficCycle {
+            return text("红黄绿依次亮灯", "R/Y/G sequence")
+        }
+
+        let lampName: String
+        switch color {
+        case .red:
+            lampName = text("红灯", "Red")
+        case .yellow:
+            lampName = text("黄灯", "Yellow")
+        case .green:
+            lampName = text("绿灯", "Green")
+        }
+
+        switch effect {
+        case .pulse, .slowFlash:
+            return text("\(lampName)慢闪", "\(lampName) slow")
+        case .steady:
+            return text("\(lampName)常亮", "\(lampName) steady")
+        case .fastFlash:
+            return text("\(lampName)快闪", "\(lampName) fast")
+        case .breathing:
+            return text("\(lampName)呼吸", "\(lampName) breathe")
+        case .trafficCycle:
+            return text("红黄绿依次亮灯", "R/Y/G sequence")
         }
     }
 

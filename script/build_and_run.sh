@@ -32,6 +32,16 @@ open_app() {
   /usr/bin/open "$APP_BUNDLE" --args "$@"
 }
 
+wait_for_app() {
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if pgrep -x "$APP_NAME" >/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  pgrep -x "$APP_NAME" >/dev/null
+}
+
 run_app_binary() {
   "$APP_BINARY" "$@" >/tmp/agent-signal-light-ui-verify.log 2>&1 &
   APP_BINARY_PID=$!
@@ -106,8 +116,7 @@ PY
 restore_normal_menu_bar_launch() {
   pkill -x "$APP_NAME" >/dev/null 2>&1 || true
   open_app
-  sleep 1
-  pgrep -x "$APP_NAME" >/dev/null
+  wait_for_app
 }
 
 case "$MODE" in
@@ -127,8 +136,7 @@ case "$MODE" in
     ;;
   --verify|verify)
     open_app
-    sleep 1
-    pgrep -x "$APP_NAME" >/dev/null
+    wait_for_app
     ;;
   --status-item-verify|status-item-verify)
     HEALTH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-signal-status-item-health.XXXXXX")"

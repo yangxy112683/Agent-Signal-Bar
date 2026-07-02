@@ -149,7 +149,7 @@ manifest = {
     "archive": str(archive),
     "platform": platform.platform(),
     "files": files,
-    "privacy_note": "This package avoids dumping the full environment and does not copy Codex or Claude hook config files; use install-hooks-dry-run.txt for hook diagnostics."
+    "privacy_note": "This package includes status.json and local path metadata such as project_root, state_file, and archive. It avoids dumping the full environment and does not copy Codex or Claude hook config files; use install-hooks-dry-run.txt for hook diagnostics."
 }
 root.joinpath("manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
 PY
