@@ -47,13 +47,18 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
         .localScript
     ]
 
+    // NOTE: fork-specific — upstream (v1.5.0+) removed `.localScript` from
+    // `visibleCases` to stop custom/generic hooks (e.g. codebuddy CLI) from
+    // driving the signal light. We rely on that behavior, so it is
+    // intentionally kept here. See `testManualLocalScriptSelectionDrivesVisibleSignalLight`.
     static let visibleCases: [SignalLightAgentScope] = [
         .codexDesktop,
         .codexCLI,
         .codexVSCode,
         .codexXcode,
         .codexIDEA,
-        .claudeCode
+        .claudeCode,
+        .localScript
     ]
 
     static let allCases: [SignalLightAgentScope] = selectableCases

@@ -3867,8 +3867,15 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
+    // NOTE: fork-specific — this is the inverse of upstream's
+    // `testHiddenLocalScriptSelectionDoesNotDriveVisibleSignalLight`. Upstream
+    // (v1.5.0+) intentionally stopped custom/generic hooks (e.g. codebuddy CLI,
+    // any `local-script` agent) from driving the signal light. We depend on
+    // that capability, so `.localScript` was kept in `SignalLightAgentScope
+    // .visibleCases` and this test asserts it still drives the light and
+    // surfaces the "other agent running" hint like any other scope.
     @MainActor
-    func testHiddenLocalScriptSelectionDoesNotDriveVisibleSignalLight() throws {
+    func testManualLocalScriptSelectionDrivesVisibleSignalLight() throws {
         let savedDefaults = clearSignalLightSelectionDefaults()
         defer { restoreSignalLightSelectionDefaults(savedDefaults) }
         let fixture = try makeTemporaryStore()
@@ -3895,9 +3902,43 @@ final class AgentSignalLightCoreTests: XCTestCase {
         model.setSignalLightAgentScopes([.localScript])
 
         XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
-        XCTAssertEqual(model.displaySignalLightAgentScopes, [])
+        XCTAssertEqual(model.displaySignalLightAgentScopes, [.localScript])
         XCTAssertEqual(model.displaySnapshot.aggregate, .idle)
         XCTAssertEqual(model.displaySnapshot.sessions, [])
+        XCTAssertNotNil(model.signalLightAgentUnavailableHint)
+    }
+
+    @MainActor
+    func testManualLocalScriptSelectionFollowsItsOwnSessionState() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "codebuddy:main": SessionRecord(
+                        agent: "codebuddy",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.localScript])
+
+        XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
+        XCTAssertEqual(model.displaySignalLightAgentScopes, [.localScript])
+        XCTAssertEqual(model.displaySnapshot.aggregate, .working)
+        XCTAssertEqual(model.displaySnapshot.sessions.map(\.sessionID), ["codebuddy:main"])
         XCTAssertNil(model.signalLightAgentUnavailableHint)
     }
 
