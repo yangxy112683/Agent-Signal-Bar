@@ -195,9 +195,16 @@ enum SignalLightAgentScope: String, CaseIterable, Hashable {
                 || normalizedAgent == "claude-desktop"
                 || normalizedSessionID.hasPrefix("claude-desktop:")
         case .localScript:
+            // NOTE: fork-specific — `.localScript` now drives the visible
+            // signal light (see `visibleCases` above), so this match must
+            // exclude `GenericHookAdapter.agentName`'s fallback sentinel
+            // ("agent", returned when a generic hook payload omits an
+            // explicit agent field). Otherwise unlabeled generic-hook noise
+            // would be treated as a real active agent and drive the light.
             return !sourceKey.hasPrefix("codex:")
                 && !sourceKey.hasPrefix("claude:")
                 && !normalizedAgent.isEmpty
+                && normalizedAgent != "agent"
         }
     }
 

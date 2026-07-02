@@ -3155,6 +3155,28 @@ struct DebugWindowView: View {
 
                 Divider()
 
+                // NOTE: fork-specific — upstream (v1.5.0+) removed this card
+                // alongside hiding `.localScript` from the signal light (see
+                // `SignalLightAgentScope.visibleCases` in MenuBarStatusModel.swift).
+                // We restore custom/generic hook support (e.g. codebuddy CLI),
+                // so the settings entry to copy the generic hook command is
+                // restored too.
+                connectionItem(
+                    title: model.text("其他 Agent", "Other agents"),
+                    subtitle: model.text("本地脚本、通用 JSON 事件", "Local scripts, generic JSON events"),
+                    systemImage: "point.3.connected.trianglepath.dotted"
+                ) {
+                    connectionActionButton(
+                        model.text("复制接入命令", "Copy command"),
+                        systemImage: "doc.on.doc",
+                        width: connectionActionButtonWidth
+                    ) {
+                        model.copyGenericAgentHookCommand()
+                    }
+                }
+
+                Divider()
+
                 connectionItem(
                     title: model.text("诊断与版本", "Diagnostics"),
                     subtitle: model.text("导出诊断包、查看状态文件和版本", "Export diagnostics, state file, and version"),

@@ -5290,6 +5290,33 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertFalse(SignalLightAgentScope.codexVSCode.matches(session: cliSession))
     }
 
+    // NOTE: fork-specific — `.localScript` now drives the visible signal
+    // light, so it must not treat `GenericHookAdapter.agentName`'s fallback
+    // sentinel ("agent", returned when a generic hook payload omits an
+    // explicit agent field) as a real active agent. Otherwise unlabeled
+    // generic-hook noise could drive the light or hijack follow mode.
+    func testLocalScriptScopeIgnoresGenericHookAgentNameSentinel() {
+        let sentinelSession = SessionStatus(
+            sessionID: "sentinel:session",
+            signal: .working,
+            updatedAt: Date(),
+            agent: "agent",
+            lastEvent: "AgentStarted"
+        )
+
+        XCTAssertFalse(SignalLightAgentScope.localScript.matches(session: sentinelSession))
+
+        let realLocalScriptSession = SessionStatus(
+            sessionID: "codebuddy:main",
+            signal: .working,
+            updatedAt: Date(),
+            agent: "codebuddy",
+            lastEvent: "PreToolUse"
+        )
+
+        XCTAssertTrue(SignalLightAgentScope.localScript.matches(session: realLocalScriptSession))
+    }
+
     @MainActor
     func testSignalLightAgentScopesExposeSingleClaudeDesktopChoice() {
         XCTAssertFalse(SignalLightAgentScope.selectableCases.contains(.claudeDesktop))
