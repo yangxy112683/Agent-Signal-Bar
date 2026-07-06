@@ -3333,7 +3333,7 @@ final class MenuBarStatusModel: ObservableObject {
         case .completed:
             return age <= completedDisplayWindow
         case .needsReview, .permission, .blocked, .stale:
-            return true
+            return age <= transientAlertDisplayWindow
         case .ready, .paused:
             return false
         }
