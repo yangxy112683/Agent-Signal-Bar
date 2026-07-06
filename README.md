@@ -128,6 +128,7 @@ Both images are real screenshots of the current Activity page. The left image sh
 - Multilingual UI with system-language detection and manual language switching.
 - Customizable light effects, including blink speed, breathing strength, and per-state effect choices.
 - Theme selection and launch at login.
+- Optional Bluetooth hardware indicator: connect a `coding-` prefixed BLE signal light and mirror the aggregate state with automatic reconnect, device persistence, and three-state UI.
 - No cloud service is required. State files, hooks, and diagnostics stay on your Mac.
 
 ## Signal Language
