@@ -16,6 +16,10 @@ public protocol SignalLightBLECommanding: Sendable {
     func send(_ command: SignalLightBLECommand) async -> Bool
     /// 断开当前连接并停止扫描。
     func disconnect() async
+    /// 设置断连回调：当 CoreBluetooth 检测到意外断连（`didDisconnectPeripheral`）时触发，
+    /// 让上层（`SignalLightBLEController`）启动重连流程。
+    /// 测试用 commander 可空实现；生产 commander 必须在断连时调用。
+    func setOnDisconnect(_ handler: @escaping @Sendable () async -> Void)
 }
 
 // MARK: - UI / Controller 用的连接状态
@@ -37,17 +41,44 @@ public enum SignalLightBLEConnectionState: Sendable, Equatable {
 ///
 /// `isSignalLightBLEEnabled` 开关默认关闭；关闭时完全不初始化 `CBCentralManager`，
 /// 避免无硬件用户被蓝牙权限弹窗打扰。
+///
+/// 重连策略（Issue #3，cpets `ble_worker.py`）：断连后前 5 次每 2 秒重试一次，
+/// 之后每 30 秒轮询一次，无限重试，直到连接成功或用户主动断开。
+/// 写入失败也视为断连，立即触发重连，不等 `didDisconnectPeripheral` 回调。
 @MainActor
 final class SignalLightBLEController {
     private let model: MenuBarStatusModel
-    private let commander: SignalLightBLECommanding
+    private var commander: SignalLightBLECommanding
+    private let clock: SignalLightBLEClock
     private var cancellables = Set<AnyCancellable>()
     private var lastSentCommand: SignalLightBLECommand?
     private var isActivated = false
 
-    init(model: MenuBarStatusModel, commander: SignalLightBLECommanding) {
+    // 重连状态机
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectAttemptCount = 0
+    /// 标记用户主动断开（开关关闭），阻止重连流程。
+    private var isUserInitiatedDisconnect = false
+
+    init(
+        model: MenuBarStatusModel,
+        commander: SignalLightBLECommanding,
+        clock: SignalLightBLEClock = SystemSignalLightBLEClock()
+    ) {
         self.model = model
         self.commander = commander
+        self.clock = clock
+        // 把 commander 的断连回调接到自己的重连入口。
+        // 用 Task 跳出 delegate 调用栈，避免回调中再次触发 CoreBluetooth 操作导致重入。
+        commander.setOnDisconnect { [weak self] in
+            await MainActor.run {
+                self?.handleDisconnect()
+            }
+        }
+    }
+
+    deinit {
+        reconnectTask?.cancel()
     }
 
     /// 在应用启动后调用（与 `StatusBarController.activate()` 平级）。
@@ -63,8 +94,7 @@ final class SignalLightBLEController {
                 if enabled {
                     await self.syncCurrentState()
                 } else {
-                    await self.commander.disconnect()
-                    self.lastSentCommand = nil
+                    await self.userDisconnect()
                 }
             }
         }
@@ -79,7 +109,11 @@ final class SignalLightBLEController {
                 // 防止 snapshot 高频刷新时把硬件打爆。这是 Slice 1 的最小必要保护。
                 guard command != self.lastSentCommand else { return }
                 self.lastSentCommand = command
-                _ = await self.commander.send(command)
+                // 写入失败视为隐式断连，立即触发重连（不等 didDisconnectPeripheral 回调）。
+                let ok = await self.commander.send(command)
+                if !ok {
+                    self.handleDisconnect()
+                }
             }
         }
         .store(in: &cancellables)
@@ -91,7 +125,8 @@ final class SignalLightBLEController {
         Task { @MainActor in
             let ok = await self.commander.scanAndConnect()
             if ok {
-                // 连接成功后立即把当前状态同步到硬件。
+                // 连接成功后立即把当前状态同步到硬件，并清零重连计数。
+                self.reconnectAttemptCount = 0
                 await self.syncCurrentState()
             }
         }
@@ -102,5 +137,47 @@ final class SignalLightBLEController {
         let command = model.snapshot.aggregate.displayState.bleCommand
         lastSentCommand = command
         _ = await commander.send(command)
+    }
+
+    /// 用户主动断开（开关关闭）：取消重连，标记不重连，commander 断开。
+    private func userDisconnect() async {
+        isUserInitiatedDisconnect = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttemptCount = 0
+        await commander.disconnect()
+        lastSentCommand = nil
+    }
+
+    /// 断连处理入口（两个触发源：commander.onDisconnect 回调 + send 失败）。
+    /// 若已在重连流程中或用户主动断开，则不重复启动。
+    private func handleDisconnect() {
+        // 用户主动断开时不重连。
+        guard !isUserInitiatedDisconnect else { return }
+        // 已在重连流程中，不重复启动。
+        if reconnectTask != nil { return }
+        // 开关关闭时不重连。
+        guard model.isSignalLightBLEEnabled else { return }
+
+        reconnectTask = Task { @MainActor in
+            // 每次重连尝试：scanAndConnect 成功则清零退出；失败则按 policy sleep 后继续。
+            while !Task.isCancelled {
+                let attempt = self.reconnectAttemptCount
+                self.reconnectAttemptCount += 1
+                let ok = await self.commander.scanAndConnect()
+                if ok {
+                    // 重连成功：清零计数，同步当前状态，退出重连循环。
+                    self.reconnectAttemptCount = 0
+                    await self.syncCurrentState()
+                    self.reconnectTask = nil
+                    return
+                }
+                // 按 policy 等待后重试。
+                let interval = SignalLightBLEReconnectPolicy.interval(forAttempt: attempt)
+                await self.clock.sleep(seconds: interval)
+            }
+            // 被 cancel（用户主动断开）：清空 task 引用。
+            self.reconnectTask = nil
+        }
     }
 }

@@ -5588,6 +5588,153 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertTrue(commander.disconnectCallCount >= 1, "关闭开关应触发 disconnect")
     }
+
+    // MARK: - Signal Light BLE Reconnect Policy (Issue #3)
+
+    func testReconnectPolicyUsesFastIntervalForFirstFiveAttempts() {
+        // 前 5 次（attempt 0..4）应返回 2 秒
+        XCTAssertEqual(SignalLightBLEReconnectPolicy.interval(forAttempt: 0), 2)
+        XCTAssertEqual(SignalLightBLEReconnectPolicy.interval(forAttempt: 1), 2)
+        XCTAssertEqual(SignalLightBLEReconnectPolicy.interval(forAttempt: 2), 2)
+        XCTAssertEqual(SignalLightBLEReconnectPolicy.interval(forAttempt: 3), 2)
+        XCTAssertEqual(SignalLightBLEReconnectPolicy.interval(forAttempt: 4), 2)
+    }
+
+    func testReconnectPolicyFallsBackToSlowIntervalAfterFiveFastRetries() {
+        // 第 5 次及之后应返回 30 秒（慢速轮询）
+        XCTAssertEqual(SignalLightBLEReconnectPolicy.interval(forAttempt: 5), 30)
+        XCTAssertEqual(SignalLightBLEReconnectPolicy.interval(forAttempt: 6), 30)
+        XCTAssertEqual(SignalLightBLEReconnectPolicy.interval(forAttempt: 100), 30)
+    }
+
+    func testReconnectPolicyNeverReturnsZeroInterval() {
+        // 策略永不放弃：任何 attempt 都应有正间隔
+        for attempt in 0..<1000 {
+            XCTAssertGreaterThan(
+                SignalLightBLEReconnectPolicy.interval(forAttempt: attempt),
+                0,
+                "重连策略在 attempt \(attempt) 不应返回 0 或负数（无限重试）"
+            )
+        }
+    }
+
+    @MainActor
+    func testControllerStartsReconnectFlowOnDisconnect() async {
+        // 断连回调触发重连：commander.scanAndConnect 应被多次调用（重连尝试）
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        // 让重连尝试都失败，触发完整重试序列
+        commander.enqueueScanResults([false, false, false])
+        let clock = FakeSignalLightBLEClock()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: clock)
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        let initialCount = commander.scanAndConnectCallCount
+        await commander.simulateDisconnect()
+        // 给重连 Task 执行机会（fake clock sleep 不阻塞，所以很快循环完）
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertGreaterThan(
+            commander.scanAndConnectCallCount,
+            initialCount,
+            "断连后应启动重连流程，scanAndConnect 调用次数应增加"
+        )
+    }
+
+    @MainActor
+    func testControllerReconnectStopsOnUserInitiatedDisconnect() async {
+        // 用户主动断开（开关关闭）应停止重连
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        commander.enqueueScanResults([false, false, false, false, false, false, false, false])
+        let clock = FakeSignalLightBLEClock()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: clock)
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        // 触发断连启动重连
+        await commander.simulateDisconnect()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let countAfterReconnect = commander.scanAndConnectCallCount
+
+        // 用户主动关闭开关：应取消重连
+        model.setSignalLightBLEEnabled(false)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 重连应已停止，scanAndConnect 次数不再增加（或仅增加有限次因 Task 取消有延迟）
+        let countAfterCancel = commander.scanAndConnectCallCount
+        // 允许 Task 取消有少量 in-flight 调用，但不应持续增长
+        XCTAssertLessThanOrEqual(
+            countAfterCancel - countAfterReconnect,
+            2,
+            "用户主动断开后重连应停止，scanAndConnect 不应继续增长"
+        )
+    }
+
+    @MainActor
+    func testControllerReconnectResumesAfterSuccess() async {
+        // 重连成功后应清零计数并恢复正常写入；后续断连重新开始 fast retry
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        // 第一次断连后重连失败一次，第二次成功
+        commander.enqueueScanResults([false, true])
+        let clock = FakeSignalLightBLEClock()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: clock)
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        await commander.simulateDisconnect()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+
+        // 重连成功后：再次断连应从 fast interval（2 秒）重新开始
+        let clockSleepsBefore = await clock.sleepCalls
+        XCTAssertFalse(clockSleepsBefore.isEmpty, "重连失败时应调用 clock.sleep")
+
+        await clock.resetSleepCalls()
+        commander.enqueueScanResults([false, true])
+        await commander.simulateDisconnect()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+
+        let clockSleepsAfter = await clock.sleepCalls
+        // 验证第二次断连的第一次 sleep 是 2 秒（fast interval），不是 30 秒
+        XCTAssertFalse(clockSleepsAfter.isEmpty, "第二次断连也应触发重连 sleep")
+        if let firstSleep = clockSleepsAfter.first {
+            XCTAssertEqual(firstSleep, 2, "重连成功后计数清零，下次断连应从 fast interval(2s) 重新开始")
+        }
+    }
+
+    @MainActor
+    func testControllerWriteFailureTriggersReconnect() async {
+        // 写入失败应立即触发重连，不等 didDisconnectPeripheral 回调
+        // 用一个会写入失败的 commander 子类
+        final class WriteFailingCommander: FakeSignalLightCommander, @unchecked Sendable {
+            override func send(_ command: SignalLightBLECommand) async -> Bool {
+                // 记录命令但返回失败
+                _ = await super.send(command)
+                return false
+            }
+        }
+        let model = makeMenuBarStatusModel()
+        let commander = WriteFailingCommander()
+        commander.enqueueScanResults([true]) // 重连时 scanAndConnect 成功，停止重连
+        let clock = FakeSignalLightBLEClock()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: clock)
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        // 开关开启会触发 syncCurrentState -> send -> 失败 -> 触发重连
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // 写入失败应已触发重连（scanAndConnect 被调用）
+        XCTAssertGreaterThan(
+            commander.scanAndConnectCallCount,
+            0,
+            "写入失败应立即触发重连，scanAndConnect 应被调用"
+        )
+    }
 }
 
 @MainActor
@@ -5727,6 +5874,10 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
     private var _scanAndConnectCallCount = 0
     private var _disconnectCallCount = 0
     private var _sentCommands: [SignalLightBLECommand] = []
+    /// 每次调 scanAndConnect 返回的结果队列（空则默认 true）。
+    /// 用于模拟「前 N 次失败、之后成功」的重连场景。
+    private var _scanResults: [Bool] = []
+    private var _onDisconnect: (@Sendable () async -> Void)?
 
     var scanAndConnectCallCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -5743,9 +5894,17 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
 
     var isConnected: Bool { false }
 
+    /// 设置 scanAndConnect 的返回值序列（按调用顺序消费；耗尽后默认 true）。
+    func enqueueScanResults(_ results: [Bool]) {
+        lock.lock(); _scanResults = results; lock.unlock()
+    }
+
     func scanAndConnect() async -> Bool {
-        lock.lock(); _scanAndConnectCallCount += 1; lock.unlock()
-        return true
+        lock.lock()
+        _scanAndConnectCallCount += 1
+        let result = _scanResults.isEmpty ? true : _scanResults.removeFirst()
+        lock.unlock()
+        return result
     }
 
     func send(_ command: SignalLightBLECommand) async -> Bool {
@@ -5755,6 +5914,33 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
 
     func disconnect() async {
         lock.lock(); _disconnectCallCount += 1; lock.unlock()
+    }
+
+    func setOnDisconnect(_ handler: @escaping @Sendable () async -> Void) {
+        lock.lock(); _onDisconnect = handler; lock.unlock()
+    }
+
+    /// 模拟 CoreBluetooth 的 didDisconnectPeripheral 回调，触发表层重连。
+    func simulateDisconnect() async {
+        let handler: (@Sendable () async -> Void)?
+        lock.lock(); handler = _onDisconnect; lock.unlock()
+        if let handler { await handler() }
+    }
+}
+
+/// 测试用同步时钟：sleep 立即返回并记录等待时长，不真实阻塞。
+private actor FakeSignalLightBLEClock: SignalLightBLEClock {
+    private(set) var sleepCalls: [TimeInterval] = []
+
+    nonisolated func now() -> Date { Date() }
+
+    func sleep(seconds: TimeInterval) async {
+        sleepCalls.append(seconds)
+        // 不真实等待，让测试快速推进
+    }
+
+    func resetSleepCalls() {
+        sleepCalls = []
     }
 }
 

@@ -33,6 +33,8 @@ final class CoreBluetoothSignalLightCommander: NSObject {
     private var rxCharacteristic: CBCharacteristic?
     private var scanContinuation: CheckedContinuation<Bool, Never>?
     private var writeContinuation: CheckedContinuation<Bool, Never>?
+    // 断连回调：让上层 controller 启动重连流程。
+    private var onDisconnectHandler: (@Sendable () async -> Void)?
 
     override init() {
         // 用 main queue 让 CoreBluetooth 的 delegate 回调直接在主线程执行，
@@ -45,7 +47,7 @@ final class CoreBluetoothSignalLightCommander: NSObject {
 
 // MARK: - SignalLightBLECommanding
 
-extension CoreBluetoothSignalLightCommander: SignalLightBLECommanding {
+extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLECommanding {
     var isConnected: Bool {
         connectedPeripheral != nil && rxCharacteristic != nil
     }
@@ -90,6 +92,10 @@ extension CoreBluetoothSignalLightCommander: SignalLightBLECommanding {
         }
         connectedPeripheral = nil
         rxCharacteristic = nil
+    }
+
+    func setOnDisconnect(_ handler: @escaping @Sendable () async -> Void) {
+        onDisconnectHandler = handler
     }
 
     private func waitForPoweredOn() async -> Bool {
@@ -139,7 +145,13 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
         logger.log("BLE 已断开：\(error?.localizedDescription ?? "normal")")
         connectedPeripheral = nil
         rxCharacteristic = nil
-        // 断连不在这里自动重连（重连是 Issue #3 的范围）。
+        // 通知上层 controller 启动重连流程（Issue #3）。
+        // 用 Task 跳出 delegate 调用栈，避免回调中再次触发 CoreBluetooth 操作导致重入。
+        if let onDisconnectHandler {
+            Task { @MainActor in
+                await onDisconnectHandler()
+            }
+        }
     }
 }
 
