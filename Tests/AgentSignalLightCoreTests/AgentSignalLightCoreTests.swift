@@ -5870,6 +5870,285 @@ final class AgentSignalLightCoreTests: XCTestCase {
             "reconnect 失败后应回退到 scanAndConnect"
         )
     }
+
+    // MARK: - Signal Light BLE Command Deduplication (Issue #6)
+
+    @MainActor
+    func testDedupSkipsWriteWhenDisplayStateMapsToSameBLECommand() async throws {
+        // 验证：active ↔ completed 都映射到 GREEN，切换时不应触发额外写入
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        // 初始：aggregate = working（→ active → GREEN）
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "codex:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ],
+                events: []
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        // 清空保存的设备 ID，避免启动重连干扰
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        // 等待 snapshot sink 处理初始状态
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        let greenCommandCount = commander.sentCommands.filter { $0 == .green }.count
+        XCTAssertGreaterThanOrEqual(
+            greenCommandCount,
+            1,
+            "初始 working 状态应写入 GREEN 命令至少一次"
+        )
+
+        // 切换到 done（→ completed → GREEN，命令相同）
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .done,
+                updatedAt: now.addingTimeInterval(1),
+                sessions: [
+                    "codex:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .done,
+                        lastEvent: "TurnEnd",
+                        updatedAt: now.addingTimeInterval(1)
+                    )
+                ],
+                events: []
+            ),
+            in: fixture.store
+        )
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // GREEN 命令次数不应增加（去重生效）
+        let greenCommandCountAfter = commander.sentCommands.filter { $0 == .green }.count
+        XCTAssertEqual(
+            greenCommandCountAfter,
+            greenCommandCount,
+            "active ↔ completed 都映射到 GREEN，命令相同时不应触发额外写入"
+        )
+    }
+
+    @MainActor
+    func testDedupWritesWhenBLECommandChanges() async throws {
+        // 验证：命令变化时（GREEN → BLINK_YELLOW）应触发写入
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "codex:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ],
+                events: []
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        let initialGreenCount = commander.sentCommands.filter { $0 == .green }.count
+
+        // 切换到 attention（→ needsReview → BLINK_YELLOW，命令不同）
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .attention,
+                updatedAt: now.addingTimeInterval(1),
+                sessions: [
+                    "codex:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .attention,
+                        lastEvent: "NeedsReview",
+                        updatedAt: now.addingTimeInterval(1)
+                    )
+                ],
+                events: []
+            ),
+            in: fixture.store
+        )
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        let finalBlinkYellowCount = commander.sentCommands.filter { $0 == .blinkYellow }.count
+        XCTAssertEqual(
+            finalBlinkYellowCount,
+            1,
+            "命令从 GREEN 变为 BLINK_YELLOW 时应写入一次新命令"
+        )
+        XCTAssertGreaterThanOrEqual(initialGreenCount, 1, "初始 GREEN 命令应已写入")
+    }
+
+    @MainActor
+    func testDedupForcesRewriteAfterReconnectSuccess() async {
+        // 约定基线（文档化）：重连成功后 syncCurrentState() 会强制重写一次当前命令，
+        // 即使命令与断连前相同——因为硬件状态可能因断连丢失，必须重新同步。
+        let model = makeMenuBarStatusModel()
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let commander = FakeSignalLightCommander()
+        // scanAndConnect 成功（用于重连）
+        let clock = FakeSignalLightBLEClock()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: clock)
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        let sentBeforeDisconnect = commander.sentCommands.count
+
+        // 模拟断连 → 触发重连 → scanAndConnect 成功 → syncCurrentState 强制重写
+        await commander.simulateDisconnect()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        let sentAfterReconnect = commander.sentCommands.count
+        XCTAssertGreaterThan(
+            sentAfterReconnect,
+            sentBeforeDisconnect,
+            "重连成功后应强制重写一次当前命令（硬件状态可能丢失，需重新同步）——这是约定基线"
+        )
+    }
+
+    // MARK: - Signal Light BLE UI State Machine (Issue #5)
+
+    @MainActor
+    func testUIStateShowsIdleWhenEnabledButNotConnected() async {
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 开关开 + 无连接 + 无重连 → idle
+        XCTAssertEqual(controller.connectionState, .idle, "开关开但未连接时应为 idle 状态")
+    }
+
+    @MainActor
+    func testUIStateShowsDisabledWhenSwitchOff() async {
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(controller.connectionState, .disabled, "开关关闭时应为 disabled 状态")
+    }
+
+    @MainActor
+    func testUIStateShowsConnectedAfterScanAndConnect() async {
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        commander.setNextDeviceID("device-xyz")
+        commander.setNextDeviceName("coding-xyz")
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 扫描
+        _ = await controller.scanForDevices()
+        // 连接
+        commander.setConnected(true)
+        let ok = await controller.connect(to: "device-xyz")
+        XCTAssertTrue(ok)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        if case .connected(let name) = controller.connectionState {
+            XCTAssertEqual(name, "coding-xyz", "已连接状态应携带设备名")
+        } else {
+            XCTFail("连接成功后应为 connected 状态，实际：\(controller.connectionState)")
+        }
+    }
+
+    @MainActor
+    func testUIStateShowsConnectingDuringReconnect() async {
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        // 重连尝试都失败，保持 connecting 状态
+        commander.enqueueScanResults([false, false, false])
+        UserDefaults.standard.set("saved-uuid", forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let clock = FakeSignalLightBLEClock()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: clock)
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // 启动重连中应显示 connecting
+        XCTAssertEqual(
+            controller.connectionState,
+            .connecting,
+            "重连进行中应为 connecting 状态"
+        )
+    }
+
+    @MainActor
+    func testUIStateReturnsToIdleAfterUserDisconnect() async {
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        commander.setConnected(true)
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 模拟已连接
+        commander.setConnected(true)
+        controller.scanAndConnect()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 用户点断开
+        controller.disconnect()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 断开后应回到 idle（开关仍开，但不连接）
+        XCTAssertEqual(
+            controller.connectionState,
+            .idle,
+            "用户主动断开后应回到 idle 状态，不自动重连"
+        )
+    }
 }
 
 @MainActor
@@ -6009,16 +6288,23 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
     private var _scanAndConnectCallCount = 0
     private var _disconnectCallCount = 0
     private var _reconnectCallCount = 0
+    private var _connectCallCount = 0
+    private var _scanForDevicesCallCount = 0
     private var _sentCommands: [SignalLightBLECommand] = []
     /// 每次调 scanAndConnect 返回的结果队列（空则默认 true）。
-    /// 用于模拟「前 N 次失败、之后成功」的重连场景。
     private var _scanResults: [Bool] = []
-    /// 每次调 reconnect 返回的结果队列（空则默认 false，模拟设备未在系统缓存）。
+    /// 每次调 reconnect 返回的结果队列（空则默认 false）。
     private var _reconnectResults: [Bool] = []
-    /// scanAndConnect/reconnect 成功后设置的「当前连接设备 ID」。
-    /// 测试可通过 setNextDeviceID 预设，模拟连接到不同设备。
+    /// 每次调 connect 返回的结果队列（空则默认 true）。
+    private var _connectResults: [Bool] = []
+    /// scanForDevices 返回的设备列表（默认空）。
+    private var _discoveredDevices: [SignalLightBLEDevice] = []
+    /// scanAndConnect/reconnect/connect 成功后设置的「当前连接设备 ID」。
     private var _nextDeviceID: String? = "test-device-id"
+    private var _nextDeviceName: String? = "coding-test"
     private var _currentDeviceID: String?
+    private var _currentDeviceName: String?
+    private var _isConnected = false
     private var _onDisconnect: (@Sendable () async -> Void)?
 
     var scanAndConnectCallCount: Int {
@@ -6033,6 +6319,14 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
         lock.lock(); defer { lock.unlock() }
         return _reconnectCallCount
     }
+    var connectCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _connectCallCount
+    }
+    var scanForDevicesCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _scanForDevicesCallCount
+    }
     var sentCommands: [SignalLightBLECommand] {
         lock.lock(); defer { lock.unlock() }
         return _sentCommands
@@ -6041,29 +6335,83 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
         lock.lock(); defer { lock.unlock() }
         return _currentDeviceID
     }
+    var connectedDeviceName: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _currentDeviceName
+    }
+    var isConnected: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _isConnected
+    }
 
-    var isConnected: Bool { false }
-
-    /// 设置 scanAndConnect 的返回值序列（按调用顺序消费；耗尽后默认 true）。
     func enqueueScanResults(_ results: [Bool]) {
         lock.lock(); _scanResults = results; lock.unlock()
     }
 
-    /// 设置 reconnect 的返回值序列（按调用顺序消费；耗尽后默认 false）。
     func enqueueReconnectResults(_ results: [Bool]) {
         lock.lock(); _reconnectResults = results; lock.unlock()
     }
 
-    /// 预设下次连接成功后报告的设备 ID（模拟连接到指定设备）。
+    func enqueueConnectResults(_ results: [Bool]) {
+        lock.lock(); _connectResults = results; lock.unlock()
+    }
+
+    func setDiscoveredDevices(_ devices: [SignalLightBLEDevice]) {
+        lock.lock(); _discoveredDevices = devices; lock.unlock()
+    }
+
     func setNextDeviceID(_ id: String?) {
         lock.lock(); _nextDeviceID = id; lock.unlock()
+    }
+
+    func setNextDeviceName(_ name: String?) {
+        lock.lock(); _nextDeviceName = name; lock.unlock()
+    }
+
+    /// 测试用：标记为已连接状态（模拟连接成功后的 isConnected=true）。
+    func setConnected(_ connected: Bool) {
+        lock.lock()
+        _isConnected = connected
+        if connected {
+            _currentDeviceID = _nextDeviceID
+            _currentDeviceName = _nextDeviceName
+        } else {
+            _currentDeviceID = nil
+            _currentDeviceName = nil
+        }
+        lock.unlock()
     }
 
     func scanAndConnect() async -> Bool {
         lock.lock()
         _scanAndConnectCallCount += 1
         let result = _scanResults.isEmpty ? true : _scanResults.removeFirst()
-        if result { _currentDeviceID = _nextDeviceID }
+        if result {
+            _currentDeviceID = _nextDeviceID
+            _currentDeviceName = _nextDeviceName
+            _isConnected = true
+        }
+        lock.unlock()
+        return result
+    }
+
+    func scanForDevices() async -> [SignalLightBLEDevice] {
+        lock.lock()
+        _scanForDevicesCallCount += 1
+        let devices = _discoveredDevices
+        lock.unlock()
+        return devices
+    }
+
+    func connect(toDeviceID deviceID: String) async -> Bool {
+        lock.lock()
+        _connectCallCount += 1
+        let result = _connectResults.isEmpty ? true : _connectResults.removeFirst()
+        if result {
+            _currentDeviceID = deviceID
+            _currentDeviceName = _nextDeviceName
+            _isConnected = true
+        }
         lock.unlock()
         return result
     }
@@ -6072,7 +6420,11 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
         lock.lock()
         _reconnectCallCount += 1
         let result = _reconnectResults.isEmpty ? false : _reconnectResults.removeFirst()
-        if result { _currentDeviceID = deviceID }
+        if result {
+            _currentDeviceID = deviceID
+            _currentDeviceName = _nextDeviceName
+            _isConnected = true
+        }
         lock.unlock()
         return result
     }
@@ -6083,17 +6435,26 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
     }
 
     func disconnect() async {
-        lock.lock(); _disconnectCallCount += 1; lock.unlock()
+        lock.lock()
+        _disconnectCallCount += 1
+        _isConnected = false
+        _currentDeviceID = nil
+        _currentDeviceName = nil
+        lock.unlock()
     }
 
     func setOnDisconnect(_ handler: @escaping @Sendable () async -> Void) {
         lock.lock(); _onDisconnect = handler; lock.unlock()
     }
 
-    /// 模拟 CoreBluetooth 的 didDisconnectPeripheral 回调，触发表层重连。
     func simulateDisconnect() async {
         let handler: (@Sendable () async -> Void)?
-        lock.lock(); handler = _onDisconnect; lock.unlock()
+        lock.lock()
+        handler = _onDisconnect
+        _isConnected = false
+        _currentDeviceID = nil
+        _currentDeviceName = nil
+        lock.unlock()
         if let handler { await handler() }
     }
 }

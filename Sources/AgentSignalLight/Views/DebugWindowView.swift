@@ -22,7 +22,13 @@ struct DebugWindowView: View {
     @State private var isShowingDiagnosticsExportConfirmation = false
     @State private var isSignalLightBLEScanning = false
     @State private var signalLightBLEStatusMessage: String?
+    @State private var discoveredBLEDevices: [SignalLightBLEDevice] = []
     private let activityRecentEventLimit = 50
+
+    /// 蓝牙信号灯 controller 单例（用于观察 connectionState 驱动三态按钮）。
+    private var bleController: SignalLightBLEController {
+        AgentSignalAppServices.signalLightBLEController
+    }
 
     var body: some View {
         ZStack {
@@ -3364,26 +3370,18 @@ struct DebugWindowView: View {
                             ))
                     }
 
-                    connectionActionButton(
-                        model.text("扫描连接", "Scan & Connect"),
-                        systemImage: "magnifyingglass",
-                        width: connectionActionButtonWidth,
-                        disabled: !model.isSignalLightBLEEnabled || isSignalLightBLEScanning
-                    ) {
-                        isSignalLightBLEScanning = true
-                        signalLightBLEStatusMessage = nil
-                        Task { @MainActor in
-                            // 扫描+连接是 fire-and-forget；失败只记日志（Issue #2 验收）。
-                            AgentSignalAppServices.signalLightBLEController.scanAndConnect()
-                            // 给一个最小展示时间，避免按钮闪过太快。
-                            try? await Task.sleep(nanoseconds: 600_000_000)
-                            isSignalLightBLEScanning = false
-                        }
-                    }
+                    bleConnectionActionButton
 
-                    if isSignalLightBLEScanning {
-                        ProgressView()
-                            .controlSize(.small)
+                    bleDeviceSelectionMenu
+
+                    if case .connecting = bleController.connectionState {
+                        Text(model.text("连接中…", "Connecting…"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if case .scanning = bleController.connectionState {
+                        Text(model.text("扫描中…", "Scanning…"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     } else if let message = signalLightBLEStatusMessage {
                         Text(message)
                             .font(.caption)
@@ -3391,6 +3389,96 @@ struct DebugWindowView: View {
                             .lineLimit(2)
                     }
                 }
+            }
+        }
+    }
+
+    /// 蓝牙信号灯三态按钮（扫描 / 连接中 / 已连接·断开）。
+    @ViewBuilder
+    private var bleConnectionActionButton: some View {
+        let state = bleController.connectionState
+        let isEnabled = model.isSignalLightBLEEnabled
+
+        switch state {
+        case .disabled, .idle:
+            // 扫描按钮：点击扫描并展示设备菜单
+            connectionActionButton(
+                model.text("扫描", "Scan"),
+                systemImage: "magnifyingglass",
+                width: connectionActionButtonWidth,
+                disabled: !isEnabled || isSignalLightBLEScanning
+            ) {
+                isSignalLightBLEScanning = true
+                signalLightBLEStatusMessage = nil
+                Task { @MainActor in
+                    let devices = await AgentSignalAppServices.signalLightBLEController.scanForDevices()
+                    isSignalLightBLEScanning = false
+                    if devices.isEmpty {
+                        signalLightBLEStatusMessage = model.text("未发现设备", "No devices found")
+                    } else {
+                        discoveredBLEDevices = devices
+                    }
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if isSignalLightBLEScanning {
+                    ProgressView().controlSize(.small).offset(x: 8, y: -8)
+                }
+            }
+
+        case .scanning, .connecting:
+            // 连接中：spinner + disabled
+            connectionActionButton(
+                model.text("连接中…", "Connecting…"),
+                systemImage: "antenna.radiowaves.left.and.right.slash",
+                width: connectionActionButtonWidth,
+                disabled: true
+            ) {
+                // disabled，无操作
+            }
+            .overlay(alignment: .trailing) {
+                ProgressView().controlSize(.small).offset(x: -8)
+            }
+
+        case .connected(let deviceName):
+            // 已连接：显示设备名 + 断开按钮
+            HStack(spacing: 8) {
+                connectionActionButton(
+                    model.text("断开", "Disconnect"),
+                    systemImage: "xmark.circle",
+                    width: connectionActionButtonWidth * 0.7
+                ) {
+                    AgentSignalAppServices.signalLightBLEController.disconnect()
+                }
+                Text(deviceName ?? model.text("已连接", "Connected"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    /// 设备选择菜单（扫描后发现多设备时展示）。
+    @ViewBuilder
+    private var bleDeviceSelectionMenu: some View {
+        if !discoveredBLEDevices.isEmpty {
+            Menu {
+                ForEach(discoveredBLEDevices) { device in
+                    Button(device.name ?? device.id) {
+                        let deviceID = device.id
+                        Task { @MainActor in
+                            _ = await AgentSignalAppServices.signalLightBLEController.connect(to: deviceID)
+                            discoveredBLEDevices = []
+                        }
+                    }
+                }
+                Button(model.text("取消", "Cancel"), role: .cancel) {
+                    discoveredBLEDevices = []
+                }
+            } label: {
+                Text(model.text("选择设备 (\(discoveredBLEDevices.count))", "Select device (\(discoveredBLEDevices.count))"))
+                    .font(.caption)
             }
         }
     }

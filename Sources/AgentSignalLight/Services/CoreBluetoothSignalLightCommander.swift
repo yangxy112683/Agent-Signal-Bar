@@ -35,6 +35,10 @@ final class CoreBluetoothSignalLightCommander: NSObject {
     private var lastConnectedDeviceIDValue: String?
     private var scanContinuation: CheckedContinuation<Bool, Never>?
     private var writeContinuation: CheckedContinuation<Bool, Never>?
+    /// scanForDevices() 的列表收集 continuation（与 scanAndConnect 的单设备 continuation 互斥使用）。
+    private var scanListContinuation: CheckedContinuation<[SignalLightBLEDevice], Never>?
+    /// scanForDevices() 期间发现的设备（去重）。
+    private var discoveredDevices: [SignalLightBLEDevice] = []
     // 断连回调：让上层 controller 启动重连流程。
     private var onDisconnectHandler: (@Sendable () async -> Void)?
 
@@ -58,6 +62,10 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         lastConnectedDeviceIDValue
     }
 
+    var connectedDeviceName: String? {
+        connectedPeripheral?.name
+    }
+
     func scanAndConnect() async -> Bool {
         // 已连接则直接成功。
         if connectedPeripheral != nil { return true }
@@ -73,6 +81,65 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
                 withServices: [uartServiceUUID],
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
             )
+        }
+    }
+
+    func scanForDevices() async -> [SignalLightBLEDevice] {
+        guard await waitForPoweredOn() else {
+            logger.error("BLE 蓝牙未就绪，放弃扫描设备列表")
+            return []
+        }
+        // 扫描 3 秒收集所有 coding- 设备，不自动连接。
+        let discovered: [SignalLightBLEDevice] = await withCheckedContinuation { continuation in
+            scanListContinuation = continuation
+            discoveredDevices = []
+            central.scanForPeripherals(
+                withServices: [uartServiceUUID],
+                options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+            )
+            // 3 秒后停止扫描并返回结果
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                self.central.stopScan()
+                let devices = self.discoveredDevices
+                self.discoveredDevices = []
+                if let cont = self.scanListContinuation {
+                    self.scanListContinuation = nil
+                    cont.resume(returning: devices)
+                }
+            }
+        }
+        return discovered
+    }
+
+    func connect(toDeviceID deviceID: String) async -> Bool {
+        // 已连接且是同一设备则直接成功。
+        if let connected = connectedPeripheral, connected.identifier.uuidString == deviceID {
+            return true
+        }
+        guard let uuid = UUID(uuidString: deviceID) else {
+            logger.error("BLE connect 失败：无效的设备 ID \(deviceID)")
+            return false
+        }
+        guard await waitForPoweredOn() else {
+            logger.error("BLE 蓝牙未就绪，放弃连接")
+            return false
+        }
+        // 优先从系统缓存取，找不到则从已扫描列表取
+        var peripheral = central.retrievePeripherals(withIdentifiers: [uuid]).first
+        if peripheral == nil {
+            peripheral = central.retrieveConnectedPeripherals(withServices: [uartServiceUUID])
+                .first { $0.identifier.uuidString == deviceID }
+        }
+        guard let peripheral else {
+            logger.error("BLE connect 失败：未找到设备 \(deviceID)")
+            return false
+        }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            scanContinuation = continuation
+            peripheral.delegate = self
+            connectedPeripheral = peripheral
+            central.connect(peripheral, options: nil)
         }
     }
 
@@ -158,6 +225,18 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
         rssi RSSI: NSNumber
     ) {
         guard peripheral.name?.hasPrefix(deviceNamePrefix) == true else { return }
+        let device = SignalLightBLEDevice(
+            id: peripheral.identifier.uuidString,
+            name: peripheral.name
+        )
+        // 列表收集模式：去重追加，不停止扫描（由 scanForDevices 的 3 秒定时器停止）
+        if scanListContinuation != nil {
+            if !discoveredDevices.contains(where: { $0.id == device.id }) {
+                discoveredDevices.append(device)
+            }
+            return
+        }
+        // scanAndConnect 模式：连第一台就停
         central.stopScan()
         peripheral.delegate = self
         connectedPeripheral = peripheral
