@@ -20,6 +20,8 @@ struct DebugWindowView: View {
     @State private var selectedLightDebugTest: LightDebugTest?
     @State private var isUsageAccountDetailsExpanded = false
     @State private var isShowingDiagnosticsExportConfirmation = false
+    @State private var isSignalLightBLEScanning = false
+    @State private var signalLightBLEStatusMessage: String?
     private let activityRecentEventLimit = 50
 
     var body: some View {
@@ -3337,6 +3339,59 @@ struct DebugWindowView: View {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
+
+            Divider()
+
+            connectionItem(
+                title: model.text("蓝牙信号灯", "Bluetooth Signal Light"),
+                subtitle: model.text(
+                    "连接 coding- 前缀的蓝牙硬件指示灯，镜像菜单栏聚合状态",
+                    "Connect to a coding- BLE hardware indicator mirroring the aggregate status"
+                ),
+                systemImage: "antenna.radiowaves.left.and.right"
+            ) {
+                VStack(alignment: .trailing, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(model.text("启用", "Enable"))
+                            .font(settingsDetailStrongFont)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                        settingsSwitch(signalLightBLEEnabledBinding)
+                            .help(model.text(
+                                "开启后允许扫描并连接蓝牙信号灯硬件（默认关闭，避免无硬件用户被蓝牙权限请求打扰）",
+                                "Enable to scan and connect to the BLE signal light hardware (off by default to avoid Bluetooth permission prompts for users without the device)"
+                            ))
+                    }
+
+                    connectionActionButton(
+                        model.text("扫描连接", "Scan & Connect"),
+                        systemImage: "magnifyingglass",
+                        width: connectionActionButtonWidth,
+                        disabled: !model.isSignalLightBLEEnabled || isSignalLightBLEScanning
+                    ) {
+                        isSignalLightBLEScanning = true
+                        signalLightBLEStatusMessage = nil
+                        Task { @MainActor in
+                            // 扫描+连接是 fire-and-forget；失败只记日志（Issue #2 验收）。
+                            AgentSignalAppServices.signalLightBLEController.scanAndConnect()
+                            // 给一个最小展示时间，避免按钮闪过太快。
+                            try? await Task.sleep(nanoseconds: 600_000_000)
+                            isSignalLightBLEScanning = false
+                        }
+                    }
+
+                    if isSignalLightBLEScanning {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if let message = signalLightBLEStatusMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
         }
     }
 
@@ -4602,6 +4657,13 @@ struct DebugWindowView: View {
         Binding(
             get: { model.isClaudeDesktopMonitoringEnabled },
             set: { model.setClaudeDesktopMonitoringEnabled($0) }
+        )
+    }
+
+    private var signalLightBLEEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isSignalLightBLEEnabled },
+            set: { model.setSignalLightBLEEnabled($0) }
         )
     }
 

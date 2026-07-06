@@ -45,6 +45,36 @@ public enum DisplayState: String, Codable, CaseIterable, Sendable {
             return "监控已暂停"
         }
     }
+
+    /// 映射到蓝牙信号灯硬件命令（Nordic UART Service 文本指令）。
+    /// 硬件命令集合只有 4 种，比 `DisplayState` 的 8 种更粗：
+    /// `permission` 与 `blocked` 在硬件上合并为 `BLINK_RED`，属于刻意接受的精度损失。
+    public var bleCommand: SignalLightBLECommand {
+        switch self {
+        case .ready, .active, .completed:
+            return .green
+        case .needsReview, .stale:
+            return .blinkYellow
+        case .permission, .blocked:
+            return .blinkRed
+        case .paused:
+            return .off
+        }
+    }
+}
+
+/// 蓝牙信号灯硬件支持的命令集合（大写 ASCII 文本，以 `\n` 结尾写入 RX 特征）。
+/// 与 cpets 参考项目的协议保持一致，详见 ADR-0002 与 CONTEXT.md。
+public enum SignalLightBLECommand: String, Sendable, CaseIterable {
+    case green = "GREEN"
+    case blinkYellow = "BLINK_YELLOW"
+    case blinkRed = "BLINK_RED"
+    case off = "OFF"
+
+    /// 写入硬件时使用的完整指令（含 `\n` 终止符）。
+    public var payload: Data {
+        Data("\(rawValue)\n".utf8)
+    }
 }
 
 public typealias LampState = DisplayState

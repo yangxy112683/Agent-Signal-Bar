@@ -5517,6 +5517,77 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
         try encoder.encode(document).write(to: store.stateFileURL)
     }
+
+    // MARK: - Signal Light BLE
+
+    func testDisplayStateBLEMappingIsExhaustiveAndMatchesADR0002() {
+        // 验证 ADR-0002 / CONTEXT.md 中的 DisplayState → BLE Command 映射表
+        // 在硬件命令集合只有 4 种的约束下是完整且符合预期的。
+        XCTAssertEqual(DisplayState.ready.bleCommand, .green)
+        XCTAssertEqual(DisplayState.active.bleCommand, .green)
+        XCTAssertEqual(DisplayState.completed.bleCommand, .green)
+        XCTAssertEqual(DisplayState.needsReview.bleCommand, .blinkYellow)
+        XCTAssertEqual(DisplayState.stale.bleCommand, .blinkYellow)
+        XCTAssertEqual(DisplayState.permission.bleCommand, .blinkRed)
+        XCTAssertEqual(DisplayState.blocked.bleCommand, .blinkRed)
+        XCTAssertEqual(DisplayState.paused.bleCommand, .off)
+
+        // 验证所有 DisplayState case 都有对应映射（编译期已保证 exhaustiveness，
+        // 这里再确认 bleCommand 对每个 case 都不崩溃）。
+        for state in DisplayState.allCases {
+            _ = state.bleCommand
+        }
+    }
+
+    func testSignalLightBLECommandPayloadIsUppercaseASCIITerminatedWithNewline() {
+        // cpets 协议：大写 ASCII 文本 + \n 结尾
+        XCTAssertEqual(SignalLightBLECommand.green.payload, Data("GREEN\n".utf8))
+        XCTAssertEqual(SignalLightBLECommand.blinkYellow.payload, Data("BLINK_YELLOW\n".utf8))
+        XCTAssertEqual(SignalLightBLECommand.blinkRed.payload, Data("BLINK_RED\n".utf8))
+        XCTAssertEqual(SignalLightBLECommand.off.payload, Data("OFF\n".utf8))
+    }
+
+    @MainActor
+    func testSignalLightBLEControllerScanAndConnectForwardsToCommanderWhenEnabled() {
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander)
+        controller.activate()
+
+        // 开关关闭时：扫描按钮不应触达 commander
+        XCTAssertFalse(model.isSignalLightBLEEnabled)
+        controller.scanAndConnect()
+        // 给 Task 一个 cycle 执行
+        let expectation = expectation(description: "scan-completes")
+        DispatchQueue.main.async { expectation.fulfill() }
+        wait(for: [expectation], timeout: 1)
+        XCTAssertEqual(commander.scanAndConnectCallCount, 0, "开关关闭时不应触达 commander")
+
+        // 开关开启后：扫描按钮应触达 commander
+        model.setSignalLightBLEEnabled(true)
+        controller.scanAndConnect()
+        let expectation2 = expectation(description: "scan-completes-2")
+        DispatchQueue.main.async { expectation2.fulfill() }
+        wait(for: [expectation2], timeout: 1)
+        XCTAssertEqual(commander.scanAndConnectCallCount, 1, "开关开启后扫描应转发到 commander")
+    }
+
+    @MainActor
+    func testSignalLightBLEControllerDisablesCommanderWhenPrefToggledOff() async {
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander)
+        controller.activate()
+
+        model.setSignalLightBLEEnabled(true)
+        // 给开关变化的 Task 执行
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        model.setSignalLightBLEEnabled(false)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(commander.disconnectCallCount >= 1, "关闭开关应触发 disconnect")
+    }
 }
 
 @MainActor
@@ -5646,6 +5717,44 @@ private struct FakeOpenAIBrowserCookieImporter: OpenAIBrowserCookieImporting {
             sourceLabel: "Test",
             debugLog: "test"
         )
+    }
+}
+
+/// 用于测试 `SignalLightBLEController` 的伪 commander，记录所有调用。
+/// 不接触真实 CoreBluetooth（参考 `FakeOpenAIBrowserCookieImporter` 模式）。
+private final class FakeSignalLightCommander: SignalLightBLECommanding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _scanAndConnectCallCount = 0
+    private var _disconnectCallCount = 0
+    private var _sentCommands: [SignalLightBLECommand] = []
+
+    var scanAndConnectCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _scanAndConnectCallCount
+    }
+    var disconnectCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _disconnectCallCount
+    }
+    var sentCommands: [SignalLightBLECommand] {
+        lock.lock(); defer { lock.unlock() }
+        return _sentCommands
+    }
+
+    var isConnected: Bool { false }
+
+    func scanAndConnect() async -> Bool {
+        lock.lock(); _scanAndConnectCallCount += 1; lock.unlock()
+        return true
+    }
+
+    func send(_ command: SignalLightBLECommand) async -> Bool {
+        lock.lock(); _sentCommands.append(command); lock.unlock()
+        return true
+    }
+
+    func disconnect() async {
+        lock.lock(); _disconnectCallCount += 1; lock.unlock()
     }
 }
 

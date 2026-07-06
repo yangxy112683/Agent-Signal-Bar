@@ -424,6 +424,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isNewZealandTrafficLightModeEnabled: Bool
     @Published var isMonitoringPaused = false
     @Published var isFloatingSignalEnabled: Bool
+    @Published var isSignalLightBLEEnabled: Bool
     @Published var floatingSignalScale: FloatingSignalScale
     @Published var floatingSignalVisualScale: CGFloat
     @Published var floatingSignalLayout: TrafficSignalLayout
@@ -745,6 +746,9 @@ final class MenuBarStatusModel: ObservableObject {
         }
         isFloatingSignalEnabled =
             UserDefaults.standard.object(forKey: "isFloatingSignalEnabled") as? Bool ?? true
+        // 蓝牙信号灯开关默认关闭（ADR-0002：无硬件用户不应被蓝牙权限弹窗打扰）。
+        isSignalLightBLEEnabled =
+            UserDefaults.standard.object(forKey: "isSignalLightBLEEnabled") as? Bool ?? false
         let resolvedFloatingSignalScale = Self.resolvedFloatingSignalScale(
             storedRawValue: storedFloatingSignalScale,
             storedDefaultsVersion: storedFloatingSignalScaleDefaultsVersion
@@ -1279,6 +1283,11 @@ final class MenuBarStatusModel: ObservableObject {
     func setFloatingSignalEnabled(_ enabled: Bool) {
         isFloatingSignalEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isFloatingSignalEnabled")
+    }
+
+    func setSignalLightBLEEnabled(_ enabled: Bool) {
+        isSignalLightBLEEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isSignalLightBLEEnabled")
     }
 
     func setFloatingSignalScale(_ scale: FloatingSignalScale) {

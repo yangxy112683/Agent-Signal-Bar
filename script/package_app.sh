@@ -323,6 +323,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$SPARKLE_FEED_URL</string>
   <key>SUPublicEDKey</key>
   <string>$SPARKLE_PUBLIC_ED_KEY</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>用于连接并控制编码指示灯硬件设备（coding- BLE 信号灯）</string>
 </dict>
 </plist>
 PLIST

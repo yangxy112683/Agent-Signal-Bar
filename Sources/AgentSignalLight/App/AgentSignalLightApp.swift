@@ -30,12 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if DebugLaunchOptions.shouldOpenDebugWindow {
             NSApp.setActivationPolicy(.regular)
             AgentSignalAppServices.statusBarController.activate()
+            AgentSignalAppServices.signalLightBLEController.activate()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 AgentSignalAppServices.statusBarController.showDebugWindow()
             }
         } else {
             NSApp.setActivationPolicy(.accessory)
             AgentSignalAppServices.statusBarController.activate()
+            AgentSignalAppServices.signalLightBLEController.activate()
         }
     }
 
@@ -58,6 +60,10 @@ enum AgentSignalAppServices {
     static let model = MenuBarStatusModel()
     static let sparkleUpdater = SparkleUpdaterService()
     static let statusBarController = StatusBarController(model: model, updater: sparkleUpdater)
+    static let signalLightBLEController: SignalLightBLEController = {
+        let commander = CoreBluetoothSignalLightCommander()
+        return SignalLightBLEController(model: model, commander: commander)
+    }()
 }
 
 @MainActor
