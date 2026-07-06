@@ -31,6 +31,8 @@ final class CoreBluetoothSignalLightCommander: NSObject {
 
     private var connectedPeripheral: CBPeripheral?
     private var rxCharacteristic: CBCharacteristic?
+    /// scanAndConnect/reconnect 成功（特征就绪）后设置，标识当前连接的设备。
+    private var lastConnectedDeviceIDValue: String?
     private var scanContinuation: CheckedContinuation<Bool, Never>?
     private var writeContinuation: CheckedContinuation<Bool, Never>?
     // 断连回调：让上层 controller 启动重连流程。
@@ -52,6 +54,10 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         connectedPeripheral != nil && rxCharacteristic != nil
     }
 
+    var lastConnectedDeviceID: String? {
+        lastConnectedDeviceIDValue
+    }
+
     func scanAndConnect() async -> Bool {
         // 已连接则直接成功。
         if connectedPeripheral != nil { return true }
@@ -67,6 +73,33 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
                 withServices: [uartServiceUUID],
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
             )
+        }
+    }
+
+    func reconnect(toDeviceID deviceID: String) async -> Bool {
+        // 已连接则直接成功。
+        if connectedPeripheral != nil { return true }
+        guard let uuid = UUID(uuidString: deviceID) else {
+            logger.error("BLE 重连失败：无效的设备 ID \(deviceID)")
+            return false
+        }
+        guard await waitForPoweredOn() else {
+            logger.error("BLE 蓝牙未就绪，放弃重连")
+            return false
+        }
+        if connectedPeripheral != nil { return true }
+        // retrievePeripherals 返回系统已知的外设（含上次连接过的），
+        // 避免每次重连都做全量扫描。
+        let peripherals = central.retrievePeripherals(withIdentifiers: [uuid])
+        guard let peripheral = peripherals.first else {
+            logger.log("BLE 未找到已保存的设备 \(deviceID)，将回退到扫描")
+            return false
+        }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            scanContinuation = continuation
+            peripheral.delegate = self
+            connectedPeripheral = peripheral
+            central.connect(peripheral, options: nil)
         }
     }
 
@@ -187,6 +220,8 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBPeripheralDelegat
             return
         }
         rxCharacteristic = rx
+        // 连接 + 特征就绪：记录设备 ID 供上层持久化（Issue #4）。
+        lastConnectedDeviceIDValue = peripheral.identifier.uuidString
         resumeScan(true)
     }
 

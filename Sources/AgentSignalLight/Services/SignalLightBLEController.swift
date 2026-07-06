@@ -8,9 +8,17 @@ import Foundation
 public protocol SignalLightBLECommanding: Sendable {
     /// 当前是否已连接设备（用于 UI 状态展示）。
     var isConnected: Bool { get async }
+    /// 最近一次成功连接的设备标识（CBPeripheral.identifier UUID 字符串）。
+    /// 连接成功后由 commander 设置；controller 据此持久化到 UserDefaults。
+    /// 测试用 commander 可在 scanAndConnect/reconnect 成功后设置此值。
+    var lastConnectedDeviceID: String? { get async }
     /// 扫描 `coding-` 前缀设备并连接到第一个找到的设备；返回是否连接成功。
     /// 失败只记录日志，不抛错（按 Issue #2 验收：连接/写入失败只记日志，不弹用户可见错误）。
     func scanAndConnect() async -> Bool
+    /// 用已保存的设备 ID 直接重连（不经扫描），返回是否连接成功。
+    /// CoreBluetooth 实现用 `retrievePeripherals(withIdentifiers:)` + `connect`。
+    /// 若 ID 无效或设备不可达，返回 false（caller 会 fall back 到 scanAndConnect）。
+    func reconnect(toDeviceID deviceID: String) async -> Bool
     /// 写入一条 BLE 命令到已连接设备的 Nordic UART Service RX 特征。
     /// 未连接或写入失败时返回 false（仅记日志）。
     func send(_ command: SignalLightBLECommand) async -> Bool
@@ -47,6 +55,9 @@ public enum SignalLightBLEConnectionState: Sendable, Equatable {
 /// 写入失败也视为断连，立即触发重连，不等 `didDisconnectPeripheral` 回调。
 @MainActor
 final class SignalLightBLEController {
+    /// UserDefaults key：持久化最后连接的设备 ID（单 slot，覆盖式，见 ADR-0002）。
+    static let lastDeviceIDKey = "signalLightBELastDeviceID"
+
     private let model: MenuBarStatusModel
     private var commander: SignalLightBLECommanding
     private let clock: SignalLightBLEClock
@@ -87,12 +98,17 @@ final class SignalLightBLEController {
         guard !isActivated else { return }
         isActivated = true
 
-        // 开关变化：开启则触发一次状态同步，关闭则断开并清空已发送命令。
+        // 开关变化：开启则尝试启动重连（若有保存的设备 ID）或同步状态，关闭则断开。
         model.$isSignalLightBLEEnabled.sink { [weak self] enabled in
             Task { @MainActor in
                 guard let self else { return }
                 if enabled {
-                    await self.syncCurrentState()
+                    // 开关开启时：若有保存的设备 ID，走定向重连；否则只同步状态（无连接，send 失败会触发 scan）。
+                    if let savedID = self.savedLastDeviceID() {
+                        self.startReconnect(deviceID: savedID)
+                    } else {
+                        await self.syncCurrentState()
+                    }
                 } else {
                     await self.userDisconnect()
                 }
@@ -125,7 +141,8 @@ final class SignalLightBLEController {
         Task { @MainActor in
             let ok = await self.commander.scanAndConnect()
             if ok {
-                // 连接成功后立即把当前状态同步到硬件，并清零重连计数。
+                // 连接成功后：保存设备 ID（覆盖式），清零重连计数，同步状态。
+                self.persistLastDeviceID()
                 self.reconnectAttemptCount = 0
                 await self.syncCurrentState()
             }
@@ -147,11 +164,13 @@ final class SignalLightBLEController {
         reconnectAttemptCount = 0
         await commander.disconnect()
         lastSentCommand = nil
+        // 注意：不清空保存的设备 ID —— 用户下次开启开关时仍可自动重连到同一设备。
+        // 设备 ID 只在新设备连接成功时被覆盖（acceptance: 换设备覆盖）。
     }
 
-    /// 断连处理入口（两个触发源：commander.onDisconnect 回调 + send 失败）。
+    /// 启动重连流程，优先用保存的设备 ID 定向重连，失败回退到扫描。
     /// 若已在重连流程中或用户主动断开，则不重复启动。
-    private func handleDisconnect() {
+    private func startReconnect(deviceID: String?) {
         // 用户主动断开时不重连。
         guard !isUserInitiatedDisconnect else { return }
         // 已在重连流程中，不重复启动。
@@ -160,13 +179,23 @@ final class SignalLightBLEController {
         guard model.isSignalLightBLEEnabled else { return }
 
         reconnectTask = Task { @MainActor in
-            // 每次重连尝试：scanAndConnect 成功则清零退出；失败则按 policy sleep 后继续。
             while !Task.isCancelled {
                 let attempt = self.reconnectAttemptCount
                 self.reconnectAttemptCount += 1
-                let ok = await self.commander.scanAndConnect()
+                // 优先用保存的设备 ID 定向重连；无 ID 或失败则回退到扫描。
+                var ok: Bool
+                if let deviceID {
+                    ok = await self.commander.reconnect(toDeviceID: deviceID)
+                    if !ok {
+                        // 定向重连失败（设备未在系统缓存中）→ 回退到扫描。
+                        ok = await self.commander.scanAndConnect()
+                    }
+                } else {
+                    ok = await self.commander.scanAndConnect()
+                }
                 if ok {
-                    // 重连成功：清零计数，同步当前状态，退出重连循环。
+                    // 重连成功：保存设备 ID（可能换了设备），清零计数，同步状态，退出重连循环。
+                    self.persistLastDeviceID()
                     self.reconnectAttemptCount = 0
                     await self.syncCurrentState()
                     self.reconnectTask = nil
@@ -178,6 +207,28 @@ final class SignalLightBLEController {
             }
             // 被 cancel（用户主动断开）：清空 task 引用。
             self.reconnectTask = nil
+        }
+    }
+
+    /// 断连处理入口（两个触发源：commander.onDisconnect 回调 + send 失败）。
+    /// 若已在重连流程中或用户主动断开，则不重复启动。
+    private func handleDisconnect() {
+        startReconnect(deviceID: savedLastDeviceID())
+    }
+
+    // MARK: - 设备 ID 持久化（UserDefaults 单 slot，覆盖式）
+
+    private func savedLastDeviceID() -> String? {
+        UserDefaults.standard.string(forKey: Self.lastDeviceIDKey)
+    }
+
+    /// 从 commander 读取当前连接的设备 ID 并保存到 UserDefaults。
+    /// 连接新设备时覆盖旧值（acceptance: 只记一个设备）。
+    private func persistLastDeviceID() {
+        Task { @MainActor in
+            if let id = await self.commander.lastConnectedDeviceID {
+                UserDefaults.standard.set(id, forKey: Self.lastDeviceIDKey)
+            }
         }
     }
 }

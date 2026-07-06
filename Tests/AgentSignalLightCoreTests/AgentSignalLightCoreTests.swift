@@ -5735,6 +5735,141 @@ final class AgentSignalLightCoreTests: XCTestCase {
             "写入失败应立即触发重连，scanAndConnect 应被调用"
         )
     }
+
+    // MARK: - Signal Light BLE Device Persistence + Launch Reconnect (Issue #4)
+
+    @MainActor
+    func testScanAndConnectSuccessPersistsDeviceIDToUserDefaults() async {
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        commander.setNextDeviceID("persisted-device-uuid")
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        controller.scanAndConnect()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(
+            UserDefaults.standard.string(forKey: SignalLightBLEController.lastDeviceIDKey),
+            "persisted-device-uuid",
+            "连接成功后应把设备 ID 持久化到 UserDefaults"
+        )
+    }
+
+    @MainActor
+    func testConnectingDifferentDeviceOverwritesSavedID() async {
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        // 第一次连接设备 A
+        commander.setNextDeviceID("device-A-uuid")
+        controller.scanAndConnect()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(
+            UserDefaults.standard.string(forKey: SignalLightBLEController.lastDeviceIDKey),
+            "device-A-uuid"
+        )
+
+        // 第二次连接设备 B（覆盖）
+        commander.setNextDeviceID("device-B-uuid")
+        controller.scanAndConnect()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(
+            UserDefaults.standard.string(forKey: SignalLightBLEController.lastDeviceIDKey),
+            "device-B-uuid",
+            "连接新设备应覆盖之前保存的设备 ID（单 slot）"
+        )
+    }
+
+    @MainActor
+    func testLaunchWithSavedDeviceIDAutoReconnects() async {
+        UserDefaults.standard.set("saved-device-uuid", forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        // reconnect 成功，停止重连
+        commander.enqueueReconnectResults([true])
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        // 开启开关 → 应自动用保存的 ID 调 reconnect（不调 scanAndConnect）
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertGreaterThan(
+            commander.reconnectCallCount,
+            0,
+            "启动时若有保存的设备 ID 且开关开启，应自动调用 reconnect(toDeviceID:)"
+        )
+        XCTAssertEqual(
+            commander.scanAndConnectCallCount,
+            0,
+            "reconnect 成功时不应回退到 scanAndConnect"
+        )
+    }
+
+    @MainActor
+    func testLaunchWithNoSavedDeviceIDStaysIdle() async {
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertEqual(
+            commander.reconnectCallCount,
+            0,
+            "无保存的设备 ID 时不应调用 reconnect"
+        )
+        XCTAssertEqual(
+            commander.scanAndConnectCallCount,
+            0,
+            "无保存的设备 ID 时不应自动扫描（保持 idle 直到用户手动操作）"
+        )
+    }
+
+    @MainActor
+    func testReconnectFallsBackToScanWhenDeviceIDNotFound() async {
+        UserDefaults.standard.set("unknown-device-uuid", forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let model = makeMenuBarStatusModel()
+        let commander = FakeSignalLightCommander()
+        // reconnect 失败（设备未在系统缓存）→ 应回退到 scanAndConnect
+        commander.enqueueReconnectResults([false])
+        commander.enqueueScanResults([true])
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertGreaterThan(
+            commander.reconnectCallCount,
+            0,
+            "应先尝试用保存的 ID 定向重连"
+        )
+        XCTAssertGreaterThan(
+            commander.scanAndConnectCallCount,
+            0,
+            "reconnect 失败后应回退到 scanAndConnect"
+        )
+    }
 }
 
 @MainActor
@@ -5873,10 +6008,17 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
     private let lock = NSLock()
     private var _scanAndConnectCallCount = 0
     private var _disconnectCallCount = 0
+    private var _reconnectCallCount = 0
     private var _sentCommands: [SignalLightBLECommand] = []
     /// 每次调 scanAndConnect 返回的结果队列（空则默认 true）。
     /// 用于模拟「前 N 次失败、之后成功」的重连场景。
     private var _scanResults: [Bool] = []
+    /// 每次调 reconnect 返回的结果队列（空则默认 false，模拟设备未在系统缓存）。
+    private var _reconnectResults: [Bool] = []
+    /// scanAndConnect/reconnect 成功后设置的「当前连接设备 ID」。
+    /// 测试可通过 setNextDeviceID 预设，模拟连接到不同设备。
+    private var _nextDeviceID: String? = "test-device-id"
+    private var _currentDeviceID: String?
     private var _onDisconnect: (@Sendable () async -> Void)?
 
     var scanAndConnectCallCount: Int {
@@ -5887,9 +6029,17 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
         lock.lock(); defer { lock.unlock() }
         return _disconnectCallCount
     }
+    var reconnectCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _reconnectCallCount
+    }
     var sentCommands: [SignalLightBLECommand] {
         lock.lock(); defer { lock.unlock() }
         return _sentCommands
+    }
+    var lastConnectedDeviceID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _currentDeviceID
     }
 
     var isConnected: Bool { false }
@@ -5899,10 +6049,30 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
         lock.lock(); _scanResults = results; lock.unlock()
     }
 
+    /// 设置 reconnect 的返回值序列（按调用顺序消费；耗尽后默认 false）。
+    func enqueueReconnectResults(_ results: [Bool]) {
+        lock.lock(); _reconnectResults = results; lock.unlock()
+    }
+
+    /// 预设下次连接成功后报告的设备 ID（模拟连接到指定设备）。
+    func setNextDeviceID(_ id: String?) {
+        lock.lock(); _nextDeviceID = id; lock.unlock()
+    }
+
     func scanAndConnect() async -> Bool {
         lock.lock()
         _scanAndConnectCallCount += 1
         let result = _scanResults.isEmpty ? true : _scanResults.removeFirst()
+        if result { _currentDeviceID = _nextDeviceID }
+        lock.unlock()
+        return result
+    }
+
+    func reconnect(toDeviceID deviceID: String) async -> Bool {
+        lock.lock()
+        _reconnectCallCount += 1
+        let result = _reconnectResults.isEmpty ? false : _reconnectResults.removeFirst()
+        if result { _currentDeviceID = deviceID }
         lock.unlock()
         return result
     }
