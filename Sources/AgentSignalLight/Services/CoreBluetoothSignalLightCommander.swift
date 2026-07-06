@@ -28,6 +28,8 @@ final class CoreBluetoothSignalLightCommander: NSObject {
 
     private let logger = Logger(subsystem: "com.agent-signal-bar", category: "BLE")
     private let central: CBCentralManager
+    /// scanForDevices() 的扫描时长（秒），默认 3 秒；可通过 init 注入以支持测试或不同场景。
+    private let scanDuration: TimeInterval
 
     private var connectedPeripheral: CBPeripheral?
     private var rxCharacteristic: CBCharacteristic?
@@ -42,9 +44,10 @@ final class CoreBluetoothSignalLightCommander: NSObject {
     // 断连回调：让上层 controller 启动重连流程。
     private var onDisconnectHandler: (@Sendable () async -> Void)?
 
-    override init() {
+    init(scanDuration: TimeInterval = 3.0) {
         // 用 main queue 让 CoreBluetooth 的 delegate 回调直接在主线程执行，
         // 这样所有可变状态都可以安全地隔离在 MainActor 上，无需 Task 跳转。
+        self.scanDuration = scanDuration
         central = CBCentralManager(delegate: nil, queue: .main)
         super.init()
         central.delegate = self
@@ -97,9 +100,9 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
                 withServices: [uartServiceUUID],
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
             )
-            // 3 秒后停止扫描并返回结果
+            // 按配置时长停止扫描并返回结果
             Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(self.scanDuration * 1_000_000_000))
                 self.central.stopScan()
                 let devices = self.discoveredDevices
                 self.discoveredDevices = []

@@ -83,6 +83,10 @@ final class SignalLightBLEController: ObservableObject {
     private var lastSentCommand: SignalLightBLECommand?
     private var isActivated = false
 
+    // 扫描状态保护：记录进入 .scanning 的时间，避免异常情况下 UI 永远卡在 scanning。
+    private var scanningStartTime: Date?
+    private let scanningStateTimeout: TimeInterval
+
     // 重连状态机
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttemptCount = 0
@@ -95,11 +99,13 @@ final class SignalLightBLEController: ObservableObject {
     init(
         model: MenuBarStatusModel,
         commander: SignalLightBLECommanding,
-        clock: SignalLightBLEClock = SystemSignalLightBLEClock()
+        clock: SignalLightBLEClock = SystemSignalLightBLEClock(),
+        scanningStateTimeout: TimeInterval = 10.0
     ) {
         self.model = model
         self.commander = commander
         self.clock = clock
+        self.scanningStateTimeout = scanningStateTimeout
         // 把 commander 的断连回调接到自己的重连入口。
         // 用 Task 跳出 delegate 调用栈，避免回调中再次触发 CoreBluetooth 操作导致重入。
         commander.setOnDisconnect { [weak self] in
@@ -118,7 +124,9 @@ final class SignalLightBLEController: ObservableObject {
     func activate() {
         guard !isActivated else { return }
         isActivated = true
-        updateConnectionState()
+        Task { @MainActor in
+            await updateConnectionState()
+        }
 
         // 开关变化：开启则尝试启动重连（若有保存的设备 ID）或同步状态，关闭则断开。
         model.$isSignalLightBLEEnabled.sink { [weak self] enabled in
@@ -135,7 +143,7 @@ final class SignalLightBLEController: ObservableObject {
                 } else {
                     await self.userDisconnect()
                 }
-                self.updateConnectionState()
+                await self.updateConnectionState()
             }
         }
         .store(in: &cancellables)
@@ -154,7 +162,7 @@ final class SignalLightBLEController: ObservableObject {
                 if !ok {
                     self.handleDisconnect()
                 }
-                self.updateConnectionState()
+                await self.updateConnectionState()
             }
         }
         .store(in: &cancellables)
@@ -166,11 +174,13 @@ final class SignalLightBLEController: ObservableObject {
     func scanForDevices() async -> [SignalLightBLEDevice] {
         guard model.isSignalLightBLEEnabled else { return [] }
         connectionState = .scanning
+        scanningStartTime = Date()
         let devices = await commander.scanForDevices()
         // 扫描完成后回到 idle（用户选设备时 UI 会展示菜单）
         if connectionState == .scanning {
             connectionState = .idle
         }
+        scanningStartTime = nil
         return devices
     }
 
@@ -186,7 +196,7 @@ final class SignalLightBLEController: ObservableObject {
             reconnectAttemptCount = 0
             await syncCurrentState()
         }
-        updateConnectionState()
+        await updateConnectionState()
         return ok
     }
 
@@ -195,7 +205,7 @@ final class SignalLightBLEController: ObservableObject {
         guard model.isSignalLightBLEEnabled else { return }
         Task { @MainActor in
             await self.userDisconnect()
-            self.updateConnectionState()
+            await self.updateConnectionState()
         }
     }
 
@@ -211,7 +221,7 @@ final class SignalLightBLEController: ObservableObject {
                 self.reconnectAttemptCount = 0
                 await self.syncCurrentState()
             }
-            self.updateConnectionState()
+            await self.updateConnectionState()
         }
     }
 
@@ -267,7 +277,7 @@ final class SignalLightBLEController: ObservableObject {
                     self.reconnectAttemptCount = 0
                     await self.syncCurrentState()
                     self.reconnectTask = nil
-                    self.updateConnectionState()
+                    await self.updateConnectionState()
                     return
                 }
                 // 按 policy 等待后重试。
@@ -276,7 +286,7 @@ final class SignalLightBLEController: ObservableObject {
             }
             // 被 cancel（用户主动断开）：清空 task 引用。
             self.reconnectTask = nil
-            self.updateConnectionState()
+            await self.updateConnectionState()
         }
     }
 
@@ -287,25 +297,37 @@ final class SignalLightBLEController: ObservableObject {
     }
 
     /// 根据 commander 状态同步 connectionState（供 UI 三态展示）。
-    private func updateConnectionState() {
+    private func updateConnectionState() async {
         guard model.isSignalLightBLEEnabled else {
             connectionState = .disabled
             return
         }
-        // 正在扫描/连接中时保持原状态，避免被覆盖
-        if case .scanning = connectionState { return }
+        // 正在扫描/连接中时保持原状态，避免被覆盖；
+        // 但如果扫描状态已超时（异常 stuck），则降级到 idle，防止 UI 永远卡住。
+        if case .scanning = connectionState {
+            if let startTime = scanningStartTime,
+               Date().timeIntervalSince(startTime) > scanningStateTimeout {
+                connectionState = .idle
+                scanningStartTime = nil
+            } else {
+                return
+            }
+        }
         if reconnectTask != nil {
             connectionState = .connecting
             return
         }
-        Task { @MainActor in
-            let connected = await self.commander.isConnected
-            if connected {
-                let name = await self.commander.connectedDeviceName
-                self.connectionState = .connected(deviceName: name)
-            } else {
-                self.connectionState = .idle
-            }
+        // 异步读取连接状态；await 期间可能启动重连，因此读取后再次检查。
+        let connected = await commander.isConnected
+        if reconnectTask != nil {
+            connectionState = .connecting
+            return
+        }
+        if connected {
+            let name = await commander.connectedDeviceName
+            connectionState = .connected(deviceName: name)
+        } else {
+            connectionState = .idle
         }
     }
 

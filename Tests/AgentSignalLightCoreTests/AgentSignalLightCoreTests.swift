@@ -1,4 +1,6 @@
 import Foundation
+import os
+import Combine
 import XCTest
 #if canImport(SQLite3)
 import SQLite3
@@ -4024,6 +4026,141 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testStaleAttentionRecentEventsDoNotRemainFallbackSessionForever() {
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        let freshNeedsReview = RecentSignalEvent(
+            id: "fresh-needs-review",
+            sessionID: "codex-cli:old-thread",
+            signal: .attention,
+            updatedAt: now.addingTimeInterval(-4 * 60),
+            agent: "codex-cli",
+            event: "NeedsReview"
+        )
+        let staleNeedsReview = RecentSignalEvent(
+            id: "stale-needs-review",
+            sessionID: "codex-cli:old-thread",
+            signal: .attention,
+            updatedAt: now.addingTimeInterval(-6 * 60),
+            agent: "codex-cli",
+            event: "NeedsReview"
+        )
+        let freshPermission = RecentSignalEvent(
+            id: "fresh-permission",
+            sessionID: "codex-cli:old-thread",
+            signal: .permission,
+            updatedAt: now.addingTimeInterval(-4 * 60),
+            agent: "codex-cli",
+            event: "PermissionRequest"
+        )
+        let stalePermission = RecentSignalEvent(
+            id: "stale-permission",
+            sessionID: "codex-cli:old-thread",
+            signal: .permission,
+            updatedAt: now.addingTimeInterval(-6 * 60),
+            agent: "codex-cli",
+            event: "PermissionRequest"
+        )
+        let freshBlocked = RecentSignalEvent(
+            id: "fresh-blocked",
+            sessionID: "codex-cli:old-thread",
+            signal: .blocked,
+            updatedAt: now.addingTimeInterval(-4 * 60),
+            agent: "codex-cli",
+            event: "Blocked"
+        )
+        let staleBlocked = RecentSignalEvent(
+            id: "stale-blocked",
+            sessionID: "codex-cli:old-thread",
+            signal: .blocked,
+            updatedAt: now.addingTimeInterval(-6 * 60),
+            agent: "codex-cli",
+            event: "Blocked"
+        )
+
+        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshNeedsReview, now: now))
+        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleNeedsReview, now: now))
+        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshPermission, now: now))
+        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(stalePermission, now: now))
+        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshBlocked, now: now))
+        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleBlocked, now: now))
+    }
+
+    @MainActor
+    func testActivitySnapshotDoesNotCountLongExpiredAttentionEventsAsLiveSessions() throws {
+        // Regression test for the badge-count bug: a session that finished and
+        // was pruned from the `sessions` dictionary (by the store's own
+        // attentionTTLSeconds) must not be resurrected forever just because its
+        // last `needs_review`/`permission`/`blocked` event is still sitting in
+        // the bounded recent-events history. Only the one genuinely active
+        // session should be visible.
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let longExpired = now.addingTimeInterval(-15 * 60)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "codebuddy:current-thread": SessionRecord(
+                        agent: "codebuddy",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "ghost-1",
+                        sessionID: "codebuddy:ghost-1",
+                        agent: "codebuddy",
+                        signal: .attention,
+                        event: "NeedsReview",
+                        updatedAt: longExpired
+                    ),
+                    SignalEventRecord(
+                        id: "ghost-2",
+                        sessionID: "codebuddy:ghost-2",
+                        agent: "codebuddy",
+                        signal: .attention,
+                        event: "NeedsReview",
+                        updatedAt: longExpired
+                    ),
+                    SignalEventRecord(
+                        id: "ghost-3",
+                        sessionID: "codebuddy:ghost-3",
+                        agent: "codebuddy",
+                        signal: .attention,
+                        event: "NeedsReview",
+                        updatedAt: longExpired
+                    ),
+                    SignalEventRecord(
+                        id: "current",
+                        sessionID: "codebuddy:current-thread",
+                        agent: "codebuddy",
+                        signal: .working,
+                        event: "PreToolUse",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let visibleSessions = ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot)
+
+        XCTAssertEqual(
+            visibleSessions.count,
+            1,
+            "Only the genuinely active session should count toward the info badge, not long-expired ghost sessions."
+        )
+        XCTAssertEqual(visibleSessions.first?.sessionID, "codebuddy:current-thread")
+    }
+
+    @MainActor
     func testStaleDesktopMessageDoesNotDriveStatusBarOrFloatingLight() throws {
         let savedSelectionDefaults = clearSignalLightSelectionDefaults()
         let savedMonitoringDefaults = [
@@ -5558,9 +5695,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertFalse(model.isSignalLightBLEEnabled)
         controller.scanAndConnect()
         // 给 Task 一个 cycle 执行
-        let expectation = expectation(description: "scan-completes")
-        DispatchQueue.main.async { expectation.fulfill() }
-        wait(for: [expectation], timeout: 1)
+        let expectation1 = expectation(description: "scan-completes")
+        DispatchQueue.main.async { expectation1.fulfill() }
+        wait(for: [expectation1], timeout: 1)
         XCTAssertEqual(commander.scanAndConnectCallCount, 0, "开关关闭时不应触达 commander")
 
         // 开关开启后：扫描按钮应触达 commander
@@ -5998,7 +6135,12 @@ final class AgentSignalLightCoreTests: XCTestCase {
             ),
             in: fixture.store
         )
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        // 文件系统 watcher 触发有延迟且不稳定，显式 reload 并轮询等待 snapshot 更新。
+        let deadline = Date().addingTimeInterval(2)
+        while model.snapshot.aggregate.displayState != .needsReview && Date() < deadline {
+            model.reload()
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
 
         let finalBlinkYellowCount = commander.sentCommands.filter { $0 == .blinkYellow }.count
         XCTAssertEqual(
@@ -6101,8 +6243,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
     func testUIStateShowsConnectingDuringReconnect() async {
         let model = makeMenuBarStatusModel()
         let commander = FakeSignalLightCommander()
-        // 重连尝试都失败，保持 connecting 状态
-        commander.enqueueScanResults([false, false, false])
+        // 定向重连失败，回退扫描也失败，保持 connecting 状态
+        commander.setDefaultReconnectResult(false)
+        commander.setDefaultScanAndConnectResult(false)
         UserDefaults.standard.set("saved-uuid", forKey: SignalLightBLEController.lastDeviceIDKey)
         defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
 
@@ -6155,7 +6298,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
 private func makeMenuBarStatusModel(
     store: SignalStateStore = SignalStateStore()
 ) -> MenuBarStatusModel {
-    MenuBarStatusModel(
+    // 隔离测试间状态：蓝牙开关默认 false（避免 BLE 测试互相影响）。
+    UserDefaults.standard.set(false, forKey: "isSignalLightBLEEnabled")
+    return MenuBarStatusModel(
         store: store,
         codexAccountManager: EmptyCodexAccountManager()
     )
@@ -6283,18 +6428,20 @@ private struct FakeOpenAIBrowserCookieImporter: OpenAIBrowserCookieImporting {
 
 /// 用于测试 `SignalLightBLEController` 的伪 commander，记录所有调用。
 /// 不接触真实 CoreBluetooth（参考 `FakeOpenAIBrowserCookieImporter` 模式）。
-private final class FakeSignalLightCommander: SignalLightBLECommanding, @unchecked Sendable {
-    private let lock = NSLock()
+private class FakeSignalLightCommander: SignalLightBLECommanding, @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
     private var _scanAndConnectCallCount = 0
     private var _disconnectCallCount = 0
     private var _reconnectCallCount = 0
     private var _connectCallCount = 0
     private var _scanForDevicesCallCount = 0
     private var _sentCommands: [SignalLightBLECommand] = []
-    /// 每次调 scanAndConnect 返回的结果队列（空则默认 true）。
+    /// 每次调 scanAndConnect 返回的结果队列（空则使用默认结果）。
     private var _scanResults: [Bool] = []
-    /// 每次调 reconnect 返回的结果队列（空则默认 false）。
+    private var _defaultScanAndConnectResult = true
+    /// 每次调 reconnect 返回的结果队列（空则使用默认结果）。
     private var _reconnectResults: [Bool] = []
+    private var _defaultReconnectResult = false
     /// 每次调 connect 返回的结果队列（空则默认 true）。
     private var _connectResults: [Bool] = []
     /// scanForDevices 返回的设备列表（默认空）。
@@ -6308,153 +6455,156 @@ private final class FakeSignalLightCommander: SignalLightBLECommanding, @uncheck
     private var _onDisconnect: (@Sendable () async -> Void)?
 
     var scanAndConnectCallCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _scanAndConnectCallCount
+        lock.withLock { _scanAndConnectCallCount }
     }
     var disconnectCallCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _disconnectCallCount
+        lock.withLock { _disconnectCallCount }
     }
     var reconnectCallCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _reconnectCallCount
+        lock.withLock { _reconnectCallCount }
     }
     var connectCallCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _connectCallCount
+        lock.withLock { _connectCallCount }
     }
     var scanForDevicesCallCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _scanForDevicesCallCount
+        lock.withLock { _scanForDevicesCallCount }
     }
     var sentCommands: [SignalLightBLECommand] {
-        lock.lock(); defer { lock.unlock() }
-        return _sentCommands
+        lock.withLock { _sentCommands }
     }
     var lastConnectedDeviceID: String? {
-        lock.lock(); defer { lock.unlock() }
-        return _currentDeviceID
+        get async { lock.withLock { _currentDeviceID } }
     }
     var connectedDeviceName: String? {
-        lock.lock(); defer { lock.unlock() }
-        return _currentDeviceName
+        get async { lock.withLock { _currentDeviceName } }
     }
     var isConnected: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return _isConnected
+        get async { lock.withLock { _isConnected } }
     }
 
     func enqueueScanResults(_ results: [Bool]) {
-        lock.lock(); _scanResults = results; lock.unlock()
+        lock.withLock { _scanResults = results }
     }
 
     func enqueueReconnectResults(_ results: [Bool]) {
-        lock.lock(); _reconnectResults = results; lock.unlock()
+        lock.withLock { _reconnectResults = results }
     }
 
     func enqueueConnectResults(_ results: [Bool]) {
-        lock.lock(); _connectResults = results; lock.unlock()
+        lock.withLock { _connectResults = results }
     }
 
     func setDiscoveredDevices(_ devices: [SignalLightBLEDevice]) {
-        lock.lock(); _discoveredDevices = devices; lock.unlock()
+        lock.withLock { _discoveredDevices = devices }
     }
 
     func setNextDeviceID(_ id: String?) {
-        lock.lock(); _nextDeviceID = id; lock.unlock()
+        lock.withLock { _nextDeviceID = id }
     }
 
     func setNextDeviceName(_ name: String?) {
-        lock.lock(); _nextDeviceName = name; lock.unlock()
+        lock.withLock { _nextDeviceName = name }
+    }
+
+    /// 设置 scanAndConnect 在结果队列耗尽后的默认返回值。
+    func setDefaultScanAndConnectResult(_ value: Bool) {
+        lock.withLock { _defaultScanAndConnectResult = value }
+    }
+
+    /// 设置 reconnect 在结果队列耗尽后的默认返回值。
+    func setDefaultReconnectResult(_ value: Bool) {
+        lock.withLock { _defaultReconnectResult = value }
     }
 
     /// 测试用：标记为已连接状态（模拟连接成功后的 isConnected=true）。
     func setConnected(_ connected: Bool) {
-        lock.lock()
-        _isConnected = connected
-        if connected {
-            _currentDeviceID = _nextDeviceID
-            _currentDeviceName = _nextDeviceName
-        } else {
-            _currentDeviceID = nil
-            _currentDeviceName = nil
+        lock.withLock {
+            _isConnected = connected
+            if connected {
+                _currentDeviceID = _nextDeviceID
+                _currentDeviceName = _nextDeviceName
+            } else {
+                _currentDeviceID = nil
+                _currentDeviceName = nil
+            }
         }
-        lock.unlock()
     }
 
     func scanAndConnect() async -> Bool {
-        lock.lock()
-        _scanAndConnectCallCount += 1
-        let result = _scanResults.isEmpty ? true : _scanResults.removeFirst()
-        if result {
-            _currentDeviceID = _nextDeviceID
-            _currentDeviceName = _nextDeviceName
-            _isConnected = true
+        let result = lock.withLock {
+            _scanAndConnectCallCount += 1
+            let result = _scanResults.isEmpty ? _defaultScanAndConnectResult : _scanResults.removeFirst()
+            if result {
+                _currentDeviceID = _nextDeviceID
+                _currentDeviceName = _nextDeviceName
+                _isConnected = true
+            }
+            return result
         }
-        lock.unlock()
         return result
     }
 
     func scanForDevices() async -> [SignalLightBLEDevice] {
-        lock.lock()
-        _scanForDevicesCallCount += 1
-        let devices = _discoveredDevices
-        lock.unlock()
-        return devices
+        lock.withLock {
+            _scanForDevicesCallCount += 1
+            return _discoveredDevices
+        }
     }
 
     func connect(toDeviceID deviceID: String) async -> Bool {
-        lock.lock()
-        _connectCallCount += 1
-        let result = _connectResults.isEmpty ? true : _connectResults.removeFirst()
-        if result {
-            _currentDeviceID = deviceID
-            _currentDeviceName = _nextDeviceName
-            _isConnected = true
+        let result = lock.withLock {
+            _connectCallCount += 1
+            let result = _connectResults.isEmpty ? true : _connectResults.removeFirst()
+            if result {
+                _currentDeviceID = deviceID
+                _currentDeviceName = _nextDeviceName
+                _isConnected = true
+            }
+            return result
         }
-        lock.unlock()
         return result
     }
 
     func reconnect(toDeviceID deviceID: String) async -> Bool {
-        lock.lock()
-        _reconnectCallCount += 1
-        let result = _reconnectResults.isEmpty ? false : _reconnectResults.removeFirst()
-        if result {
-            _currentDeviceID = deviceID
-            _currentDeviceName = _nextDeviceName
-            _isConnected = true
+        let result = lock.withLock {
+            _reconnectCallCount += 1
+            let result = _reconnectResults.isEmpty ? _defaultReconnectResult : _reconnectResults.removeFirst()
+            if result {
+                _currentDeviceID = deviceID
+                _currentDeviceName = _nextDeviceName
+                _isConnected = true
+            }
+            return result
         }
-        lock.unlock()
         return result
     }
 
     func send(_ command: SignalLightBLECommand) async -> Bool {
-        lock.lock(); _sentCommands.append(command); lock.unlock()
+        lock.withLock { _sentCommands.append(command) }
         return true
     }
 
     func disconnect() async {
-        lock.lock()
-        _disconnectCallCount += 1
-        _isConnected = false
-        _currentDeviceID = nil
-        _currentDeviceName = nil
-        lock.unlock()
+        lock.withLock {
+            _disconnectCallCount += 1
+            _isConnected = false
+            _currentDeviceID = nil
+            _currentDeviceName = nil
+        }
     }
 
     func setOnDisconnect(_ handler: @escaping @Sendable () async -> Void) {
-        lock.lock(); _onDisconnect = handler; lock.unlock()
+        lock.withLock { _onDisconnect = handler }
     }
 
     func simulateDisconnect() async {
-        let handler: (@Sendable () async -> Void)?
-        lock.lock()
-        handler = _onDisconnect
-        _isConnected = false
-        _currentDeviceID = nil
-        _currentDeviceName = nil
-        lock.unlock()
+        let handler = lock.withLock {
+            let handler = _onDisconnect
+            _isConnected = false
+            _currentDeviceID = nil
+            _currentDeviceName = nil
+            return handler
+        }
         if let handler { await handler() }
     }
 }
