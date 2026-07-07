@@ -763,6 +763,11 @@ private struct FloatingSignalPanelView: View {
         .onReceive(model.$statusLightOverride) { _ in
             refreshCachedSnapshots()
         }
+        // 与状态栏保持同频刷新：displaySnapshot 依赖当前时间做 TTL / display window
+        // 过滤，时间驱动型状态变化不会触发 model.$snapshot，必须随动画 tick 重新计算。
+        .onReceive(model.animationClock.$tick) { _ in
+            refreshCachedSnapshots()
+        }
         .onReceive(model.$isMonitoringPaused) { _ in
             refreshCachedSnapshots()
             persistVisibleBadgeCornersSoon()
