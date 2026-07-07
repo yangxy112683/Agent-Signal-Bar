@@ -11,14 +11,15 @@ struct ParsedArguments {
 
 @main
 struct AgentSignalCLI {
-    static func main() throws {
-        let exitCode = run(arguments: Array(CommandLine.arguments.dropFirst()))
+    static func main() async {
+        let exitCode = await run(arguments: Array(CommandLine.arguments.dropFirst()))
         if exitCode != 0 {
             Foundation.exit(Int32(exitCode))
         }
     }
 
-    private static func run(arguments: [String]) -> Int {
+    @MainActor
+    private static func run(arguments: [String]) async -> Int {
         guard let command = arguments.first else {
             printUsage()
             return 0
@@ -133,6 +134,81 @@ struct AgentSignalCLI {
                     agent: agent,
                     lastEvent: parsed.event ?? eventName
                 )
+            case "ble-scan":
+                let remaining = Array(arguments.dropFirst())
+                let filterByService = remaining.contains("--nordic-uart")
+                let shouldConnect = remaining.contains("--connect")
+                let commander = CoreBluetoothSignalLightCommander(scanDuration: 5.0)
+                print("等待蓝牙就绪...")
+                let ready = await commander.waitForPoweredOn()
+                if !ready {
+                    print("错误：蓝牙未就绪或未被授权")
+                    return 1
+                }
+                print("开始扫描 5 秒...（\(filterByService ? "仅扫描 Nordic UART 服务设备" : "扫描所有 BLE 设备")）")
+                let devices = await commander.scanForDevices(filterByService: filterByService)
+                print("发现 \(devices.count) 个设备：")
+                for device in devices {
+                    print("- \(device.name ?? "unknown") (\(device.id))")
+                }
+                guard shouldConnect, let firstDevice = devices.first else {
+                    return 0
+                }
+                print("尝试连接 \(firstDevice.name ?? firstDevice.id) ...")
+                let connected = await commander.connect(toDeviceID: firstDevice.id)
+                if !connected {
+                    print("错误：连接失败")
+                    return 1
+                }
+                print("连接成功，开始发送测试命令（按 Ctrl+C 停止）...")
+                let testCommands: [SignalLightBLECommand] = [.green, .blinkYellow, .blinkRed, .off]
+                var index = 0
+                while true {
+                    let command = testCommands[index % testCommands.count]
+                    print("发送 \(command.rawValue)...")
+                    let ok = await commander.send(command)
+                    print(ok ? "成功" : "失败")
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    index += 1
+                    if index >= testCommands.count * 2 { break }
+                }
+                print("测试完成，断开连接...")
+                await commander.disconnect()
+                return 0
+            case "ble-test":
+                let parsed = try parse(Array(arguments.dropFirst()))
+                try requireAtMostOnePositional(parsed)
+                let savedID = UserDefaults.standard.string(forKey: "signalLightBELastDeviceID")
+                let deviceID = parsed.positionals.first ?? savedID
+                guard let deviceID else {
+                    print("错误：没有指定设备 ID，也没有已保存的设备 ID")
+                    print("用法：agent-signal ble-test [<设备-UUID>]")
+                    return 1
+                }
+                let commander = CoreBluetoothSignalLightCommander(scanDuration: 5.0)
+                print("等待蓝牙就绪...")
+                let ready = await commander.waitForPoweredOn()
+                if !ready {
+                    print("错误：蓝牙未就绪或未被授权")
+                    return 1
+                }
+                print("尝试连接 \(deviceID) ...")
+                let connected = await commander.reconnect(toDeviceID: deviceID)
+                if !connected {
+                    print("错误：连接失败（设备可能不在范围内或未在系统缓存中）")
+                    return 1
+                }
+                print("连接成功，开始发送测试命令...")
+                let testCommands: [SignalLightBLECommand] = [.green, .blinkYellow, .blinkRed, .off]
+                for command in testCommands {
+                    print("发送 \(command.rawValue)...")
+                    let ok = await commander.send(command)
+                    print(ok ? "成功" : "失败")
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                }
+                print("测试完成，断开连接...")
+                await commander.disconnect()
+                return 0
             default:
                 if let signal = AgentSignal.normalized(command) {
                     let parsed = try parse(Array(arguments.dropFirst()))
@@ -278,6 +354,7 @@ private func printUsage() {
           \(command) codex-hook [event]
           \(command) claude-hook [event]
           \(command) agent-hook [event] [--agent <name>] [--session <id>]
+          \(command) ble-scan
           \(command) reset [--json]
 
         Examples:

@@ -20,7 +20,7 @@ import CoreBluetooth
 /// 整个类型隔离在 `@MainActor`；`CBCentralManager` 用 main queue 回调，
 /// delegate 方法直接在主线程执行，所有可变状态安全隔离。
 @MainActor
-final class CoreBluetoothSignalLightCommander: NSObject {
+public final class CoreBluetoothSignalLightCommander: NSObject {
     private let deviceNamePrefix = "coding-"
     private let uartServiceUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
     private let uartRXCharacteristicUUID = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
@@ -44,7 +44,7 @@ final class CoreBluetoothSignalLightCommander: NSObject {
     // 断连回调：让上层 controller 启动重连流程。
     private var onDisconnectHandler: (@Sendable () async -> Void)?
 
-    init(scanDuration: TimeInterval = 3.0) {
+    public init(scanDuration: TimeInterval = 5.0) {
         // 用 main queue 让 CoreBluetooth 的 delegate 回调直接在主线程执行，
         // 这样所有可变状态都可以安全地隔离在 MainActor 上，无需 Task 跳转。
         self.scanDuration = scanDuration
@@ -57,19 +57,19 @@ final class CoreBluetoothSignalLightCommander: NSObject {
 // MARK: - SignalLightBLECommanding
 
 extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLECommanding {
-    var isConnected: Bool {
+    public var isConnected: Bool {
         connectedPeripheral != nil && rxCharacteristic != nil
     }
 
-    var lastConnectedDeviceID: String? {
+    public var lastConnectedDeviceID: String? {
         lastConnectedDeviceIDValue
     }
 
-    var connectedDeviceName: String? {
+    public var connectedDeviceName: String? {
         connectedPeripheral?.name
     }
 
-    func scanAndConnect() async -> Bool {
+    public func scanAndConnect() async -> Bool {
         // 已连接则直接成功。
         if connectedPeripheral != nil { return true }
         // 等待蓝牙权限就绪（poweredOn）。
@@ -81,13 +81,17 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             scanContinuation = continuation
             central.scanForPeripherals(
-                withServices: [uartServiceUUID],
+                withServices: nil,
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
             )
         }
     }
 
-    func scanForDevices() async -> [SignalLightBLEDevice] {
+    public func scanForDevices() async -> [SignalLightBLEDevice] {
+        await scanForDevices(filterByService: false)
+    }
+
+    public func scanForDevices(filterByService: Bool) async -> [SignalLightBLEDevice] {
         guard await waitForPoweredOn() else {
             logger.error("BLE 蓝牙未就绪，放弃扫描设备列表")
             return []
@@ -97,7 +101,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
             scanListContinuation = continuation
             discoveredDevices = []
             central.scanForPeripherals(
-                withServices: [uartServiceUUID],
+                withServices: filterByService ? [uartServiceUUID] : nil,
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
             )
             // 按配置时长停止扫描并返回结果
@@ -115,7 +119,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         return discovered
     }
 
-    func connect(toDeviceID deviceID: String) async -> Bool {
+    public func connect(toDeviceID deviceID: String) async -> Bool {
         // 已连接且是同一设备则直接成功。
         if let connected = connectedPeripheral, connected.identifier.uuidString == deviceID {
             return true
@@ -146,7 +150,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         }
     }
 
-    func reconnect(toDeviceID deviceID: String) async -> Bool {
+    public func reconnect(toDeviceID deviceID: String) async -> Bool {
         // 已连接则直接成功。
         if connectedPeripheral != nil { return true }
         guard let uuid = UUID(uuidString: deviceID) else {
@@ -173,7 +177,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         }
     }
 
-    func send(_ command: SignalLightBLECommand) async -> Bool {
+    public func send(_ command: SignalLightBLECommand) async -> Bool {
         guard let peripheral = connectedPeripheral,
               let characteristic = rxCharacteristic
         else {
@@ -186,7 +190,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         }
     }
 
-    func disconnect() async {
+    public func disconnect() async {
         if central.isScanning {
             central.stopScan()
         }
@@ -197,11 +201,11 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         rxCharacteristic = nil
     }
 
-    func setOnDisconnect(_ handler: @escaping @Sendable () async -> Void) {
+    public func setOnDisconnect(_ handler: @escaping @Sendable () async -> Void) {
         onDisconnectHandler = handler
     }
 
-    private func waitForPoweredOn() async -> Bool {
+    public func waitForPoweredOn() async -> Bool {
         if central.state == .poweredOn { return true }
         // 最多等 3 秒（与 cpets 的 GUI 退化直连响应时间一致）。
         for _ in 0..<30 {
@@ -215,13 +219,13 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
 // MARK: - CBCentralManagerDelegate
 
 extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDelegate {
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state != .poweredOn {
             logger.log("BLE 蓝牙状态：\(String(describing: central.state.rawValue))")
         }
     }
 
-    func centralManager(
+    public func centralManager(
         _ central: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
         advertisementData: [String: Any],
@@ -246,17 +250,17 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
         central.connect(peripheral, options: nil)
     }
 
-    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         peripheral.discoverServices([uartServiceUUID])
     }
 
-    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         logger.error("BLE 连接失败：\(error?.localizedDescription ?? "unknown")")
         connectedPeripheral = nil
         resumeScan(false)
     }
 
-    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         logger.log("BLE 已断开：\(error?.localizedDescription ?? "normal")")
         connectedPeripheral = nil
         rxCharacteristic = nil
@@ -273,7 +277,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
 // MARK: - CBPeripheralDelegate
 
 extension CoreBluetoothSignalLightCommander: @preconcurrency CBPeripheralDelegate {
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             logger.error("BLE 发现服务失败：\(error.localizedDescription)")
             resumeScan(false)
@@ -290,7 +294,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBPeripheralDelegat
         )
     }
 
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         if let error {
             logger.error("BLE 发现特征失败：\(error.localizedDescription)")
             resumeScan(false)
@@ -307,7 +311,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBPeripheralDelegat
         resumeScan(true)
     }
 
-    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+    public func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error {
             logger.error("BLE 写入失败：\(error.localizedDescription)")
         }
