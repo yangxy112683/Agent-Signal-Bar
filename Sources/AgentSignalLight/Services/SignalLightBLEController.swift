@@ -47,6 +47,13 @@ final class SignalLightBLEController: ObservableObject {
     /// 标记用户主动断开（开关关闭或点断开按钮），阻止重连流程。
     private var isUserInitiatedDisconnect = false
 
+    // MARK: - 硬件信号灯调试状态
+
+    /// 是否启用硬件信号灯调试模式（手动覆盖聚合状态）。
+    @Published private(set) var isHardwareDebugModeEnabled = false
+    /// 当前手动指定的硬件命令；nil 表示未指定。
+    @Published private(set) var hardwareDebugCommand: SignalLightBLECommand? = nil
+
     /// 当前连接状态（供 DebugWindowView 三态按钮展示）。
     @Published private(set) var connectionState: SignalLightBLEConnectionState = .disabled
 
@@ -106,7 +113,7 @@ final class SignalLightBLEController: ObservableObject {
         model.$snapshot.sink { [weak self] snapshot in
             Task { @MainActor in
                 guard let self, self.model.isSignalLightBLEEnabled else { return }
-                let command = snapshot.aggregate.displayState.bleCommand
+                let command = self.currentBLECommand(for: snapshot)
                 // 命令级去重（Issue #6）：基于 BLE 命令字符串比较，相同命令不重复写入，
                 // 吸收 aggregate 在映射到同一命令的状态间 churn（如 active ↔ completed 都是 GREEN）。
                 guard command != self.lastSentCommand else { return }
@@ -185,6 +192,56 @@ final class SignalLightBLEController: ObservableObject {
         let command = model.snapshot.aggregate.displayState.bleCommand
         lastSentCommand = command
         _ = await commander.send(command)
+    }
+
+    /// 根据当前调试模式/聚合状态解析应发送的 BLE 命令。
+    private func currentBLECommand(for snapshot: SignalSnapshot) -> SignalLightBLECommand {
+        if isHardwareDebugModeEnabled, let hardwareDebugCommand {
+            return hardwareDebugCommand
+        }
+        return snapshot.aggregate.displayState.bleCommand
+    }
+
+    // MARK: - 硬件信号灯调试
+
+    /// 启/停硬件信号灯调试模式。启用时未指定命令则锁定为当前聚合命令，
+    /// 避免 snapshot 后续变化继续驱动硬件；停止时恢复聚合状态。
+    func setHardwareDebugModeEnabled(_ enabled: Bool) {
+        Task { @MainActor in
+            guard self.isHardwareDebugModeEnabled != enabled else { return }
+            self.isHardwareDebugModeEnabled = enabled
+            if enabled {
+                if self.hardwareDebugCommand == nil {
+                    self.hardwareDebugCommand = self.model.snapshot.aggregate.displayState.bleCommand
+                }
+                await self.sendHardwareDebugCommand()
+            } else {
+                self.hardwareDebugCommand = nil
+                await self.syncCurrentState()
+            }
+            await self.updateConnectionState()
+        }
+    }
+
+    /// 指定并立即发送一条硬件调试命令，同时进入调试模式。
+    func setHardwareDebugCommand(_ command: SignalLightBLECommand) {
+        Task { @MainActor in
+            guard self.model.isSignalLightBLEEnabled else { return }
+            self.hardwareDebugCommand = command
+            self.isHardwareDebugModeEnabled = true
+            await self.sendHardwareDebugCommand()
+            await self.updateConnectionState()
+        }
+    }
+
+    /// 立即发送当前硬件调试命令（不经过命令级去重，确保每次用户点击都写入）。
+    private func sendHardwareDebugCommand() async {
+        guard model.isSignalLightBLEEnabled, let command = hardwareDebugCommand else { return }
+        lastSentCommand = command
+        let ok = await commander.send(command)
+        if !ok {
+            handleDisconnect()
+        }
     }
 
     /// 用户主动断开（开关关闭或点断开按钮）：取消重连，标记不重连，commander 断开。

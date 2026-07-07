@@ -6292,6 +6292,377 @@ final class AgentSignalLightCoreTests: XCTestCase {
             "用户主动断开后应回到 idle 状态，不自动重连"
         )
     }
+
+    // MARK: - Hardware Signal Light Debug
+
+    @MainActor
+    func testHardwareDebugCommandSendsImmediately() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        controller.setHardwareDebugCommand(.blinkYellow)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(commander.sentCommands.last, .blinkYellow, "点击硬件调试按钮应立即发送 BLINK_YELLOW")
+        XCTAssertTrue(controller.isHardwareDebugModeEnabled, "发送命令后应进入硬件调试模式")
+        XCTAssertEqual(controller.hardwareDebugCommand, .blinkYellow, "控制器应记录当前调试命令")
+    }
+
+    @MainActor
+    func testHardwareDebugModeEnabledLocksCurrentAggregate() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        // 当前 aggregate 为 idle -> ready -> GREEN
+        controller.setHardwareDebugModeEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(controller.isHardwareDebugModeEnabled)
+        XCTAssertEqual(controller.hardwareDebugCommand, .green, "启用硬件调试时未指定命令应锁定为当前聚合命令 GREEN")
+        XCTAssertEqual(commander.sentCommands.last, .green, "应发送 GREEN 作为锁定命令")
+    }
+
+    @MainActor
+    func testHardwareDebugModeDisabledResumesAggregate() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        controller.setHardwareDebugCommand(.blinkRed)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        controller.setHardwareDebugModeEnabled(false)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertFalse(controller.isHardwareDebugModeEnabled)
+        XCTAssertNil(controller.hardwareDebugCommand, "退出调试模式后应清空调试命令")
+        XCTAssertEqual(commander.sentCommands.last, .green, "退出调试模式后应恢复发送聚合命令 GREEN")
+    }
+
+    @MainActor
+    func testHardwareDebugModeOverridesSnapshotChanges() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 初始状态为 working -> active -> GREEN
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "test", agent: "test", lastEvent: "PreToolUse")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 进入调试模式，手动锁定为 BLINK_YELLOW
+        controller.setHardwareDebugCommand(.blinkYellow)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        // 改变聚合状态为 blocked -> BLINK_RED
+        _ = try fixture.store.applySessionSignal(.blocked, sessionID: "test", agent: "test", lastEvent: "Error")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 调试模式下不应发送新的聚合命令
+        XCTAssertFalse(commander.sentCommands.contains(.blinkRed), "调试模式下 snapshot 变化不应发送 BLINK_RED 聚合命令")
+        XCTAssertEqual(controller.hardwareDebugCommand, .blinkYellow, "调试命令应保持为 BLINK_YELLOW")
+    }
+
+    @MainActor
+    func testHardwareDebugCommandIgnoredWhenBLEDisabled() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        // 明确保持蓝牙开关关闭
+        model.setSignalLightBLEEnabled(false)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        controller.setHardwareDebugCommand(.blinkYellow)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(commander.sentCommands.isEmpty, "蓝牙开关关闭时不应发送硬件调试命令")
+        XCTAssertFalse(controller.isHardwareDebugModeEnabled, "蓝牙关闭时也不应进入硬件调试模式")
+    }
+
+    @MainActor
+    func testHardwareDebugCommandSendsOnEveryClick() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        // 忽略启用蓝牙时 snapshot 订阅发送的初始 GREEN
+        commander.resetSentCommands()
+
+        controller.setHardwareDebugCommand(.blinkYellow)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        controller.setHardwareDebugCommand(.blinkYellow)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(commander.sentCommands, [.blinkYellow, .blinkYellow], "连续两次点击相同按钮应发送两条命令，不被去重吸收")
+    }
+
+    @MainActor
+    func testHardwareDebugCommandSendFailureTriggersReconnect() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        // 忽略启用蓝牙时 snapshot 订阅发送的初始 GREEN
+        commander.resetSentCommands()
+
+        // 先模拟连接成功
+        commander.setConnected(true)
+        // 让后续 send 失败
+        commander.setSendResult(false)
+
+        controller.setHardwareDebugCommand(.blinkRed)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(commander.sentCommands.contains(.blinkRed), "应尝试发送 BLINK_RED")
+        XCTAssertTrue(commander.scanAndConnectCallCount > 0 || commander.reconnectCallCount > 0, "发送失败后应启动重连流程")
+    }
+
+    @MainActor
+    func testHardwareDebugModeEnabledIsIdempotent() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        // 忽略启用蓝牙时 snapshot 订阅发送的初始 GREEN
+        commander.resetSentCommands()
+
+        controller.setHardwareDebugModeEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        controller.setHardwareDebugModeEnabled(true)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertTrue(controller.isHardwareDebugModeEnabled)
+        XCTAssertEqual(controller.hardwareDebugCommand, .green, "调试命令应保持为当前聚合命令 GREEN")
+        XCTAssertEqual(commander.sentCommands.filter { $0 == .green }.count, 1, "重复启用调试模式不应重复发送 GREEN")
+    }
+
+    @MainActor
+    func testHardwareDebugModeDisabledResumesSnapshotDriving() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 初始为 working -> active -> GREEN
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "test", agent: "test", lastEvent: "PreToolUse")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        // 进入调试模式并手动指定 BLINK_YELLOW
+        controller.setHardwareDebugCommand(.blinkYellow)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        // 退出调试模式
+        controller.setHardwareDebugModeEnabled(false)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        // 改变聚合状态为 blocked -> BLINK_RED
+        _ = try fixture.store.applySessionSignal(.blocked, sessionID: "test", agent: "test", lastEvent: "Error")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertFalse(controller.isHardwareDebugModeEnabled, "退出后应关闭调试模式")
+        XCTAssertNil(controller.hardwareDebugCommand, "退出后调试命令应为 nil")
+        XCTAssertTrue(commander.sentCommands.contains(.blinkRed), "退出调试模式后 snapshot 变化应发送 BLINK_RED 聚合命令")
+    }
+
+    // MARK: - Hardware and Floating Light Consistency
+
+    @MainActor
+    private func assertHardwareMatchesFloating(
+        sessionSignal: AgentSignal,
+        expectedDisplayState: DisplayState,
+        expectedCommand: SignalLightBLECommand,
+        in store: SignalStateStore,
+        model: MenuBarStatusModel,
+        commander: FakeSignalLightCommander,
+        controller: SignalLightBLEController
+    ) async throws {
+        // 通过真实 session 驱动状态，避免空 session 时 aggregate 被 fallback 到 .idle。
+        _ = try store.applySessionSignal(
+            sessionSignal,
+            sessionID: "codex-desktop:test-consistency",
+            agent: "codex-desktop",
+            lastEvent: "TestConsistency"
+        )
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(
+            model.floatingSignalLightSnapshot.aggregate.displayState,
+            expectedDisplayState,
+            "悬浮窗信号灯聚合状态应为 \(expectedDisplayState)"
+        )
+        XCTAssertEqual(
+            commander.sentCommands.last,
+            expectedCommand,
+            "硬件命令应为 \(expectedCommand)"
+        )
+    }
+
+    @MainActor
+    func testHardwareAndFloatingLightConsistencyForGreenStates() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        commander.resetSentCommands()
+
+        try await assertHardwareMatchesFloating(sessionSignal: .idle, expectedDisplayState: .ready, expectedCommand: .green, in: fixture.store, model: model, commander: commander, controller: controller)
+        try await assertHardwareMatchesFloating(sessionSignal: .working, expectedDisplayState: .active, expectedCommand: .green, in: fixture.store, model: model, commander: commander, controller: controller)
+        try await assertHardwareMatchesFloating(sessionSignal: .done, expectedDisplayState: .completed, expectedCommand: .green, in: fixture.store, model: model, commander: commander, controller: controller)
+    }
+
+    @MainActor
+    func testHardwareAndFloatingLightConsistencyForYellowBlinkStates() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        commander.resetSentCommands()
+
+        try await assertHardwareMatchesFloating(sessionSignal: .attention, expectedDisplayState: .needsReview, expectedCommand: .blinkYellow, in: fixture.store, model: model, commander: commander, controller: controller)
+        try await assertHardwareMatchesFloating(sessionSignal: .stale, expectedDisplayState: .stale, expectedCommand: .blinkYellow, in: fixture.store, model: model, commander: commander, controller: controller)
+    }
+
+    @MainActor
+    func testHardwareAndFloatingLightConsistencyForRedBlinkStates() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        commander.resetSentCommands()
+
+        try await assertHardwareMatchesFloating(sessionSignal: .permission, expectedDisplayState: .permission, expectedCommand: .blinkRed, in: fixture.store, model: model, commander: commander, controller: controller)
+        try await assertHardwareMatchesFloating(sessionSignal: .blocked, expectedDisplayState: .blocked, expectedCommand: .blinkRed, in: fixture.store, model: model, commander: commander, controller: controller)
+    }
+
+    @MainActor
+    func testHardwareAndFloatingLightConsistencyForPausedState() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        commander.resetSentCommands()
+
+        try await assertHardwareMatchesFloating(sessionSignal: .off, expectedDisplayState: .paused, expectedCommand: .off, in: fixture.store, model: model, commander: commander, controller: controller)
+    }
+
+    @MainActor
+    func testHardwareDebugModeDecouplesFromFloatingLight() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        commander.resetSentCommands()
+
+        // 悬浮窗为 green
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:test-decouple", agent: "codex-desktop", lastEvent: "TestDecouple")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate.displayState, .active)
+
+        // 硬件调试模式覆盖为 blinkRed
+        controller.setHardwareDebugCommand(.blinkRed)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate.displayState, .active, "悬浮窗状态不应被硬件调试模式改变")
+        XCTAssertEqual(commander.sentCommands.last, .blinkRed, "硬件调试模式下应发送 blinkRed")
+        XCTAssertTrue(controller.isHardwareDebugModeEnabled, "应处于硬件调试模式")
+
+        // 退出硬件调试模式后恢复跟随悬浮窗
+        controller.setHardwareDebugModeEnabled(false)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(commander.sentCommands.last, .green, "退出硬件调试模式后应恢复为 green")
+        XCTAssertFalse(controller.isHardwareDebugModeEnabled, "应退出硬件调试模式")
+    }
+
+    @MainActor
+    func testSoftwareDebugModeDoesNotAffectHardware() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        commander.resetSentCommands()
+
+        // 建立硬件为 green 的基准状态
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:test-sw", agent: "codex-desktop", lastEvent: "TestSW")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(commander.sentCommands.last, .green, "基准状态应为 green")
+        commander.resetSentCommands()
+
+        // 软件调试模式只影响悬浮窗/状态栏，不应改变硬件命令
+        model.setLightDebugModeEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(model.isLightDebugModeEnabled, "应处于软件调试模式")
+        XCTAssertNil(commander.sentCommands.last, "软件调试模式不应触发新的硬件命令")
+    }
 }
 
 @MainActor
@@ -6452,6 +6823,7 @@ private class FakeSignalLightCommander: SignalLightBLECommanding, @unchecked Sen
     private var _currentDeviceID: String?
     private var _currentDeviceName: String?
     private var _isConnected = false
+    private var _sendResult = true
     private var _onDisconnect: (@Sendable () async -> Void)?
 
     var scanAndConnectCallCount: Int {
@@ -6530,6 +6902,16 @@ private class FakeSignalLightCommander: SignalLightBLECommanding, @unchecked Sen
         }
     }
 
+    /// 测试用：配置 send 的返回值（默认 true）。
+    func setSendResult(_ value: Bool) {
+        lock.withLock { _sendResult = value }
+    }
+
+    /// 测试用：清空已记录的发送命令。
+    func resetSentCommands() {
+        lock.withLock { _sentCommands = [] }
+    }
+
     func scanAndConnect() async -> Bool {
         let result = lock.withLock {
             _scanAndConnectCallCount += 1
@@ -6581,7 +6963,7 @@ private class FakeSignalLightCommander: SignalLightBLECommanding, @unchecked Sen
 
     func send(_ command: SignalLightBLECommand) async -> Bool {
         lock.withLock { _sentCommands.append(command) }
-        return true
+        return lock.withLock { _sendResult }
     }
 
     func disconnect() async {
