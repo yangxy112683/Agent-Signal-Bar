@@ -6510,6 +6510,90 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     // MARK: - Hardware and Floating Light Consistency
 
+    /// Regression: 软件灯效（悬浮窗/状态栏）已恢复绿灯，但硬件仍停留在 BLINK_YELLOW。
+    /// 根因是 BLE 订阅了原始 `snapshot.aggregate`，而 UI 使用 `floatingSignalLightSnapshot`
+    /// （含 Agent 范围过滤与时间窗口）；当 codebuddy NeedsReview 仍留在 sessions 字典、
+    /// 但灯效 Agent 未选中 localScript 时，两者会分叉。
+    @MainActor
+    func testHardwareMatchesFloatingLightAfterNeedsReviewWhenScopedAgentsExcludeAttention() async throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let needsReviewAt = now.addingTimeInterval(-2 * 60)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .attention,
+                updatedAt: now,
+                sessions: [
+                    "codebuddy:thread": SessionRecord(
+                        agent: "codebuddy",
+                        signal: .attention,
+                        lastEvent: "NeedsReview",
+                        updatedAt: needsReviewAt
+                    ),
+                    "cursor:main": SessionRecord(
+                        agent: "cursor",
+                        signal: .done,
+                        lastEvent: "ToolDone",
+                        updatedAt: now
+                    ),
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "codebuddy-review",
+                        sessionID: "codebuddy:thread",
+                        agent: "codebuddy",
+                        signal: .attention,
+                        event: "NeedsReview",
+                        updatedAt: needsReviewAt
+                    ),
+                    SignalEventRecord(
+                        id: "cursor-done",
+                        sessionID: "cursor:main",
+                        agent: "cursor",
+                        signal: .done,
+                        event: "ToolDone",
+                        updatedAt: now
+                    ),
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.codexDesktop])
+        model.setSignalLightBLEEnabled(true)
+
+        XCTAssertEqual(
+            model.snapshot.aggregate.displayState,
+            .needsReview,
+            "原始 snapshot 仍应反映 codebuddy 的 attention 聚合"
+        )
+        XCTAssertEqual(
+            model.floatingSignalLightSnapshot.aggregate.displayState,
+            .ready,
+            "灯效 Agent 未覆盖 localScript 时应回到空闲绿灯"
+        )
+
+        UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertEqual(
+            commander.sentCommands.last,
+            .green,
+            "硬件应镜像 floatingSignalLightSnapshot，在软件恢复绿灯后发送 GREEN"
+        )
+    }
+
     @MainActor
     private func assertHardwareMatchesFloating(
         sessionSignal: AgentSignal,
@@ -6520,6 +6604,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         commander: FakeSignalLightCommander,
         controller: SignalLightBLEController
     ) async throws {
+        controller.resetBLECommandDedupStateForTesting()
         // 通过真实 session 驱动状态，避免空 session 时 aggregate 被 fallback 到 .idle。
         _ = try store.applySessionSignal(
             sessionSignal,
@@ -6617,6 +6702,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         model.setSignalLightBLEEnabled(true)
         try? await Task.sleep(nanoseconds: 300_000_000)
         commander.resetSentCommands()
+        controller.resetBLECommandDedupStateForTesting()
 
         // 悬浮窗为 green
         _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:test-decouple", agent: "codex-desktop", lastEvent: "TestDecouple")
@@ -6649,6 +6735,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         model.setSignalLightBLEEnabled(true)
         try? await Task.sleep(nanoseconds: 300_000_000)
         commander.resetSentCommands()
+        controller.resetBLECommandDedupStateForTesting()
 
         // 建立硬件为 green 的基准状态
         _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:test-sw", agent: "codex-desktop", lastEvent: "TestSW")

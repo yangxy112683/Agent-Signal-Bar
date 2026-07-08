@@ -16,8 +16,8 @@ public enum SignalLightBLEConnectionState: Sendable, Equatable {
 // MARK: - Controller
 
 /// 蓝牙信号灯 Service：与 `StatusBarController` / `FloatingSignalWindowController` 平级，
-/// 订阅 `MenuBarStatusModel.$snapshot`，把 `aggregate.displayState` 映射成 `SignalLightBLECommand`
-/// 写入硬件。不引入 TCP daemon（见 ADR-0002）。
+/// 镜像 `MenuBarStatusModel.floatingSignalLightSnapshot.aggregate`（见 ADR-0001），
+/// 映射成 `SignalLightBLECommand` 写入硬件。不引入 TCP daemon（见 ADR-0002）。
 ///
 /// `isSignalLightBLEEnabled` 开关默认关闭；关闭时完全不初始化 `CBCentralManager`，
 /// 避免无硬件用户被蓝牙权限弹窗打扰。
@@ -36,6 +36,10 @@ final class SignalLightBLEController: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var lastSentCommand: SignalLightBLECommand?
     private var isActivated = false
+    /// 合并并串行化 BLE 同步，避免 snapshot/tick/开关等多路触发并发写入同一命令。
+    private var needsBLESync = false
+    private var forceNextBLESync = false
+    private var bleSyncTask: Task<Void, Never>?
 
     // 扫描状态保护：记录进入 .scanning 的时间，避免异常情况下 UI 永远卡在 scanning。
     private var scanningStartTime: Date?
@@ -99,7 +103,7 @@ final class SignalLightBLEController: ObservableObject {
                     if let savedID = self.savedLastDeviceID() {
                         self.startReconnect(deviceID: savedID)
                     } else {
-                        await self.syncCurrentState()
+                        self.scheduleBLESync(force: true)
                     }
                 } else {
                     await self.userDisconnect()
@@ -109,24 +113,64 @@ final class SignalLightBLEController: ObservableObject {
         }
         .store(in: &cancellables)
 
-        // snapshot 变化：映射到 BLE 命令并写入（仅当开关开启时）。
-        model.$snapshot.sink { [weak self] snapshot in
-            Task { @MainActor in
-                guard let self, self.model.isSignalLightBLEEnabled else { return }
-                let command = self.currentBLECommand(for: snapshot)
-                // 命令级去重（Issue #6）：基于 BLE 命令字符串比较，相同命令不重复写入，
-                // 吸收 aggregate 在映射到同一命令的状态间 churn（如 active ↔ completed 都是 GREEN）。
-                guard command != self.lastSentCommand else { return }
-                self.lastSentCommand = command
-                // 写入失败视为隐式断连，立即触发重连（不等 didDisconnectPeripheral 回调）。
-                let ok = await self.commander.send(command)
-                if !ok {
-                    self.handleDisconnect()
-                }
-                await self.updateConnectionState()
-            }
+        // 与状态栏/悬浮窗同频：灯效快照会随 Agent 范围、TTL 展示窗口与时间推进变化，
+        // 不能只订阅原始 `$snapshot`（否则会出现软件已绿灯、硬件仍黄灯的漂移）。
+        bindLightSnapshotSync()
+    }
+
+    /// 订阅所有会影响 `floatingSignalLightSnapshot` 的信号源，并同步 BLE 命令。
+    private func bindLightSnapshotSync() {
+        let sync = { [weak self] in
+            self?.scheduleBLESync()
         }
-        .store(in: &cancellables)
+
+        model.$snapshot.sink { _ in sync() }.store(in: &cancellables)
+        model.$desktopAppSessions.sink { _ in sync() }.store(in: &cancellables)
+        model.$signalLightAgentScopes.sink { _ in sync() }.store(in: &cancellables)
+        model.$signalLightAgentSelectionMode.sink { _ in sync() }.store(in: &cancellables)
+        model.$isMonitoringPaused.sink { _ in sync() }.store(in: &cancellables)
+        model.$statusLightOverride.sink { _ in sync() }.store(in: &cancellables)
+        model.animationClock.$tick.sink { _ in sync() }.store(in: &cancellables)
+    }
+
+    /// 请求一次 BLE 同步；`force` 用于连接/重连后强制重写（硬件状态可能丢失）。
+    private func scheduleBLESync(force: Bool = false) {
+        needsBLESync = true
+        if force {
+            forceNextBLESync = true
+        }
+        guard bleSyncTask == nil else { return }
+
+        bleSyncTask = Task { @MainActor in
+            while self.needsBLESync {
+                self.needsBLESync = false
+                let force = self.forceNextBLESync
+                self.forceNextBLESync = false
+                await self.syncBLECommandIfNeeded(force: force)
+            }
+            self.bleSyncTask = nil
+        }
+    }
+
+    /// 把当前灯效快照映射到 BLE 命令并写入（仅当开关开启且命令变化时）。
+    private func syncBLECommandIfNeeded(force: Bool = false) async {
+        guard model.isSignalLightBLEEnabled else { return }
+        let command = currentBLECommand()
+        // 命令级去重（Issue #6）：基于 BLE 命令字符串比较，相同命令不重复写入，
+        // 吸收 aggregate 在映射到同一命令的状态间 churn（如 active ↔ completed 都是 GREEN）。
+        guard force || command != lastSentCommand else { return }
+        lastSentCommand = command
+        // 写入失败视为隐式断连，立即触发重连（不等 didDisconnectPeripheral 回调）。
+        let ok = await commander.send(command)
+        if !ok {
+            handleDisconnect()
+        }
+        await updateConnectionState()
+    }
+
+    /// 仅测试用：清空命令去重缓存，配合 `FakeSignalLightCommander.resetSentCommands()` 观测下一次写入。
+    func resetBLECommandDedupStateForTesting() {
+        lastSentCommand = nil
     }
 
     /// 用户在 DebugWindowView 点「扫描」按钮触发：扫描附近 `coding-` 设备。
@@ -186,20 +230,19 @@ final class SignalLightBLEController: ObservableObject {
         }
     }
 
-    /// 把当前 snapshot 状态映射成命令并发送一次。
+    /// 把当前灯效快照映射成命令并发送一次。
     /// 重连/连接成功后强制重写一次（约定基线：硬件状态可能丢失）。
     private func syncCurrentState() async {
-        let command = model.snapshot.aggregate.displayState.bleCommand
-        lastSentCommand = command
-        _ = await commander.send(command)
+        scheduleBLESync(force: true)
+        await bleSyncTask?.value
     }
 
-    /// 根据当前调试模式/聚合状态解析应发送的 BLE 命令。
-    private func currentBLECommand(for snapshot: SignalSnapshot) -> SignalLightBLECommand {
+    /// 根据当前调试模式/灯效快照解析应发送的 BLE 命令。
+    private func currentBLECommand() -> SignalLightBLECommand {
         if isHardwareDebugModeEnabled, let hardwareDebugCommand {
             return hardwareDebugCommand
         }
-        return snapshot.aggregate.displayState.bleCommand
+        return model.floatingSignalLightSnapshot.aggregate.displayState.bleCommand
     }
 
     // MARK: - 硬件信号灯调试
@@ -212,7 +255,7 @@ final class SignalLightBLEController: ObservableObject {
             self.isHardwareDebugModeEnabled = enabled
             if enabled {
                 if self.hardwareDebugCommand == nil {
-                    self.hardwareDebugCommand = self.model.snapshot.aggregate.displayState.bleCommand
+                    self.hardwareDebugCommand = self.model.floatingSignalLightSnapshot.aggregate.displayState.bleCommand
                 }
                 await self.sendHardwareDebugCommand()
             } else {
