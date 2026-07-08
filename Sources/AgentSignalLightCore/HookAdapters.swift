@@ -482,27 +482,68 @@ public enum GenericHookAdapter {
     }
 
     public static func agentName(payload: [String: Any], environment: [String: String]) -> String {
-        if let explicit = firstString(
-            payload,
-            keys: ["agent", "agent_name", "source", "source_name", "app", "application", "client", "tool", "runner", "provider"]
-        ) {
-            return explicit.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        let agentKeys = ["agent", "agent_name", "source", "source_name", "app", "application", "client", "tool", "runner", "provider"]
 
-        if let nested = findNestedString(
-            payload,
-            keys: ["agent", "agent_name", "source", "source_name", "app", "application", "client", "tool", "runner", "provider"]
-        ) {
-            return nested
-        }
-
-        for key in ["AGENT_SIGNAL_AGENT", "AGENT_NAME", "AGENT_SOURCE", "AI_AGENT_NAME"] {
-            if let value = environment[key], !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 解析基础 agent 名并记录来源，区分「payload 显式传入」与「fallback 哨兵」。
+        var baseAgent: String?
+        if let explicit = firstString(payload, keys: agentKeys) {
+            baseAgent = explicit.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if let nested = findNestedString(payload, keys: agentKeys) {
+            baseAgent = nested.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            for key in ["AGENT_SIGNAL_AGENT", "AGENT_NAME", "AGENT_SOURCE", "AI_AGENT_NAME"] {
+                if let value = environment[key], !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    baseAgent = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    break
+                }
             }
         }
 
-        return "agent"
+        let isFallbackSentinel = (baseAgent == nil)
+        let resolvedBase = baseAgent ?? "agent"
+
+        // no_cwd_label: true 时直接返回基础 agent 名，不拼接 cwd 标签。
+        if let noLabel = firstBool(payload, keys: ["no_cwd_label"]), noLabel {
+            return resolvedBase
+        }
+
+        // 仅 fallback 哨兵（没有任何明确 agent）时返回 `agent`，不拼 cwd 标签，
+        // 避免把噪声 generic hook 误当成真实本地 agent。
+        if isFallbackSentinel {
+            return "agent"
+        }
+
+        // cwd 只从 payload 读取，不使用进程当前目录作为替代。
+        guard let cwd = firstString(payload, keys: ["cwd", "workspace", "workspace_dir", "project_dir", "repository"]),
+              !cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return resolvedBase
+        }
+
+        let projectName = (cwd as NSString).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !projectName.isEmpty else {
+            return resolvedBase
+        }
+
+        // Cursor 集成终端启发式检测（非官方信号，未来可能失效）。
+        let cursorPrefix = isCursorIntegratedTerminal(environment) ? "cursor_" : ""
+
+        return "\(resolvedBase)(\(cursorPrefix)\(projectName))"
+    }
+
+    /// 启发式判断 generic hook 是否来自 Cursor 集成终端：
+    /// Cursor 实测 TERM_PROGRAM 为 vscode，无稳定专属终端变量，
+    /// 因此根据 VS Code git askpass 环境变量路径是否包含 Cursor 来判断。
+    private static func isCursorIntegratedTerminal(_ environment: [String: String]) -> Bool {
+        for key in ["VSCODE_GIT_ASKPASS_MAIN", "VSCODE_GIT_ASKPASS_NODE"] {
+            guard let value = environment[key]?.lowercased() else { continue }
+            if value.contains("cursor") {
+                return true
+            }
+        }
+        return false
     }
 }
 
@@ -599,6 +640,24 @@ private func firstString(_ payload: [String: Any], keys: [String]) -> String? {
         for (key, value) in payload where normalizedEventName(key) == expectedKey {
             if let value = scalarString(value),
                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value
+            }
+        }
+    }
+
+    return nil
+}
+
+private func firstBool(_ payload: [String: Any], keys: [String]) -> Bool? {
+    for key in keys {
+        if let value = payload[key] as? Bool {
+            return value
+        }
+    }
+
+    for expectedKey in keys.map(normalizedEventName) {
+        for (key, value) in payload where normalizedEventName(key) == expectedKey {
+            if let value = value as? Bool {
                 return value
             }
         }

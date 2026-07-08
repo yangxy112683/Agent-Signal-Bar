@@ -2633,6 +2633,117 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
+    // MARK: - Generic hook cwd agent 标签（ADR-0003）
+
+    func testGenericHookAgentNameAppendsCwdProjectLabel() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/agent-signal-bar"],
+                environment: [:]
+            ),
+            "codebuddy(agent-signal-bar)"
+        )
+    }
+
+    func testGenericHookAgentNameNormalizesProjectCase() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/Agent-Signal-Bar"],
+                environment: [:]
+            ),
+            "codebuddy(agent-signal-bar)"
+        )
+    }
+
+    func testGenericHookAgentNameCursorPrefixForCursorIntegratedTerminal() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/agent-signal-bar"],
+                environment: ["VSCODE_GIT_ASKPASS_MAIN": "/Applications/Cursor.app/Contents/Resources/app/askpass.sh"]
+            ),
+            "codebuddy(cursor_agent-signal-bar)"
+        )
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/agent-signal-bar"],
+                environment: ["VSCODE_GIT_ASKPASS_NODE": "/Applications/Cursor.app/Contents/Resources/app/node"]
+            ),
+            "codebuddy(cursor_agent-signal-bar)"
+        )
+    }
+
+    func testGenericHookAgentNameNoCwdLabelOptOut() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "gemini", "cwd": "/Users/me/work/demo", "no_cwd_label": true],
+                environment: [:]
+            ),
+            "gemini"
+        )
+    }
+
+    func testGenericHookAgentNameKeepsAgentWhenCwdMissing() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(payload: ["agent": "gemini"], environment: [:]),
+            "gemini"
+        )
+        // 不使用进程当前目录作为替代。
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(payload: ["agent": "gemini", "workspace_dir": ""], environment: [:]),
+            "gemini"
+        )
+    }
+
+    func testGenericHookAgentNameExplicitAgentStillAppendsCwdLabel() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "gemini", "cwd": "/Users/me/work/demo"],
+                environment: [:]
+            ),
+            "gemini(demo)"
+        )
+    }
+
+    func testGenericHookAgentNameFallbackSentinelIgnoresCwd() {
+        // 无明确 agent、仅有 cwd 时返回 fallback 哨兵值 `agent`，不拼成 agent(project)。
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(payload: ["cwd": "/Users/me/work/demo"], environment: [:]),
+            "agent"
+        )
+    }
+
+    func testGenericHookAgentNameFromEnvironmentVariableAppendsCwdLabel() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["cwd": "/Users/me/work/demo"],
+                environment: ["AGENT_NAME": "gemini"]
+            ),
+            "gemini(demo)"
+        )
+    }
+
+    func testGenericHookAgentNameExplicitAgentSentinelAppendsCwdLabel() {
+        // payload 显式传入 agent: "agent" 且 payload 有 cwd 时，按显式 payload agent 处理。
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "agent", "cwd": "/Users/me/work/demo"],
+                environment: [:]
+            ),
+            "agent(demo)"
+        )
+    }
+
+    func testGenericHookAgentNameCursorPrefixDoesNotBreakWhenAbsent() {
+        // 非 Cursor 的普通 vscode 环境不产生 cursor_ 前缀。
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/agent-signal-bar"],
+                environment: ["TERM_PROGRAM": "vscode"]
+            ),
+            "codebuddy(agent-signal-bar)"
+        )
+    }
+
     func testClaudeHookMappingCoversAttentionAndStopFailures() {
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "UserPromptExpansion", payload: [:]) == .thinking)
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "Notification", payload: [:]).displayState == .needsReview)
