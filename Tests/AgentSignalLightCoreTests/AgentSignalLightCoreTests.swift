@@ -2704,6 +2704,14 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
+    func testGenericHookAgentNameSkipsLabelWhenCwdIsRoot() {
+        // cwd 为根目录 "/" 时 lastPathComponent 仍是 "/"，不是有效项目名，不应拼出 agent(/)。
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(payload: ["agent": "codebuddy", "cwd": "/"], environment: [:]),
+            "codebuddy"
+        )
+    }
+
     func testGenericHookAgentNameFallbackSentinelIgnoresCwd() {
         // 无明确 agent、仅有 cwd 时返回 fallback 哨兵值 `agent`，不拼成 agent(project)。
         XCTAssertEqual(

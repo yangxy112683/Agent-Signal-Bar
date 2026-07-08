@@ -523,7 +523,8 @@ public enum GenericHookAdapter {
         let projectName = (cwd as NSString).lastPathComponent
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        guard !projectName.isEmpty else {
+        // 根目录 "/" 的 lastPathComponent 仍是 "/"，不是有效项目名，跳过标签拼接。
+        guard !projectName.isEmpty, projectName != "/" else {
             return resolvedBase
         }
 
