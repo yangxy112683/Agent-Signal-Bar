@@ -35,3 +35,15 @@ _Avoid_: 警告、红黄状态
 **灯效时段（Display Window）**:
 某个 session/事件在介入态推导中可见的时长（如 completed 与 attention 类的展示窗口）。不同展示时段有各自命名与语义；completed/attention 类与记录态的剪枝 TTL 共用同一套可配置时长，不许硬编码。
 _Avoid_: TTL、过期时间、窗口期
+
+**Agent**:
+其活动被信号灯展示的本地程序（如 `codebuddy`、Claude Code、Codex Desktop）。不是运行它的编辑器。
+_Avoid_: 把 IDE 宿主当成 Agent 源
+
+**IDE Host（IDE 宿主）**:
+CLI Agent 所在的编辑器。Generic hook 用宿主前缀区分「同一个 Agent、不同编辑器」：Cursor 为 `cursor_`，WorkBuddy 为 `workbuddy_`。前缀打在该宿主里发出的**所有** generic hook 上，不限某个 Agent。IDE Host 不是独立数据源，也不等于 Codex Desktop 那种免 hook 日志监控。
+_Avoid_: IDE 源、Cursor 监控、把宿主识别说成「接入了一种新 Agent」
+
+**WorkBuddy**:
+一种 IDE Host，仅指 `WorkBuddy.app`（bundle id `com.tencent.workbuddy.mac`）。展示前缀固定为 `workbuddy_`，与 Cursor 的 `cursor_` 并列。`CodeBuddy.app` 与 `CodeBuddy CN.app` 不是 WorkBuddy。
+_Avoid_: 用 CodeBuddy、CodeBuddy IDE、WorkBuddy Agent 指代这个宿主；不要把 CodeBuddy.app / CodeBuddy CN.app 算进 WorkBuddy
