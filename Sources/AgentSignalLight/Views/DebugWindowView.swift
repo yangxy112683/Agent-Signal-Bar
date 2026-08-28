@@ -3628,6 +3628,23 @@ struct DebugWindowView: View {
                 )
             }
 
+            Divider()
+
+            connectionItem(
+                title: model.text("WorkBuddy Hook（可选）", "WorkBuddy Hook (Optional)"),
+                subtitle: model.text(
+                    "把 generic hook 写入 WorkBuddy 托管 CLI 配置",
+                    "Writes the generic hook into the WorkBuddy-hosted CLI config"
+                ),
+                systemImage: "terminal"
+            ) {
+                hookActionButtons(
+                    preview: { model.previewWorkBuddyHookInstall() },
+                    install: { model.installWorkBuddyHooks() },
+                    uninstall: { model.uninstallWorkBuddyHooks() }
+                )
+            }
+
             if model.isHookInstallRunning {
                 ProgressView()
                     .controlSize(.small)

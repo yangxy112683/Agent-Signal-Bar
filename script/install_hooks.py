@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely merge Agent Signal Bar hooks into local Codex and Claude configs."""
+"""Safely merge Agent Signal Bar hooks into local Codex, Claude, and WorkBuddy configs."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parents[1]
 CODEX_WRAPPER = ROOT_DIR / "scripts" / "codex-signal-hook"
 CLAUDE_WRAPPER = ROOT_DIR / "scripts" / "claude-code-signal-hook"
+GENERIC_WRAPPER = ROOT_DIR / "scripts" / "generic-agent-signal-hook"
 
 CODEX_EVENTS = [
     "SessionStart",
@@ -63,6 +64,21 @@ CLAUDE_EVENTS = [
     "StopFailure",
     "WorktreeCreate",
     "WorktreeRemove",
+    "SessionEnd",
+]
+
+# WorkBuddy hosted CLI is CodeBuddy CLI reading ~/.workbuddy/settings.json.
+# Register the generic wrapper so Swift GenericHookAdapter owns display labels.
+WORKBUDDY_EVENTS = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Notification",
+    "Stop",
+    "PermissionRequest",
+    "SubagentStart",
+    "SubagentStop",
     "SessionEnd",
 ]
 
@@ -127,11 +143,11 @@ class ConcurrentConfigChangeError(RuntimeError):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Merge Agent Signal Bar hook commands into Codex and Claude Code JSON configs."
+        description="Merge Agent Signal Bar hook commands into Codex, Claude Code, and WorkBuddy hosted CLI JSON configs."
     )
     parser.add_argument(
         "--target",
-        choices=["all", "codex", "claude"],
+        choices=["all", "codex", "claude", "workbuddy"],
         default="all",
         help="Which config to update. Defaults to all.",
     )
@@ -214,6 +230,15 @@ def specs_for(home: Path, *, codex_scope: str, project_root: Path) -> dict[str, 
         path=home / ".claude" / "settings.json",
         wrapper=CLAUDE_WRAPPER,
         events=CLAUDE_EVENTS,
+        pass_event_argument=False,
+        matcher="",
+    )
+
+    specs["workbuddy"] = TargetSpec(
+        name="WorkBuddy Hosted CLI",
+        path=home / ".workbuddy" / "settings.json",
+        wrapper=GENERIC_WRAPPER,
+        events=WORKBUDDY_EVENTS,
         pass_event_argument=False,
         matcher="",
     )

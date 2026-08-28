@@ -20,6 +20,7 @@ CODEX_HOOKS_FILE="$DIAGNOSTIC_HOME/.codex/hooks.json"
 CODEX_PROJECT_HOOKS_FILE="$ROOT_DIR/.codex/hooks.json"
 CLAUDE_SETTINGS_FILE="$DIAGNOSTIC_HOME/.claude/settings.json"
 CLAUDE_DESKTOP_LOG="$DIAGNOSTIC_HOME/Library/Logs/Claude/main.log"
+WORKBUDDY_SETTINGS_FILE="$DIAGNOSTIC_HOME/.workbuddy/settings.json"
 # shellcheck source=lib/developer_dir.sh
 source "$ROOT_DIR/script/lib/developer_dir.sh"
 
@@ -773,6 +774,38 @@ else
   warn "Claude settings file not found at $CLAUDE_SETTINGS_FILE; run ./script/install_hooks.py --target claude --install"
 fi
 
+if [[ -f "$WORKBUDDY_SETTINGS_FILE" ]]; then
+  if /usr/bin/python3 - "$WORKBUDDY_SETTINGS_FILE" "$ROOT_DIR/scripts/generic-agent-signal-hook" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text())
+needle = sys.argv[2]
+events = [
+    "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+    "Notification", "Stop", "PermissionRequest", "SubagentStart",
+    "SubagentStop", "SessionEnd",
+]
+hooks = data.get("hooks", {})
+missing = []
+for event in events:
+    blocks = hooks.get(event, [])
+    text = json.dumps(blocks, ensure_ascii=False)
+    if needle not in text:
+        missing.append(event)
+if missing:
+    raise SystemExit("missing events: " + ", ".join(missing))
+PY
+  then
+    pass "WorkBuddy hosted CLI hooks configured for current checkout"
+  else
+    warn "WorkBuddy settings file exists but is missing current checkout wrapper/events; run ./script/install_hooks.py --target workbuddy --install"
+  fi
+else
+  warn "WorkBuddy settings file not found at $WORKBUDDY_SETTINGS_FILE; run ./script/install_hooks.py --target workbuddy --install"
+fi
+
 if command -v claude >/dev/null 2>&1; then
   pass "Claude Code CLI found at $(command -v claude)"
 else
@@ -899,7 +932,7 @@ PY
 
   TMP_HOOK_HOME="$(mktemp -d)"
   if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_HOOK_HOME" --dry-run >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
-    if /usr/bin/python3 - "$DOCTOR_OUT" "$APP_RESOURCE_ROOT/scripts/codex-signal-hook" "$APP_RESOURCE_ROOT/scripts/claude-code-signal-hook" <<'PY'
+    if /usr/bin/python3 - "$DOCTOR_OUT" "$APP_RESOURCE_ROOT/scripts/codex-signal-hook" "$APP_RESOURCE_ROOT/scripts/claude-code-signal-hook" "$APP_RESOURCE_ROOT/scripts/generic-agent-signal-hook" <<'PY'
 import sys
 from pathlib import Path
 
@@ -908,6 +941,8 @@ if sys.argv[2] not in text:
     raise SystemExit("missing bundled Codex wrapper path")
 if sys.argv[3] not in text:
     raise SystemExit("missing bundled Claude wrapper path")
+if sys.argv[4] not in text:
+    raise SystemExit("missing bundled WorkBuddy generic wrapper path")
 PY
     then
       pass "bundled hook installer targets app resources"
@@ -920,7 +955,7 @@ PY
   fi
 
   TMP_MIGRATION_HOME="$(mktemp -d)"
-  mkdir -p "$TMP_MIGRATION_HOME/.codex" "$TMP_MIGRATION_HOME/.claude"
+  mkdir -p "$TMP_MIGRATION_HOME/.codex" "$TMP_MIGRATION_HOME/.claude" "$TMP_MIGRATION_HOME/.workbuddy"
   cat >"$TMP_MIGRATION_HOME/.codex/hooks.json" <<'JSON'
 {
   "hooks": {
@@ -972,17 +1007,42 @@ JSON
   }
 }
 JSON
+  cat >"$TMP_MIGRATION_HOME/.workbuddy/settings.json" <<'JSON'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/old/path/scripts/generic-agent-signal-hook'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "echo keep-workbuddy",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
   if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_MIGRATION_HOME" --install >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
-    if /usr/bin/python3 - "$TMP_MIGRATION_HOME" "$APP_RESOURCE_ROOT/scripts/codex-signal-hook" "$APP_RESOURCE_ROOT/scripts/claude-code-signal-hook" <<'PY'
+    if /usr/bin/python3 - "$TMP_MIGRATION_HOME" "$APP_RESOURCE_ROOT/scripts/codex-signal-hook" "$APP_RESOURCE_ROOT/scripts/claude-code-signal-hook" "$APP_RESOURCE_ROOT/scripts/generic-agent-signal-hook" <<'PY'
 import sys
 from pathlib import Path
 
 home = Path(sys.argv[1])
 codex_wrapper = sys.argv[2]
 claude_wrapper = sys.argv[3]
+generic_wrapper = sys.argv[4]
 checks = [
     (home / ".codex/hooks.json", codex_wrapper, "old/path/scripts/codex-signal-hook", "echo keep-codex"),
     (home / ".claude/settings.json", claude_wrapper, "old/path/scripts/claude-code-signal-hook", "echo keep-claude"),
+    (home / ".workbuddy/settings.json", generic_wrapper, "old/path/scripts/generic-agent-signal-hook", "echo keep-workbuddy"),
 ]
 for path, wrapper, stale, keep in checks:
     text = path.read_text()
@@ -1009,7 +1069,7 @@ PY
   fi
 
   TMP_REMOVE_HOME="$(mktemp -d)"
-  mkdir -p "$TMP_REMOVE_HOME/.codex" "$TMP_REMOVE_HOME/.claude"
+  mkdir -p "$TMP_REMOVE_HOME/.codex" "$TMP_REMOVE_HOME/.claude" "$TMP_REMOVE_HOME/.workbuddy"
   cat >"$TMP_REMOVE_HOME/.codex/hooks.json" <<JSON
 {
   "hooks": {
@@ -1056,6 +1116,29 @@ JSON
   }
 }
 JSON
+  cat >"$TMP_REMOVE_HOME/.workbuddy/settings.json" <<JSON
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'$APP_RESOURCE_ROOT/scripts/generic-agent-signal-hook'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "echo keep-workbuddy",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
   if /usr/bin/python3 "$APP_RESOURCE_ROOT/script/install_hooks.py" --target all --home "$TMP_REMOVE_HOME" --remove --install >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     if /usr/bin/python3 - "$TMP_REMOVE_HOME" <<'PY'
 import sys
@@ -1065,6 +1148,7 @@ home = Path(sys.argv[1])
 checks = [
     (home / ".codex/hooks.json", "codex-signal-hook", "echo keep-codex"),
     (home / ".claude/settings.json", "claude-code-signal-hook", "echo keep-claude"),
+    (home / ".workbuddy/settings.json", "generic-agent-signal-hook", "echo keep-workbuddy"),
 ]
 for path, removed, keep in checks:
     text = path.read_text()

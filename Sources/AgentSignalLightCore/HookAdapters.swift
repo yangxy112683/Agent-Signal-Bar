@@ -528,10 +528,19 @@ public enum GenericHookAdapter {
             return resolvedBase
         }
 
-        // Cursor 集成终端启发式检测（非官方信号，未来可能失效）。
-        let cursorPrefix = isCursorIntegratedTerminal(environment) ? "cursor_" : ""
+        let hostPrefix = ideHostPrefix(environment)
+        return "\(resolvedBase)(\(hostPrefix)\(projectName))"
+    }
 
-        return "\(resolvedBase)(\(cursorPrefix)\(projectName))"
+    /// 先 Cursor，再 WorkBuddy；最多一个前缀。同时命中时 `cursor_` 赢。
+    private static func ideHostPrefix(_ environment: [String: String]) -> String {
+        if isCursorIntegratedTerminal(environment) {
+            return "cursor_"
+        }
+        if isWorkBuddyIDEHost(environment) {
+            return "workbuddy_"
+        }
+        return ""
     }
 
     /// 启发式判断 generic hook 是否来自 Cursor 集成终端：
@@ -545,6 +554,35 @@ public enum GenericHookAdapter {
             }
         }
         return false
+    }
+
+    /// WorkBuddy 仅指 WorkBuddy.app。名字键等于 `WorkBuddy`，或路径键含 `WorkBuddy.app`。
+    /// 环境键与值都大小写不敏感。不把 `CODEBUDDY_*` 当主信号，不用子串 `buddy`。
+    private static func isWorkBuddyIDEHost(_ environment: [String: String]) -> Bool {
+        for key in ["WORKBUDDY_APP_NAME", "WORKBUDDY_APPLICATION_NAME"] {
+            if let value = environmentValue(environment, key: key),
+               value.compare("WorkBuddy", options: .caseInsensitive) == .orderedSame {
+                return true
+            }
+        }
+        for key in ["WORKBUDDY_APP_PATH", "WORKBUDDY_RESOURCES_PATH"] {
+            if let value = environmentValue(environment, key: key),
+               value.lowercased().contains("workbuddy.app") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func environmentValue(_ environment: [String: String], key: String) -> String? {
+        if let exact = environment[key], !exact.isEmpty {
+            return exact
+        }
+        let lowered = key.lowercased()
+        for (envKey, value) in environment where envKey.lowercased() == lowered && !value.isEmpty {
+            return value
+        }
+        return nil
     }
 }
 

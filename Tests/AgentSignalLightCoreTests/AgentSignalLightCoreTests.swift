@@ -12577,6 +12577,143 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
+    // MARK: - Generic hook WorkBuddy IDE Host 前缀（ADR-0004 / #18）
+
+    func testGenericHookAgentNameWorkBuddyPrefixFromAppName() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ),
+            "codebuddy(workbuddy_demo)"
+        )
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: ["WORKBUDDY_APPLICATION_NAME": "WorkBuddy"]
+            ),
+            "codebuddy(workbuddy_demo)"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyPrefixIsCaseInsensitive() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: ["WORKBUDDY_APP_NAME": "workbuddy"]
+            ),
+            "codebuddy(workbuddy_demo)"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyPrefixFromAppPathAlone() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "WORKBUDDY_APP_PATH": "/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+                ]
+            ),
+            "codebuddy(workbuddy_demo)"
+        )
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "WORKBUDDY_RESOURCES_PATH": "/Applications/WorkBuddy.app/Contents/Resources"
+                ]
+            ),
+            "codebuddy(workbuddy_demo)"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyPrefixAppliesToAnyAgent() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "gemini", "cwd": "/Users/me/work/demo"],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ),
+            "gemini(workbuddy_demo)"
+        )
+    }
+
+    func testGenericHookAgentNameCursorWinsOverWorkBuddy() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "VSCODE_GIT_ASKPASS_MAIN": "/Applications/Cursor.app/Contents/Resources/app/askpass.sh",
+                    "WORKBUDDY_APP_NAME": "WorkBuddy"
+                ]
+            ),
+            "codebuddy(cursor_demo)"
+        )
+    }
+
+    func testGenericHookAgentNameIgnoresCodeBuddyHostSignals() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: ["CODEBUDDY_HOST": "workbuddy-desktop"]
+            ),
+            "codebuddy(demo)"
+        )
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "WORKBUDDY_APP_PATH": "/Applications/CodeBuddy.app/Contents/Resources/app.asar"
+                ]
+            ),
+            "codebuddy(demo)"
+        )
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "WORKBUDDY_APP_PATH": "/Applications/CodeBuddy CN.app/Contents/Resources/app.asar"
+                ]
+            ),
+            "codebuddy(demo)"
+        )
+            "codebuddy(demo)"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyWithoutCwdKeepsBaseAgent() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy"],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ),
+            "codebuddy"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyHonorsNoCwdLabel() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: [
+                    "agent": "gemini",
+                    "cwd": "/Users/me/work/demo",
+                    "no_cwd_label": true
+                ],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ),
+            "gemini"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyFallbackSentinelIgnoresCwd() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["cwd": "/Users/me/work/demo"],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ),
+            "agent"
+        )
+    }
+
     func testClaudeHookMappingCoversAttentionAndStopFailures() {
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "UserPromptExpansion", payload: [:]) == .thinking)
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "InstructionsLoaded", payload: [:]) == .sessionStart)

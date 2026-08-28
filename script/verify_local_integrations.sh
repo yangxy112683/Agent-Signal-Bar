@@ -148,4 +148,12 @@ AGENT_SIGNAL_LIGHT_STATE_FILE="$PRIORITY_STATE" ./scripts/agent-signal working \
 expect_json "local script working does not override blocked alert" \
   'data["aggregate"] == "blocked" and sessions["local-script-alert"]["signal"] == "blocked" and sessions["local-script"]["signal"] == "working"'
 
+CLI_OVERRIDE_STATE="$STATE_ROOT/cli-agent-override.json"
+printf '{"event":"AgentStarted","agent":"codebuddy","cwd":"/tmp/demo","session_id":"cli-override"}' \
+  | WORKBUDDY_APP_NAME=WorkBuddy AGENT_SIGNAL_LIGHT_STATE_FILE="$CLI_OVERRIDE_STATE" \
+    ./scripts/generic-agent-signal-hook --agent codebuddy
+AGENT_SIGNAL_LIGHT_STATE_FILE="$CLI_OVERRIDE_STATE" ./scripts/agent-signal status --json >"$OUTPUT_FILE"
+expect_json "CLI --agent stays a hard override and does not splice WorkBuddy cwd labels" \
+  'sessions["cli-override"]["agent"] == "codebuddy"'
+
 echo "local integration verifier: ok"

@@ -23,7 +23,7 @@ usage: $0 [--remove-hooks] [--hook-home DIR] [--purge-state] [--no-kill] [--no-l
 Uninstall Agent Signal Bar from the current user's Applications directory.
 
 Options:
-  --remove-hooks  Remove Agent Signal Bar hooks from Codex and Claude config.
+  --remove-hooks  Remove Agent Signal Bar hooks from Codex, Claude, and WorkBuddy hosted CLI config.
   --hook-home DIR Use DIR for hook config paths. Intended for explicit alternate-home installs.
   --purge-state   Remove the state directory. Defaults to $STATE_DIR.
   --no-kill       Do not terminate running AgentSignalLight processes.

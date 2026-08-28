@@ -27,6 +27,14 @@ struct HookInstallManager: Sendable {
         )
     }
 
+    func previewWorkBuddy() throws -> HookInstallResult {
+        let root = try hookRoot()
+        return try runInstallHooks(
+            hookRoot: root,
+            arguments: ["--target", "workbuddy", "--dry-run"]
+        )
+    }
+
     func install() throws -> HookInstallResult {
         let root = try hookRoot()
         return try runInstallHooks(
@@ -64,6 +72,22 @@ struct HookInstallManager: Sendable {
         return try runInstallHooks(
             hookRoot: root,
             arguments: ["--target", "claude", "--remove", "--install"]
+        )
+    }
+
+    func installWorkBuddy() throws -> HookInstallResult {
+        let root = try hookRoot()
+        return try runInstallHooks(
+            hookRoot: root,
+            arguments: ["--target", "workbuddy", "--install"]
+        )
+    }
+
+    func uninstallWorkBuddy() throws -> HookInstallResult {
+        let root = try hookRoot()
+        return try runInstallHooks(
+            hookRoot: root,
+            arguments: ["--target", "workbuddy", "--remove", "--install"]
         )
     }
 

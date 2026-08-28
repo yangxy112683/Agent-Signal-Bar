@@ -2207,6 +2207,24 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
+    func previewWorkBuddyHookInstall() {
+        runHookInstall(operation: .preview) { manager in
+            try manager.previewWorkBuddy()
+        }
+    }
+
+    func installWorkBuddyHooks() {
+        runHookInstall(operation: .install) { manager in
+            try manager.installWorkBuddy()
+        }
+    }
+
+    func uninstallWorkBuddyHooks() {
+        runHookInstall(operation: .uninstall) { manager in
+            try manager.uninstallWorkBuddy()
+        }
+    }
+
     func openCodex() {
         openAgentApplication(appName: "Codex", displayName: "Codex")
     }

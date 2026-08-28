@@ -372,6 +372,85 @@ struct AgentSignalChecks {
             GenericHookAdapter.agentName(payload: ["source": "local-agent"], environment: [:]) == "local-agent",
             "generic hook should read agent/source names from payload"
         )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: ["WORKBUDDY_APP_NAME": "workbuddy"]
+            ) == "codebuddy(workbuddy_demo)",
+            "WorkBuddy IDE Host should prefix generic hook display names"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "WORKBUDDY_APP_PATH": "/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+                ]
+            ) == "codebuddy(workbuddy_demo)",
+            "WorkBuddy.app path alone should be enough to prefix"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "gemini", "cwd": "/Users/me/work/demo"],
+                environment: ["WORKBUDDY_APPLICATION_NAME": "WorkBuddy"]
+            ) == "gemini(workbuddy_demo)",
+            "WorkBuddy prefix should apply to any generic agent"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "VSCODE_GIT_ASKPASS_MAIN": "/Applications/Cursor.app/askpass.sh",
+                    "WORKBUDDY_APP_NAME": "WorkBuddy"
+                ]
+            ) == "codebuddy(cursor_demo)",
+            "Cursor askpass should win when Cursor and WorkBuddy both match"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: ["CODEBUDDY_HOST": "workbuddy-desktop"]
+            ) == "codebuddy(demo)",
+            "CODEBUDDY_* must not be treated as a WorkBuddy host signal"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "WORKBUDDY_APP_PATH": "/Applications/CodeBuddy.app/Contents/Resources/app.asar"
+                ]
+            ) == "codebuddy(demo)",
+            "CodeBuddy.app path must not receive a workbuddy_ prefix"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
+                environment: [
+                    "WORKBUDDY_APP_PATH": "/Applications/CodeBuddy CN.app/Contents/Resources/app.asar"
+                ]
+            ) == "codebuddy(demo)",
+            "CodeBuddy CN.app path must not receive a workbuddy_ prefix"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "codebuddy"],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ) == "codebuddy",
+            "WorkBuddy without cwd should keep the base agent name"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "gemini", "cwd": "/Users/me/work/demo", "no_cwd_label": true],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ) == "gemini",
+            "no_cwd_label should skip WorkBuddy host prefix"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: ["cwd": "/Users/me/work/demo"],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ) == "agent",
+            "fallback sentinel agent must not gain a WorkBuddy cwd label"
+        )
     }
 
     private static func checkDoneClearsPermissionSession() throws {

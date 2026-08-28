@@ -61,7 +61,7 @@ INSTALL_DIR="$TMP_ROOT/Applications"
 STATE_DIR="$TMP_ROOT/agent-signal-state"
 LAUNCH_AGENT_DIR="$TMP_HOME/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$BUNDLE_ID.plist"
-mkdir -p "$TMP_HOME/.codex" "$TMP_HOME/.claude" "$LAUNCH_AGENT_DIR" "$STATE_DIR"
+mkdir -p "$TMP_HOME/.codex" "$TMP_HOME/.claude" "$TMP_HOME/.workbuddy" "$LAUNCH_AGENT_DIR" "$STATE_DIR"
 
 HOME="$TMP_HOME" \
 AGENT_SIGNAL_APP_INSTALL_DIR="$INSTALL_DIR" \
@@ -92,6 +92,7 @@ PLIST
 
 CODEX_WRAPPER="$INSTALLED_APP/Contents/Resources/scripts/codex-signal-hook"
 CLAUDE_WRAPPER="$INSTALLED_APP/Contents/Resources/scripts/claude-code-signal-hook"
+GENERIC_WRAPPER="$INSTALLED_APP/Contents/Resources/scripts/generic-agent-signal-hook"
 cat >"$TMP_HOME/.codex/hooks.json" <<JSON
 {
   "hooks": {
@@ -138,6 +139,29 @@ cat >"$TMP_HOME/.claude/settings.json" <<JSON
   }
 }
 JSON
+cat >"$TMP_HOME/.workbuddy/settings.json" <<JSON
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'$GENERIC_WRAPPER'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "echo keep-workbuddy",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
 printf '{"aggregate":"working"}\n' >"$STATE_DIR/status.json"
 
 HOME="$TMP_HOME" \
@@ -163,6 +187,7 @@ home = Path(sys.argv[1])
 checks = [
     (home / ".codex/hooks.json", "codex-signal-hook", "echo keep-codex"),
     (home / ".claude/settings.json", "claude-code-signal-hook", "echo keep-claude"),
+    (home / ".workbuddy/settings.json", "generic-agent-signal-hook", "echo keep-workbuddy"),
 ]
 for path, removed, keep in checks:
     text = path.read_text()
