@@ -338,6 +338,14 @@ public final class SignalStateStore: @unchecked Sendable {
                 updatedAt: eventDate
             )
 
+            if shouldIgnoreNotificationAfterCompletion(
+                existing: document.sessions[sessionID] ?? existingBeforePrune,
+                incomingSignal: signal
+            ) {
+                updateAggregateAfterPruning(in: &document, pruneResult: pruneResult)
+                return document.snapshot(stateFileURL: stateFileURL)
+            }
+
             switch signal {
             case .off, .pause, .paused:
                 document.sessions.removeAll()
@@ -572,13 +580,21 @@ private extension SignalStateStore {
         }
     }
 
+    func shouldIgnoreNotificationAfterCompletion(
+        existing: SessionRecord?,
+        incomingSignal: AgentSignal
+    ) -> Bool {
+        guard let existing else { return false }
+        return existing.signal.displayState == .completed && incomingSignal == .notification
+    }
+
     func shouldHoldTransientAlert(
         existing: SessionRecord?,
         incomingSignal: AgentSignal,
         updatedAt eventDate: Date
     ) -> Bool {
         guard let existing,
-              isTransientAlert(existing.signal.displayState),
+              isTransientAlert(existing.signal),
               isResolvingOrLowerPriorityAlert(incomingSignal.displayState)
         else {
             return false
@@ -587,8 +603,13 @@ private extension SignalStateStore {
         return eventDate.timeIntervalSince(existing.updatedAt) <= Self.transientAlertHoldWindow
     }
 
-    func isTransientAlert(_ displayState: DisplayState) -> Bool {
-        displayState == .permission || displayState == .needsReview
+    func isTransientAlert(_ signal: AgentSignal) -> Bool {
+        switch signal {
+        case .permission, .permissionRequest:
+            return true
+        default:
+            return false
+        }
     }
 
     func isResolvingOrLowerPriorityAlert(_ displayState: DisplayState) -> Bool {

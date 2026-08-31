@@ -12585,14 +12585,14 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
                 environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
             ),
-            "codebuddy(workbuddy_demo)"
+            "workbuddy(demo)"
         )
         XCTAssertEqual(
             GenericHookAdapter.agentName(
                 payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
                 environment: ["WORKBUDDY_APPLICATION_NAME": "WorkBuddy"]
             ),
-            "codebuddy(workbuddy_demo)"
+            "workbuddy(demo)"
         )
     }
 
@@ -12602,7 +12602,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
                 environment: ["WORKBUDDY_APP_NAME": "workbuddy"]
             ),
-            "codebuddy(workbuddy_demo)"
+            "workbuddy(demo)"
         )
     }
 
@@ -12614,7 +12614,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
                     "WORKBUDDY_APP_PATH": "/Applications/WorkBuddy.app/Contents/Resources/app.asar"
                 ]
             ),
-            "codebuddy(workbuddy_demo)"
+            "workbuddy(demo)"
         )
         XCTAssertEqual(
             GenericHookAdapter.agentName(
@@ -12623,7 +12623,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
                     "WORKBUDDY_RESOURCES_PATH": "/Applications/WorkBuddy.app/Contents/Resources"
                 ]
             ),
-            "codebuddy(workbuddy_demo)"
+            "workbuddy(demo)"
         )
     }
 
@@ -12633,7 +12633,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 payload: ["agent": "gemini", "cwd": "/Users/me/work/demo"],
                 environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
             ),
-            "gemini(workbuddy_demo)"
+            "workbuddy(demo)"
         )
     }
 
@@ -12676,8 +12676,35 @@ final class AgentSignalLightCoreTests: XCTestCase {
             ),
             "codebuddy(demo)"
         )
-            "codebuddy(demo)"
+    }
+
+    func testGenericHookChooseSignalMapsErrorEventToRecoverableError() {
+        XCTAssertEqual(
+            GenericHookAdapter.chooseSignal(eventName: "Error", payload: [:]),
+            .error
         )
+        XCTAssertEqual(
+            GenericHookAdapter.chooseSignal(eventName: "Error", payload: [:]).displayState,
+            .needsReview
+        )
+        XCTAssertEqual(
+            GenericHookAdapter.chooseSignal(eventName: "tool-error", payload: [:]),
+            .blocked
+        )
+    }
+
+    func testGenericHookErrorClearsOnAgentFinished() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        _ = try fixture.store.applySessionSignal(.error, sessionID: "cursor-main", agent: "cursor", lastEvent: "Error")
+        let afterError = fixture.store.readSnapshot()
+        XCTAssertEqual(afterError.sessions.first?.signal, .error)
+
+        _ = try fixture.store.applySessionSignal(.done, sessionID: "cursor-main", agent: "cursor", lastEvent: "AgentFinished")
+        let afterDone = fixture.store.readSnapshot()
+        XCTAssertEqual(afterDone.sessions.first?.signal, .done)
+        XCTAssertEqual(afterDone.aggregate, .done)
     }
 
     func testGenericHookAgentNameWorkBuddyWithoutCwdKeepsBaseAgent() {
@@ -12686,7 +12713,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 payload: ["agent": "codebuddy"],
                 environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
             ),
-            "codebuddy"
+            "workbuddy"
         )
     }
 
@@ -12700,7 +12727,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 ],
                 environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
             ),
-            "gemini"
+            "workbuddy"
         )
     }
 
@@ -12712,6 +12739,459 @@ final class AgentSignalLightCoreTests: XCTestCase {
             ),
             "agent"
         )
+    }
+
+    // MARK: - WorkBuddy session 合并与噪声过滤（#17 follow-up）
+
+    private static let workbuddyEnvironment: [String: String] = [
+        "WORKBUDDY_APP_NAME": "WorkBuddy",
+        "WORKBUDDY_APP_PATH": "/Applications/WorkBuddy.app/Contents/Resources/app.asar"
+    ]
+
+    func testGenericHookAgentNameMapsWorkBuddyHostLabelToWorkbuddyDisplayName() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: [
+                    "agent": "WorkBuddy",
+                    "cwd": "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+                ],
+                environment: Self.workbuddyEnvironment
+            ),
+            "workbuddy"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyUsesProjectCacheForPlayground() throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-project-names-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: cacheURL)
+            WorkBuddyProjectNameCache.resetForTesting()
+        }
+
+        let projectID = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        let json = """
+        {"version":1,"projects":{"\(projectID)":{"displayName":"bblock"}}}
+        """
+        try json.write(to: cacheURL, atomically: true, encoding: .utf8)
+        WorkBuddyProjectNameCache.cacheFileURLOverride = cacheURL
+
+        var environment = Self.workbuddyEnvironment
+        environment["CODEBUDDY_PROJECT_ID"] = projectID
+
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: [
+                    "agent": "WorkBuddy",
+                    "cwd": "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+                ],
+                environment: environment
+            ),
+            "workbuddy(bblock)"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyNonPlaygroundStillUsesCwdLabel() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: ["agent": "WorkBuddy", "cwd": "/Users/me/work/esport_bb_lock"],
+                environment: Self.workbuddyEnvironment
+            ),
+            "workbuddy(esport_bb_lock)"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyEnvOverrideWinsOverCacheAndCwd() throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-project-names-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: cacheURL)
+            WorkBuddyProjectNameCache.resetForTesting()
+        }
+
+        let projectID = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        let json = """
+        {"version":1,"projects":{"\(projectID)":{"displayName":"bblock"}}}
+        """
+        try json.write(to: cacheURL, atomically: true, encoding: .utf8)
+        WorkBuddyProjectNameCache.cacheFileURLOverride = cacheURL
+
+        var environment = Self.workbuddyEnvironment
+        environment["CODEBUDDY_PROJECT_ID"] = projectID
+        environment["AGENT_SIGNAL_WORKBUDDY_LABEL"] = "teams-override"
+
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: [
+                    "agent": "WorkBuddy",
+                    "cwd": "/Users/me/work/esport_bb_lock"
+                ],
+                environment: environment
+            ),
+            "workbuddy(teams-override)"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyProjectCacheWinsOverCwdLabel() throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-project-names-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: cacheURL)
+            WorkBuddyProjectNameCache.resetForTesting()
+        }
+
+        let projectID = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        let json = """
+        {"version":1,"projects":{"\(projectID)":{"displayName":"bblock"}}}
+        """
+        try json.write(to: cacheURL, atomically: true, encoding: .utf8)
+        WorkBuddyProjectNameCache.cacheFileURLOverride = cacheURL
+
+        var environment = Self.workbuddyEnvironment
+        environment["CODEBUDDY_PROJECT_ID"] = projectID
+
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: [
+                    "agent": "WorkBuddy",
+                    "cwd": "/Users/me/work/esport_bb_lock"
+                ],
+                environment: environment
+            ),
+            "workbuddy(bblock)"
+        )
+    }
+
+    func testGenericHookSessionKeyUsesCwdLabelWhenProjectIDMissing() {
+        XCTAssertEqual(
+            GenericHookAdapter.sessionKey(
+                payload: ["cwd": "/Users/me/work/esport_bb_lock"],
+                environment: Self.workbuddyEnvironment,
+                agent: "workbuddy(esport_bb_lock)"
+            ),
+            "workbuddy:esport_bb_lock"
+        )
+    }
+
+    func testGenericHookAgentNameWorkBuddyDateOnlyPlaygroundOmitsTimestampLabel() {
+        XCTAssertEqual(
+            GenericHookAdapter.agentName(
+                payload: [
+                    "agent": "WorkBuddy",
+                    "cwd": "/Users/me/WorkBuddy/2026-08-28"
+                ],
+                environment: Self.workbuddyEnvironment
+            ),
+            "workbuddy"
+        )
+    }
+
+    func testGenericHookSessionKeyPlaygroundWithoutProjectIDFallsBackToSessionID() {
+        XCTAssertEqual(
+            GenericHookAdapter.sessionKey(
+                payload: [
+                    "session_id": "7c573de1-db1c-4ff9-b0d0-3a551b35a077",
+                    "cwd": "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+                ],
+                environment: Self.workbuddyEnvironment,
+                agent: "workbuddy"
+            ),
+            "7c573de1-db1c-4ff9-b0d0-3a551b35a077"
+        )
+    }
+
+    func testWorkBuddyProjectNameCacheReloadsWhenFileChanges() throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-project-names-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: cacheURL)
+            WorkBuddyProjectNameCache.resetForTesting()
+        }
+
+        let projectID = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        try """
+        {"version":1,"projects":{"\(projectID)":{"displayName":"bblock"}}}
+        """.write(to: cacheURL, atomically: true, encoding: .utf8)
+        WorkBuddyProjectNameCache.cacheFileURLOverride = cacheURL
+
+        XCTAssertEqual(
+            WorkBuddyProjectNameCache.displayName(forProjectID: projectID),
+            "bblock"
+        )
+
+        try """
+        {"version":1,"projects":{"\(projectID)":{"displayName":"renamed-block"}}}
+        """.write(to: cacheURL, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            WorkBuddyProjectNameCache.displayName(forProjectID: projectID),
+            "renamed-block"
+        )
+    }
+
+    private struct StubWorkBuddyDisplayNameSource: WorkBuddyDisplayNameSource {
+        let names: [String: String]
+        let error: Error?
+
+        init(names: [String: String] = [:], error: Error? = nil) {
+            self.names = names
+            self.error = error
+        }
+
+        func fetchProjectDisplayNames() async throws -> [String: String] {
+            if let error {
+                throw error
+            }
+            return names
+        }
+    }
+
+    private func readWorkBuddyCacheFile(at url: URL) throws -> [String: String] {
+        struct Document: Decodable {
+            let projects: [String: Entry]
+            struct Entry: Decodable { let displayName: String }
+        }
+        let data = try Data(contentsOf: url)
+        let document = try JSONDecoder().decode(Document.self, from: data)
+        return document.projects.mapValues { $0.displayName }
+    }
+
+    func testWorkBuddyProjectNameSynchronizerInsertsIntoEmptyCache() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-sync-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let synchronizer = WorkBuddyProjectNameSynchronizer()
+        let source = StubWorkBuddyDisplayNameSource(names: ["p_abc": "bblock"])
+        let now = Date()
+
+        let result = try await synchronizer.synchronize(source: source, cacheFileURL: cacheURL, now: now)
+
+        XCTAssertEqual(result.insertedCount, 1)
+        XCTAssertEqual(result.updatedCount, 0)
+        XCTAssertEqual(result.unchangedCount, 0)
+        XCTAssertEqual(result.lastSyncedAt, now)
+
+        let projects = try readWorkBuddyCacheFile(at: cacheURL)
+        XCTAssertEqual(projects, ["p_abc": "bblock"])
+    }
+
+    func testWorkBuddyProjectNameSynchronizerUpdatesExistingEntry() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-sync-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        try """
+        {"version":1,"projects":{"p_abc":{"displayName":"old"}}}
+        """.write(to: cacheURL, atomically: true, encoding: .utf8)
+
+        let synchronizer = WorkBuddyProjectNameSynchronizer()
+        let source = StubWorkBuddyDisplayNameSource(names: ["p_abc": "bblock"])
+
+        let result = try await synchronizer.synchronize(source: source, cacheFileURL: cacheURL, now: Date())
+
+        XCTAssertEqual(result.insertedCount, 0)
+        XCTAssertEqual(result.updatedCount, 1)
+        XCTAssertEqual(result.unchangedCount, 0)
+
+        let projects = try readWorkBuddyCacheFile(at: cacheURL)
+        XCTAssertEqual(projects, ["p_abc": "bblock"])
+    }
+
+    func testWorkBuddyProjectNameSynchronizerPreservesEntriesNotInSource() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-sync-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        try """
+        {"version":1,"projects":{"p_xyz":{"displayName":"manual"}}}
+        """.write(to: cacheURL, atomically: true, encoding: .utf8)
+
+        let synchronizer = WorkBuddyProjectNameSynchronizer()
+        let source = StubWorkBuddyDisplayNameSource(names: ["p_abc": "bblock"])
+
+        let result = try await synchronizer.synchronize(source: source, cacheFileURL: cacheURL, now: Date())
+
+        XCTAssertEqual(result.insertedCount, 1)
+        XCTAssertEqual(result.updatedCount, 0)
+        XCTAssertEqual(result.unchangedCount, 0)
+
+        let projects = try readWorkBuddyCacheFile(at: cacheURL)
+        XCTAssertEqual(projects, ["p_xyz": "manual", "p_abc": "bblock"])
+    }
+
+    func testWorkBuddyProjectNameSynchronizerLeavesCacheUntouchedWhenSourceThrows() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-sync-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let originalContents = """
+        {"version":1,"projects":{"p_xyz":{"displayName":"manual"}}}
+        """
+        try originalContents.write(to: cacheURL, atomically: true, encoding: .utf8)
+
+        struct StubError: Error, Equatable {}
+        let synchronizer = WorkBuddyProjectNameSynchronizer()
+        let source = StubWorkBuddyDisplayNameSource(error: StubError())
+
+        do {
+            _ = try await synchronizer.synchronize(source: source, cacheFileURL: cacheURL, now: Date())
+            XCTFail("Expected synchronize to rethrow the source's error")
+        } catch is StubError {
+            // expected
+        }
+
+        let contentsAfter = try String(contentsOf: cacheURL, encoding: .utf8)
+        XCTAssertEqual(contentsAfter, originalContents)
+    }
+
+    func testWorkBuddyProjectNameSynchronizerLeavesCacheUnchangedWhenSourceIsEmpty() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-sync-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let originalContents = """
+        {"version":1,"projects":{"p_xyz":{"displayName":"manual"}}}
+        """
+        try originalContents.write(to: cacheURL, atomically: true, encoding: .utf8)
+
+        let synchronizer = WorkBuddyProjectNameSynchronizer()
+        let source = StubWorkBuddyDisplayNameSource(names: [:])
+
+        let result = try await synchronizer.synchronize(source: source, cacheFileURL: cacheURL, now: Date())
+
+        XCTAssertEqual(result.insertedCount, 0)
+        XCTAssertEqual(result.updatedCount, 0)
+        XCTAssertEqual(result.unchangedCount, 0)
+
+        let contentsAfter = try String(contentsOf: cacheURL, encoding: .utf8)
+        XCTAssertEqual(contentsAfter, originalContents)
+    }
+
+    func testWorkBuddyProjectNameSynchronizerSkipsEmptyDisplayNameEntries() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workbuddy-sync-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: cacheURL) }
+
+        let synchronizer = WorkBuddyProjectNameSynchronizer()
+        let source = StubWorkBuddyDisplayNameSource(names: ["p_abc": "bblock", "p_x": ""])
+
+        let result = try await synchronizer.synchronize(source: source, cacheFileURL: cacheURL, now: Date())
+
+        XCTAssertEqual(result.insertedCount, 1)
+        XCTAssertEqual(result.updatedCount, 0)
+        XCTAssertEqual(result.unchangedCount, 0)
+
+        let projects = try readWorkBuddyCacheFile(at: cacheURL)
+        XCTAssertEqual(projects, ["p_abc": "bblock"])
+    }
+
+    func testGenericHookSessionKeyUsesStableWorkbuddyProjectKey() {
+        let cwd = "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+        let projectID = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        var environment = Self.workbuddyEnvironment
+        environment["CODEBUDDY_PROJECT_ID"] = projectID
+
+        XCTAssertEqual(
+            GenericHookAdapter.sessionKey(
+                payload: ["cwd": cwd],
+                environment: environment,
+                agent: "workbuddy(bblock)"
+            ),
+            "workbuddy:\(projectID)"
+        )
+        XCTAssertEqual(
+            GenericHookAdapter.sessionKey(
+                payload: [
+                    "session_id": "7c573de1-db1c-4ff9-b0d0-3a551b35a077",
+                    "cwd": cwd
+                ],
+                environment: environment,
+                agent: "workbuddy(bblock)"
+            ),
+            "workbuddy:\(projectID)"
+        )
+    }
+
+    func testGenericHookShouldIgnoreWorkbuddyCLIHostHooks() {
+        XCTAssertTrue(
+            GenericHookAdapter.shouldIgnoreHook(
+                payload: [
+                    "event": "Notification",
+                    "cwd": "/private/var/folders/T/workbuddy-host-cli/__workbuddy_cli_host__-1-a252972f"
+                ],
+                environment: Self.workbuddyEnvironment
+            )
+        )
+        XCTAssertFalse(
+            GenericHookAdapter.shouldIgnoreHook(
+                payload: [
+                    "event": "Notification",
+                    "cwd": "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+                ],
+                environment: Self.workbuddyEnvironment
+            )
+        )
+    }
+
+    func testWorkBuddyNotificationDoesNotOverwriteCompletedSession() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let projectID = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        let sessionID = "workbuddy:\(projectID)"
+        let agent = "workbuddy(bblock)"
+
+        _ = try fixture.store.applySessionSignal(.done, sessionID: sessionID, agent: agent, lastEvent: "Stop")
+        _ = try fixture.store.applySessionSignal(
+            .notification,
+            sessionID: sessionID,
+            agent: agent,
+            lastEvent: "Notification"
+        )
+        let snapshot = fixture.store.readSnapshot()
+
+        XCTAssertEqual(snapshot.sessions.first?.signal, .done)
+        XCTAssertEqual(snapshot.sessions.first?.lastEvent, "Stop")
+        XCTAssertEqual(snapshot.aggregate, .done)
+    }
+
+    func testWorkBuddyHooksCollapseToSingleSession() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let cwd = "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+        let projectID = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        var environment = Self.workbuddyEnvironment
+        environment["CODEBUDDY_PROJECT_ID"] = projectID
+        let agent = "workbuddy(bblock)"
+        let sessionID = GenericHookAdapter.sessionKey(
+            payload: ["cwd": cwd],
+            environment: environment,
+            agent: agent
+        )
+
+        _ = try fixture.store.applySessionSignal(
+            .notification,
+            sessionID: sessionID,
+            agent: agent,
+            lastEvent: "Notification"
+        )
+        _ = try fixture.store.applySessionSignal(
+            .thinking,
+            sessionID: GenericHookAdapter.sessionKey(
+                payload: ["session_id": "7c573de1-db1c-4ff9-b0d0-3a551b35a077", "cwd": cwd],
+                environment: environment,
+                agent: agent
+            ),
+            agent: agent,
+            lastEvent: "UserPromptSubmit"
+        )
+
+        let snapshot = fixture.store.readSnapshot()
+        XCTAssertEqual(snapshot.sessions.count, 1)
+        XCTAssertEqual(snapshot.sessions.first?.sessionID, "workbuddy:\(projectID)")
+        XCTAssertEqual(snapshot.sessions.first?.signal, .thinking)
     }
 
     func testClaudeHookMappingCoversAttentionAndStopFailures() {

@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.setActivationPolicy(.regular)
             AgentSignalAppServices.statusBarController.activate()
             AgentSignalAppServices.signalLightBLEController.activate()
+            AgentSignalAppServices.workBuddyProjectNameSyncService.start()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 AgentSignalAppServices.statusBarController.showDebugWindow()
             }
@@ -38,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.setActivationPolicy(.accessory)
             AgentSignalAppServices.statusBarController.activate()
             AgentSignalAppServices.signalLightBLEController.activate()
+            AgentSignalAppServices.workBuddyProjectNameSyncService.start()
         }
     }
 
@@ -62,6 +64,7 @@ enum AgentSignalAppServices {
         let commander = CoreBluetoothSignalLightCommander()
         return SignalLightBLEController(model: model, commander: commander)
     }()
+    static let workBuddyProjectNameSyncService = WorkBuddyProjectNameSyncService()
 }
 
 @MainActor

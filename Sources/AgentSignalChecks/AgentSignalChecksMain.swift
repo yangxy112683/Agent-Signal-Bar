@@ -361,6 +361,14 @@ struct AgentSignalChecks {
             "generic hook should map AgentFinished to done"
         )
         try expect(
+            GenericHookAdapter.chooseSignal(eventName: "Error", payload: [:]) == .error,
+            "generic hook should map Error event to recoverable error, not blocked"
+        )
+        try expect(
+            GenericHookAdapter.chooseSignal(eventName: "Error", payload: [:]).displayState == .needsReview,
+            "generic hook error should surface as needsReview, not terminal blocked"
+        )
+        try expect(
             GenericHookAdapter.sessionKey(
                 payload: ["agent": "local-script"],
                 environment: [:],
@@ -376,8 +384,8 @@ struct AgentSignalChecks {
             GenericHookAdapter.agentName(
                 payload: ["agent": "codebuddy", "cwd": "/Users/me/work/demo"],
                 environment: ["WORKBUDDY_APP_NAME": "workbuddy"]
-            ) == "codebuddy(workbuddy_demo)",
-            "WorkBuddy IDE Host should prefix generic hook display names"
+            ) == "workbuddy(demo)",
+            "WorkBuddy IDE Host should use workbuddy(project) display names"
         )
         try expect(
             GenericHookAdapter.agentName(
@@ -385,15 +393,47 @@ struct AgentSignalChecks {
                 environment: [
                     "WORKBUDDY_APP_PATH": "/Applications/WorkBuddy.app/Contents/Resources/app.asar"
                 ]
-            ) == "codebuddy(workbuddy_demo)",
-            "WorkBuddy.app path alone should be enough to prefix"
+            ) == "workbuddy(demo)",
+            "WorkBuddy.app path alone should be enough to detect host"
         )
         try expect(
             GenericHookAdapter.agentName(
                 payload: ["agent": "gemini", "cwd": "/Users/me/work/demo"],
                 environment: ["WORKBUDDY_APPLICATION_NAME": "WorkBuddy"]
-            ) == "gemini(workbuddy_demo)",
-            "WorkBuddy prefix should apply to any generic agent"
+            ) == "workbuddy(demo)",
+            "WorkBuddy display name should not depend on underlying agent"
+        )
+        try expect(
+            GenericHookAdapter.agentName(
+                payload: [
+                    "agent": "WorkBuddy",
+                    "cwd": "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+                ],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ) == "workbuddy",
+            "WorkBuddy Playground without cache should omit timestamp label"
+        )
+        let projectID = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        try expect(
+            GenericHookAdapter.sessionKey(
+                payload: [
+                    "session_id": "7c573de1-db1c-4ff9-b0d0-3a551b35a077",
+                    "cwd": "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+                ],
+                environment: [
+                    "WORKBUDDY_APP_NAME": "WorkBuddy",
+                    "CODEBUDDY_PROJECT_ID": projectID
+                ],
+                agent: "workbuddy(bblock)"
+            ) == "workbuddy:\(projectID)",
+            "WorkBuddy hooks should collapse to project_id session key"
+        )
+        try expect(
+            GenericHookAdapter.shouldIgnoreHook(
+                payload: ["cwd": "/tmp/workbuddy-host-cli/__workbuddy_cli_host__-1"],
+                environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
+            ),
+            "WorkBuddy host CLI noise hooks should be ignored"
         )
         try expect(
             GenericHookAdapter.agentName(
@@ -419,7 +459,7 @@ struct AgentSignalChecks {
                     "WORKBUDDY_APP_PATH": "/Applications/CodeBuddy.app/Contents/Resources/app.asar"
                 ]
             ) == "codebuddy(demo)",
-            "CodeBuddy.app path must not receive a workbuddy_ prefix"
+            "CodeBuddy.app path must not receive WorkBuddy display naming"
         )
         try expect(
             GenericHookAdapter.agentName(
@@ -428,21 +468,21 @@ struct AgentSignalChecks {
                     "WORKBUDDY_APP_PATH": "/Applications/CodeBuddy CN.app/Contents/Resources/app.asar"
                 ]
             ) == "codebuddy(demo)",
-            "CodeBuddy CN.app path must not receive a workbuddy_ prefix"
+            "CodeBuddy CN.app path must not receive WorkBuddy display naming"
         )
         try expect(
             GenericHookAdapter.agentName(
                 payload: ["agent": "codebuddy"],
                 environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
-            ) == "codebuddy",
-            "WorkBuddy without cwd should keep the base agent name"
+            ) == "workbuddy",
+            "WorkBuddy without cwd should use workbuddy display name"
         )
         try expect(
             GenericHookAdapter.agentName(
                 payload: ["agent": "gemini", "cwd": "/Users/me/work/demo", "no_cwd_label": true],
                 environment: ["WORKBUDDY_APP_NAME": "WorkBuddy"]
-            ) == "gemini",
-            "no_cwd_label should skip WorkBuddy host prefix"
+            ) == "workbuddy",
+            "no_cwd_label in WorkBuddy should still use workbuddy display name"
         )
         try expect(
             GenericHookAdapter.agentName(

@@ -123,15 +123,19 @@ struct AgentSignalCLI {
                 let parsed = try parse(Array(arguments.dropFirst()))
                 try requireAtMostOnePositional(parsed)
                 let payload = try JSONPayload.requiredObject(from: FileHandle.standardInput.readDataToEndOfFile())
+                let environment = ProcessInfo.processInfo.environment
+                if GenericHookAdapter.shouldIgnoreHook(payload: payload, environment: environment) {
+                    return 0
+                }
                 let eventName = parsed.positionals.first
                     ?? stringValue(payload, keys: ["hook_event_name", "event_name", "event", "hook", "type", "action", "name"])
                 let signal = GenericHookAdapter.chooseSignal(eventName: eventName, payload: payload)
                 let agent = parsed.agent
-                    ?? GenericHookAdapter.agentName(payload: payload, environment: ProcessInfo.processInfo.environment)
+                    ?? GenericHookAdapter.agentName(payload: payload, environment: environment)
                 let sessionID = parsed.sessionID
                     ?? GenericHookAdapter.sessionKey(
                         payload: payload,
-                        environment: ProcessInfo.processInfo.environment,
+                        environment: environment,
                         agent: agent
                     )
                 _ = try store.applySessionSignal(

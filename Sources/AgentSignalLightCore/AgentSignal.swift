@@ -123,11 +123,11 @@ public enum AgentSignal: String, Codable, CaseIterable, Sendable {
             return .active
         case .done:
             return .completed
-        case .attention, .notification:
+        case .attention, .notification, .error:
             return .needsReview
         case .permission, .permissionRequest:
             return .permission
-        case .blocked, .failure, .error, .exception, .maxTokens:
+        case .blocked, .failure, .exception, .maxTokens:
             return .blocked
         case .stale:
             return .stale

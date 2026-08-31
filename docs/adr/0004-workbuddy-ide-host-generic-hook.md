@@ -2,9 +2,11 @@
 status: accepted
 ---
 
-# WorkBuddy 作为 IDE Host：generic hook 展示前缀 `workbuddy_`
+# WorkBuddy 作为 IDE Host：generic hook 展示名 `workbuddy(标签)`
 
-Generic hook 的 cwd 展示名仍按 ADR-0003 生成。WorkBuddy（仅 `WorkBuddy.app`）是第二个 IDE Host，不是新的 Agent 源。展示前缀固定为 `workbuddy_`，与 Cursor 的 `cursor_` 并列。标签只在 Swift `GenericHookAdapter` 里拼；不修订 ADR-0003 的 Cursor 段。
+> **标签命名策略**见 [ADR-0005](./0005-workbuddy-session-label-naming.md)（Tiered Resolver、`project_id` 缓存）。本文保留宿主检测与 hook 安装约定。
+
+Generic hook 的 cwd 展示名在 WorkBuddy 宿主下格式为 `workbuddy(标签)`；非 Playground 时标签取自 cwd 末段（ADR-0003），Playground 时优先 `CODEBUDDY_PROJECT_ID` 缓存（ADR-0005）。WorkBuddy（仅 `WorkBuddy.app`）是第二个 IDE Host，不是新的 Agent 源。与 Cursor 的 `cursor_` 前缀并列。标签只在 Swift `GenericHookAdapter` 里拼；不修订 ADR-0003 的 Cursor 段。
 
 放弃把本文写进 ADR-0003：cwd 迁移和「多宿主检测」会绑在同一份决策里。放弃套 Cursor 的 `VSCODE_GIT_ASKPASS_*` 启发式：WorkBuddy 不是 VS Code 壳，活进程上没有这些键，照抄不会命中。放弃让调用方手改 `~/.workbuddy`：WorkBuddy 托管 CLI 读该目录，本机 `~/.codebuddy` 里的 hook 默认走不到；注册由 Agent Signal Bar 自动写入，对齐现有 Claude / Codex 的 hook 安装。
 
@@ -21,7 +23,7 @@ Generic hook 的 cwd 展示名仍按 ADR-0003 生成。WorkBuddy（仅 `WorkBudd
 
 ## 降级与互斥
 
-未命中则不加 `workbuddy_`，退回无宿主前缀的项目名。不阻断 hook 写入。
+未命中则返回 `workbuddy`（无标签）或 `workbuddy(标签)`，见 ADR-0005。不阻断 hook 写入。
 
 检测器按键族分开。若 Cursor askpass 与 WorkBuddy 信号同时为真：先 Cursor，再 WorkBuddy；最多一个前缀；`cursor_` 赢。互斥写在本文，不改 ADR-0003。
 

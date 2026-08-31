@@ -399,6 +399,16 @@ public enum GenericHookAdapter {
         "off": .off
     ])
 
+    public static func shouldIgnoreHook(payload: [String: Any], environment: [String: String]) -> Bool {
+        guard let cwd = firstString(
+            payload,
+            keys: ["cwd", "workspace", "workspace_dir", "project_dir", "repository"]
+        ) else {
+            return false
+        }
+        return isWorkBuddyCLIHostPath(cwd)
+    }
+
     public static func chooseSignal(eventName: String?, payload: [String: Any]) -> AgentSignal {
         if let explicit = firstString(payload, keys: ["signal", "signal_name", "lamp_signal", "agent_signal"]),
            let signal = AgentSignal.normalized(explicit) {
@@ -424,10 +434,14 @@ public enum GenericHookAdapter {
         let resolvedEvent = eventName
             ?? firstString(payload, keys: ["hook_event_name", "event_name", "event", "hook", "type", "action", "name"])
             ?? "Notification"
-        if isFailureWord(resolvedEvent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+        let normalizedEvent = resolvedEvent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let signal = signal(for: normalizedEvent, in: eventToSignal) {
+            return signal
+        }
+        if isFailureWord(normalizedEvent.lowercased()) {
             return .blocked
         }
-        return signal(for: resolvedEvent, in: eventToSignal) ?? .attention
+        return .attention
     }
 
     public static func sessionKey(
@@ -435,6 +449,15 @@ public enum GenericHookAdapter {
         environment: [String: String],
         agent: String? = nil
     ) -> String {
+        if isWorkBuddyIDEHost(environment),
+           let projectID = codebuddyProjectID(environment: environment) {
+            return "workbuddy:\(projectID)"
+        }
+        if isWorkBuddyIDEHost(environment),
+           let projectSessionKey = workbuddyProjectSessionKey(payload: payload) {
+            return projectSessionKey
+        }
+
         let directKeys = [
             "session_id",
             "session",
@@ -501,9 +524,14 @@ public enum GenericHookAdapter {
 
         let isFallbackSentinel = (baseAgent == nil)
         let resolvedBase = baseAgent ?? "agent"
+        let isCursorHost = isCursorIntegratedTerminal(environment)
+        let isWorkBuddyHost = isWorkBuddyIDEHost(environment)
 
         // no_cwd_label: true 时直接返回基础 agent 名，不拼接 cwd 标签。
         if let noLabel = firstBool(payload, keys: ["no_cwd_label"]), noLabel {
+            if isWorkBuddyHost && !isCursorHost {
+                return "workbuddy"
+            }
             return resolvedBase
         }
 
@@ -517,6 +545,9 @@ public enum GenericHookAdapter {
         guard let cwd = firstString(payload, keys: ["cwd", "workspace", "workspace_dir", "project_dir", "repository"]),
               !cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
+            if isWorkBuddyHost && !isCursorHost {
+                return "workbuddy"
+            }
             return resolvedBase
         }
 
@@ -525,22 +556,98 @@ public enum GenericHookAdapter {
             .lowercased()
         // 根目录 "/" 的 lastPathComponent 仍是 "/"，不是有效项目名，跳过标签拼接。
         guard !projectName.isEmpty, projectName != "/" else {
+            if isWorkBuddyHost && !isCursorHost {
+                return "workbuddy"
+            }
             return resolvedBase
         }
 
-        let hostPrefix = ideHostPrefix(environment)
-        return "\(resolvedBase)(\(hostPrefix)\(projectName))"
+        if isCursorHost {
+            return "\(resolvedBase)(cursor_\(projectName))"
+        }
+        if isWorkBuddyHost {
+            if let label = workbuddyDisplayLabel(cwd: cwd, environment: environment) {
+                return "workbuddy(\(label))"
+            }
+            return "workbuddy"
+        }
+        return "\(resolvedBase)(\(projectName))"
     }
 
-    /// 先 Cursor，再 WorkBuddy；最多一个前缀。同时命中时 `cursor_` 赢。
-    private static func ideHostPrefix(_ environment: [String: String]) -> String {
-        if isCursorIntegratedTerminal(environment) {
-            return "cursor_"
+    private static func workbuddyDisplayLabel(cwd: String, environment: [String: String]) -> String? {
+        if let override = environmentValue(environment, key: "AGENT_SIGNAL_WORKBUDDY_LABEL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !override.isEmpty {
+            return override
         }
-        if isWorkBuddyIDEHost(environment) {
-            return "workbuddy_"
+
+        if let projectID = codebuddyProjectID(environment: environment),
+           let cached = WorkBuddyProjectNameCache.displayName(forProjectID: projectID, environment: environment) {
+            return cached
         }
-        return ""
+
+        if !isWorkBuddyTimestampPlaygroundPath(cwd) {
+            let projectName = (cwd as NSString).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !projectName.isEmpty, projectName != "/" else {
+                return nil
+            }
+            return projectName
+        }
+
+        return nil
+    }
+
+    private static func codebuddyProjectID(environment: [String: String]) -> String? {
+        environmentValue(environment, key: "CODEBUDDY_PROJECT_ID")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isWorkBuddyTimestampPlaygroundPath(_ cwd: String) -> Bool {
+        let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let parent = ((trimmed as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            .lowercased()
+        guard parent == "workbuddy" else { return false }
+
+        let lastComponent = (trimmed as NSString).lastPathComponent
+        let patterns = [
+            #"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$"#,
+            #"^\d{4}-\d{2}-\d{2}$"#,
+            #"^\d{8,14}$"#
+        ]
+        return patterns.contains { lastComponent.range(of: $0, options: .regularExpression) != nil }
+    }
+
+    private static func workbuddyProjectSessionKey(payload: [String: Any]) -> String? {
+        guard let cwd = firstString(
+            payload,
+            keys: ["cwd", "workspace", "workspace_dir", "project_dir", "repository"]
+        ) else {
+            return nil
+        }
+        let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isWorkBuddyCLIHostPath(trimmed) else {
+            return nil
+        }
+        guard !isWorkBuddyTimestampPlaygroundPath(trimmed) else {
+            return nil
+        }
+        let projectName = (trimmed as NSString).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !projectName.isEmpty, projectName != "/" else {
+            return nil
+        }
+        return "workbuddy:\(projectName)"
+    }
+
+    private static func isWorkBuddyCLIHostPath(_ cwd: String) -> Bool {
+        let normalized = cwd.lowercased()
+        return normalized.contains("__workbuddy_cli_host__")
+            || normalized.contains("/workbuddy-host-cli/")
     }
 
     /// 启发式判断 generic hook 是否来自 Cursor 集成终端：
