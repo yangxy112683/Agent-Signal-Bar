@@ -4152,7 +4152,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             id: "fresh-needs-review",
             sessionID: "codex-cli:old-thread",
             signal: .attention,
-            updatedAt: now.addingTimeInterval(-4 * 60),
+            updatedAt: now.addingTimeInterval(-29),
             agent: "codex-cli",
             event: "NeedsReview"
         )
@@ -4160,7 +4160,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             id: "stale-needs-review",
             sessionID: "codex-cli:old-thread",
             signal: .attention,
-            updatedAt: now.addingTimeInterval(-6 * 60),
+            updatedAt: now.addingTimeInterval(-31),
             agent: "codex-cli",
             event: "NeedsReview"
         )
@@ -4168,7 +4168,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             id: "fresh-permission",
             sessionID: "codex-cli:old-thread",
             signal: .permission,
-            updatedAt: now.addingTimeInterval(-4 * 60),
+            updatedAt: now.addingTimeInterval(-29),
             agent: "codex-cli",
             event: "PermissionRequest"
         )
@@ -4176,7 +4176,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             id: "stale-permission",
             sessionID: "codex-cli:old-thread",
             signal: .permission,
-            updatedAt: now.addingTimeInterval(-6 * 60),
+            updatedAt: now.addingTimeInterval(-31),
             agent: "codex-cli",
             event: "PermissionRequest"
         )
@@ -4184,7 +4184,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             id: "fresh-blocked",
             sessionID: "codex-cli:old-thread",
             signal: .blocked,
-            updatedAt: now.addingTimeInterval(-4 * 60),
+            updatedAt: now.addingTimeInterval(-29),
             agent: "codex-cli",
             event: "Blocked"
         )
@@ -4192,7 +4192,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             id: "stale-blocked",
             sessionID: "codex-cli:old-thread",
             signal: .blocked,
-            updatedAt: now.addingTimeInterval(-6 * 60),
+            updatedAt: now.addingTimeInterval(-31),
             agent: "codex-cli",
             event: "Blocked"
         )
@@ -4277,6 +4277,54 @@ final class AgentSignalLightCoreTests: XCTestCase {
             "Only the genuinely active session should count toward the info badge, not long-expired ghost sessions."
         )
         XCTAssertEqual(visibleSessions.first?.sessionID, "codebuddy:current-thread")
+    }
+
+    /// Closing Ghostty / zellij does not fire CodeBuddy `SessionEnd`. The last
+    /// hook is often `Notification/idle` → `NeedsReview`. Attention-class
+    /// sessions now share the 30s linger with `done`, so the running-count
+    /// badge must drop the closed session as soon as that window elapses.
+    @MainActor
+    func testClosedCodeBuddyNeedsReviewWithoutSessionEndDoesNotCountTowardRunningBadge() throws {
+        let now = Date()
+
+        func badgeCount(age: TimeInterval) throws -> Int {
+            let fixture = try makeTemporaryStore()
+            defer { try? FileManager.default.removeItem(at: fixture.directory) }
+            let closedAt = now.addingTimeInterval(-age)
+            try writeDocument(
+                SignalStateDocument(
+                    aggregate: .attention,
+                    updatedAt: closedAt,
+                    sessions: [
+                        "a9cf2b9e-closed-without-session-end": SessionRecord(
+                            agent: "codebuddy(Agent-Signal-Bar)",
+                            signal: .attention,
+                            lastEvent: "NeedsReview",
+                            updatedAt: closedAt
+                        )
+                    ],
+                    events: [
+                        SignalEventRecord(
+                            id: "needs-review",
+                            sessionID: "a9cf2b9e-closed-without-session-end",
+                            agent: "codebuddy(Agent-Signal-Bar)",
+                            signal: .attention,
+                            event: "NeedsReview",
+                            updatedAt: closedAt
+                        )
+                    ]
+                ),
+                in: fixture.store
+            )
+            let model = makeMenuBarStatusModel(store: fixture.store)
+            return ActivityPresentation.visibleRunningSessions(
+                from: model.activitySnapshot,
+                now: now
+            ).count
+        }
+
+        XCTAssertEqual(try badgeCount(age: 20), 1, "NeedsReview should still count toward the badge inside the 30s window")
+        XCTAssertEqual(try badgeCount(age: 31), 0, "Closing Ghostty/zellij without SessionEnd must drop NeedsReview from the running-count badge after 30s")
     }
 
     @MainActor
@@ -4597,7 +4645,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let now = Date()
-        let permissionAt = now.addingTimeInterval(-10 * 60)
+        let permissionAt = now.addingTimeInterval(-10)
         let sessionID = "codex-cli:permission-thread"
 
         try writeDocument(
@@ -5626,6 +5674,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     private func makeTemporaryStore(
         sessionTTLSeconds: Double = 86_400,
         completedTTLSeconds: Double = 30,
+        attentionTTLSeconds: Double = 30,
         eventLimit: Int = 50
     ) throws -> (store: SignalStateStore, directory: URL) {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -5636,6 +5685,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             stateFileURL: directory.appendingPathComponent("status.json"),
             sessionTTLSeconds: sessionTTLSeconds,
             completedTTLSeconds: completedTTLSeconds,
+            attentionTTLSeconds: attentionTTLSeconds,
             eventLimit: eventLimit
         )
         return (store, directory)
@@ -6641,7 +6691,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let now = Date()
-        let needsReviewAt = now.addingTimeInterval(-2 * 60)
+        let needsReviewAt = now.addingTimeInterval(-10)
 
         try writeDocument(
             SignalStateDocument(

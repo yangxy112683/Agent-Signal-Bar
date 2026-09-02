@@ -91,7 +91,9 @@ public final class SignalStateStore: @unchecked Sendable {
     /// TTL for "attention-class" signals (needs_review / permission / blocked).
     /// These are protected against normal working/done events, so without their
     /// own shorter TTL a session left behind by an exited agent would linger for
-    /// the full `defaultSessionTTL` (30 min). Defaults to 5 minutes.
+    /// the full `defaultSessionTTL` (30 min). Defaults to 30 seconds — the same
+    /// linger as `done`, so closing a terminal without `SessionEnd` does not
+    /// keep the running-count badge lit for minutes.
     public static func defaultAttentionTTL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Double {
@@ -100,7 +102,7 @@ public final class SignalStateStore: @unchecked Sendable {
               let value = Double(rawValue),
               value > 0
         else {
-            return 5 * 60
+            return 30
         }
         return value
     }

@@ -516,7 +516,7 @@ final class MenuBarStatusModel: ObservableObject {
     private static let completedDisplayWindow: TimeInterval = 30
     private static let recentActivityFallbackWindow: TimeInterval = 5 * 60
     private static let desktopPresenceSuppressionWindow: TimeInterval = 5 * 60
-    private static let transientAlertDisplayWindow: TimeInterval = 5 * 60
+    private static let transientAlertDisplayWindow: TimeInterval = 30
     private static let passiveActiveDisplayWindow: TimeInterval = 45
     private var statusLightSequence: [StatusLightOverrideFrame] = []
     private var statusLightSequenceIndex = 0
@@ -4063,7 +4063,7 @@ final class MenuBarStatusModel: ObservableObject {
         case .completed:
             return now.timeIntervalSince(session.updatedAt) <= completedDisplayWindow
         case .needsReview, .permission, .blocked, .stale:
-            return true
+            return now.timeIntervalSince(session.updatedAt) <= transientAlertDisplayWindow
         case .ready, .paused:
             return false
         }
