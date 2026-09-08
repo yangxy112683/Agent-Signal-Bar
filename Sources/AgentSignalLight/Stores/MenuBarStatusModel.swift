@@ -513,10 +513,15 @@ final class MenuBarStatusModel: ObservableObject {
     private var automaticUpdateCheckTimer: Timer?
     private var watcher: StateFileWatcher?
     private static let recentEventDeduplicationWindow: TimeInterval = 4
-    private static let completedDisplayWindow: TimeInterval = 30
+    /// completed 类 session 的展示窗口（「灯效时段」），与记录态剪枝共用同一
+    /// 可配置时长：运行时从 store 读取（环境变量 AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS）。
+    let completedDisplayWindow: TimeInterval
+    /// attention 类（needs_review / permission / blocked）session 的展示窗口
+    /// （「灯效时段」），与记录态剪枝共用同一可配置时长：运行时从 store 读取
+    /// （环境变量 AGENT_SIGNAL_LIGHT_ATTENTION_TTL_SECONDS）。
+    let transientAlertDisplayWindow: TimeInterval
     private static let recentActivityFallbackWindow: TimeInterval = 5 * 60
     private static let desktopPresenceSuppressionWindow: TimeInterval = 5 * 60
-    private static let transientAlertDisplayWindow: TimeInterval = 30
     private static let passiveActiveDisplayWindow: TimeInterval = 45
     private var statusLightSequence: [StatusLightOverrideFrame] = []
     private var statusLightSequenceIndex = 0
@@ -582,6 +587,10 @@ final class MenuBarStatusModel: ObservableObject {
         updateChecker: GitHubReleaseUpdateChecker = GitHubReleaseUpdateChecker()
     ) {
         self.store = store
+        // 展示窗口与记录态剪枝共用同一组可配置时长（环境变量来源由 store 解析），
+        // 保证「记录态保留多久」与「灯还显示多久」永不再次分叉。
+        self.completedDisplayWindow = store.completedTTLSeconds
+        self.transientAlertDisplayWindow = store.attentionTTLSeconds
         self.launchAtLoginManager = launchAtLoginManager
         self.hookInstallManager = hookInstallManager
         self.diagnosticsExportManager = diagnosticsExportManager
@@ -3120,7 +3129,12 @@ final class MenuBarStatusModel: ObservableObject {
         let completionCutoffsBySourceKey = Self.latestCompletionCutoffsBySourceKey(visibleRecentEvents)
         let resolvingCutoffsBySourceKey = Self.latestResolvingCutoffsBySourceKey(visibleRecentEvents)
         var sessions = snapshot.sessions.filter { session in
-            Self.shouldIncludeStoredSessionInDisplay(session, now: now)
+            Self.shouldIncludeStoredSessionInDisplay(
+                session,
+                now: now,
+                completedDisplayWindow: completedDisplayWindow,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
                 && !Self.isSupersededByCompletedRecentEvent(
                     session,
                     completionCutoffsBySourceKey: completionCutoffsBySourceKey
@@ -3142,7 +3156,11 @@ final class MenuBarStatusModel: ObservableObject {
 
         let liveAgentKeys = Set(
             sessions.compactMap { session -> String? in
-                guard Self.shouldSuppressDesktopPresence(for: session, now: now) else { return nil }
+                guard Self.shouldSuppressDesktopPresence(
+                    for: session,
+                    now: now,
+                    transientAlertDisplayWindow: transientAlertDisplayWindow
+                ) else { return nil }
                 return ActivityPresentation.activitySourceKey(for: session)
             }
         )
@@ -3199,7 +3217,12 @@ final class MenuBarStatusModel: ObservableObject {
                 continue
             }
 
-            guard Self.shouldUseRecentEventAsFallbackSession(event, now: now) else { continue }
+            guard Self.shouldUseRecentEventAsFallbackSession(
+                event,
+                now: now,
+                completedDisplayWindow: completedDisplayWindow,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            ) else { continue }
 
             handledSourceKeys.insert(sourceKey)
             fallbackSessions.append(
@@ -3321,7 +3344,12 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    static func shouldUseRecentEventAsFallbackSession(_ event: RecentSignalEvent, now: Date) -> Bool {
+    static func shouldUseRecentEventAsFallbackSession(
+        _ event: RecentSignalEvent,
+        now: Date,
+        completedDisplayWindow: TimeInterval = 30,
+        transientAlertDisplayWindow: TimeInterval = 30
+    ) -> Bool {
         if isManualIdleControlEvent(event) {
             return false
         }
@@ -4048,7 +4076,12 @@ final class MenuBarStatusModel: ObservableObject {
             .tokenUsage
     }
 
-    private static func shouldIncludeStoredSessionInDisplay(_ session: SessionStatus, now: Date) -> Bool {
+    private static func shouldIncludeStoredSessionInDisplay(
+        _ session: SessionStatus,
+        now: Date,
+        completedDisplayWindow: TimeInterval = 30,
+        transientAlertDisplayWindow: TimeInterval = 30
+    ) -> Bool {
         if isSignalTestEvent(session.lastEvent) {
             return false
         }
@@ -4069,7 +4102,11 @@ final class MenuBarStatusModel: ObservableObject {
         }
     }
 
-    private static func shouldSuppressDesktopPresence(for session: SessionStatus, now: Date) -> Bool {
+    private static func shouldSuppressDesktopPresence(
+        for session: SessionStatus,
+        now: Date,
+        transientAlertDisplayWindow: TimeInterval = 30
+    ) -> Bool {
         if isSignalTestEvent(session.lastEvent) {
             return false
         }

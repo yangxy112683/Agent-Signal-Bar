@@ -4066,6 +4066,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
     @MainActor
     func testRecentPassiveDesktopEventsDoNotRemainFallbackSessionForFiveMinutes() {
         let now = Date(timeIntervalSince1970: 1_000)
+        // 默认 completed/attention 展示窗口为 30 秒（与 store 默认剪枝 TTL 一致）。
+        let completedDisplayWindow: TimeInterval = 30
+        let transientAlertDisplayWindow: TimeInterval = 30
         let freshThinking = RecentSignalEvent(
             id: "fresh-thinking",
             sessionID: "codex-cli:thread",
@@ -4130,8 +4133,22 @@ final class AgentSignalLightCoreTests: XCTestCase {
             event: "DesktopTaskComplete"
         )
 
-        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshCompleted, now: now))
-        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleCompleted, now: now))
+        XCTAssertTrue(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                freshCompleted,
+                now: now,
+                completedDisplayWindow: completedDisplayWindow,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
+        )
+        XCTAssertFalse(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                staleCompleted,
+                now: now,
+                completedDisplayWindow: completedDisplayWindow,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
+        )
 
         let manualIdleEvent = RecentSignalEvent(
             id: "manual-idle",
@@ -4147,6 +4164,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
     @MainActor
     func testStaleAttentionRecentEventsDoNotRemainFallbackSessionForever() {
         let now = Date(timeIntervalSince1970: 1_000)
+        // 默认 completed/attention 展示窗口为 30 秒（与 store 默认剪枝 TTL 一致）。
+        let transientAlertDisplayWindow: TimeInterval = 30
 
         let freshNeedsReview = RecentSignalEvent(
             id: "fresh-needs-review",
@@ -4197,12 +4216,202 @@ final class AgentSignalLightCoreTests: XCTestCase {
             event: "Blocked"
         )
 
-        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshNeedsReview, now: now))
-        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleNeedsReview, now: now))
-        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshPermission, now: now))
-        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(stalePermission, now: now))
-        XCTAssertTrue(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(freshBlocked, now: now))
-        XCTAssertFalse(MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(staleBlocked, now: now))
+        XCTAssertTrue(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                freshNeedsReview,
+                now: now,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
+        )
+        XCTAssertFalse(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                staleNeedsReview,
+                now: now,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
+        )
+        XCTAssertTrue(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                freshPermission,
+                now: now,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
+        )
+        XCTAssertFalse(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                stalePermission,
+                now: now,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
+        )
+        XCTAssertTrue(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                freshBlocked,
+                now: now,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
+        )
+        XCTAssertFalse(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                staleBlocked,
+                now: now,
+                transientAlertDisplayWindow: transientAlertDisplayWindow
+            )
+        )
+    }
+
+    @MainActor
+    func testDisplayWindowsFollowStoreConfigAndExpireCompletedSession() throws {
+        // 契约修复：展示窗口（灯效时段）不再是硬编码 30 秒，而是与记录态剪枝
+        // 共用 store 配置的时长。store 的 completed TTL = 90 秒时，灯仍显示
+        // completed；超过后才回落。
+        let fixture = try makeTemporaryStore(completedTTLSeconds: 90, attentionTTLSeconds: 60)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.completedDisplayWindow, 90)
+        XCTAssertEqual(model.transientAlertDisplayWindow, 60)
+
+        let freshCompleted = RecentSignalEvent(
+            id: "fresh-completed-90",
+            sessionID: "codex-cli:thread",
+            signal: .done,
+            updatedAt: now.addingTimeInterval(-80),
+            agent: "codex-cli",
+            event: "DesktopTaskComplete"
+        )
+        let staleCompleted = RecentSignalEvent(
+            id: "stale-completed-90",
+            sessionID: "codex-cli:thread",
+            signal: .done,
+            updatedAt: now.addingTimeInterval(-91),
+            agent: "codex-cli",
+            event: "DesktopTaskComplete"
+        )
+        XCTAssertTrue(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                freshCompleted,
+                now: now,
+                completedDisplayWindow: model.completedDisplayWindow,
+                transientAlertDisplayWindow: model.transientAlertDisplayWindow
+            ),
+            "store completed TTL = 90 秒时，80 秒前的 done 事件仍应作为 fallback session 显示"
+        )
+        XCTAssertFalse(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                staleCompleted,
+                now: now,
+                completedDisplayWindow: model.completedDisplayWindow,
+                transientAlertDisplayWindow: model.transientAlertDisplayWindow
+            ),
+            "store completed TTL = 90 秒时，91 秒前的 done 事件不应再显示"
+        )
+    }
+
+    @MainActor
+    func testDisplayWindowsFollowStoreConfigForAttentionClassEvents() throws {
+        let fixture = try makeTemporaryStore(completedTTLSeconds: 90, attentionTTLSeconds: 60)
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        let freshAttention = RecentSignalEvent(
+            id: "fresh-attention-60",
+            sessionID: "codex-cli:old-thread",
+            signal: .attention,
+            updatedAt: now.addingTimeInterval(-50),
+            agent: "codex-cli",
+            event: "NeedsReview"
+        )
+        let staleAttention = RecentSignalEvent(
+            id: "stale-attention-60",
+            sessionID: "codex-cli:old-thread",
+            signal: .attention,
+            updatedAt: now.addingTimeInterval(-61),
+            agent: "codex-cli",
+            event: "NeedsReview"
+        )
+        XCTAssertTrue(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                freshAttention,
+                now: now,
+                completedDisplayWindow: model.completedDisplayWindow,
+                transientAlertDisplayWindow: model.transientAlertDisplayWindow
+            ),
+            "store attention TTL = 60 秒时，50 秒前的 attention 事件仍应显示"
+        )
+        XCTAssertFalse(
+            MenuBarStatusModel.shouldUseRecentEventAsFallbackSession(
+                staleAttention,
+                now: now,
+                completedDisplayWindow: model.completedDisplayWindow,
+                transientAlertDisplayWindow: model.transientAlertDisplayWindow
+            ),
+            "store attention TTL = 60 秒时，61 秒前的 attention 事件不应再显示"
+        )
+    }
+
+    @MainActor
+    func testDisplaySnapshotsUseStoreCompletedTTLNotHardcodedThirtySeconds() throws {
+        // 契约修复的端到端验证：store 配置 completed TTL = 90 秒时，
+        // displaySnapshot / activitySnapshot 必须按 90 秒窗口显示 done session，
+        // 而不是旧硬编码的 30 秒。
+        let fixture = try makeTemporaryStore(
+            sessionTTLSeconds: 86_400,
+            completedTTLSeconds: 90,
+            attentionTTLSeconds: 60
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let completedAt = now.addingTimeInterval(-45)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .done,
+                updatedAt: completedAt,
+                sessions: [
+                    "codex-cli:thread": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .done,
+                        lastEvent: "Stop",
+                        updatedAt: completedAt
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "codex-done-45",
+                        sessionID: "codex-cli:thread",
+                        agent: "codex-cli",
+                        signal: .done,
+                        event: "Stop",
+                        updatedAt: completedAt
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+
+        XCTAssertEqual(model.completedDisplayWindow, 90, "展示窗口应从 store 读取 completed TTL")
+        XCTAssertEqual(
+            model.displaySnapshot.aggregate.displayState,
+            .completed,
+            "45 秒前完成的 session 在 90 秒展示窗口内仍应点亮 completed（旧硬编码 30 秒会错误熄灭）"
+        )
+        XCTAssertEqual(
+            model.statusBarLightSnapshot.aggregate.displayState,
+            .completed,
+            "状态栏灯也应消费同一可配置展示窗口"
+        )
+        XCTAssertEqual(
+            model.floatingSignalLightSnapshot.aggregate.displayState,
+            .completed,
+            "悬浮灯也应消费同一可配置展示窗口"
+        )
     }
 
     @MainActor
