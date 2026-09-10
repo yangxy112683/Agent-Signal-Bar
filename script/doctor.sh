@@ -664,6 +664,13 @@ else
   sed -n '1,8p' "$DOCTOR_ERR"
 fi
 
+if /usr/bin/python3 "$ROOT_DIR/script/test_claude_code_signal_hook.py" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+  pass "claude-code-signal-hook only reports real Claude Code payloads"
+else
+  fail "claude-code-signal-hook source detection test failed"
+  sed -n '1,20p' "$DOCTOR_ERR"
+fi
+
 check_codex_hooks_file() {
   local hooks_file="$1"
   /usr/bin/python3 - "$hooks_file" "$ROOT_DIR/scripts/codex-signal-hook" <<'PY'
