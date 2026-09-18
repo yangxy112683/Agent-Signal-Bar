@@ -5,15 +5,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 INPUT="$(cat)"
 
-# 只有能确认为 Claude Code 发起的 payload 才上报。
+# 只把「不像已知兼容客户端」的 payload 上报给 claude-hook。
 #
 # Claude Code 兼容客户端（Cursor 的 agent）同样会执行 ~/.claude/settings.json
 # 里注册的钩子，而且它们的 payload 会带上 session_id（与 conversation_id 同值），
 # 只看 session_id 会把 Cursor 的会话当成 Claude 会话。
-# 两个只对 Claude Code 成立的判据：
-#   1. transcript_path 是非空字符串（Cursor 传 null）
-#   2. 事件名是 PascalCase（Claude Code 用 SessionStart/PreToolUse/Stop，
-#      Cursor 用 sessionStart/preToolUse/beforeSubmitPrompt）
+# 负向排除：payload 顶层出现已知 Cursor 特征字段（cursor_version 等 5 个，
+# 按键存在判断、空值也算）就直接丢弃。
+# 剩下的再走两条历史启发式——它们只表示「不像已知兼容客户端」，
+# 不构成 Claude Code 的身份证明（Cursor 版本更新曾多次打破类似假设）：
+#   1. transcript_path / transcriptPath 是非空字符串
+#   2. 事件名首字母大写
 # 环境变量不可信：Claude Code 的同源工具会把 CLAUDE_SESSION_ID 注入到
 # 自己拉起的所有进程里，钩子进程可能凭空继承到。
 if ! printf '%s' "$INPUT" | /usr/bin/python3 -c '
@@ -26,6 +28,20 @@ except ValueError:
     sys.exit(1)
 
 if not isinstance(payload, dict):
+    sys.exit(1)
+
+# 已知 Cursor 特征字段：按顶层键存在判断，空值同样拦截
+# （真实样本里 generation_id 是空串、workspace_roots 是空数组、
+#   is_background_agent 是 false，不能按真值判断）。
+# 这是兼容客户端过滤规则，不是来源身份认证。
+CURSOR_MARKER_KEYS = (
+    "cursor_version",
+    "composer_mode",
+    "workspace_roots",
+    "is_background_agent",
+    "generation_id",
+)
+if any(key in payload for key in CURSOR_MARKER_KEYS):
     sys.exit(1)
 
 
