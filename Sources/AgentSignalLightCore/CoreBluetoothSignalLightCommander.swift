@@ -70,14 +70,15 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
     }
 
     public func scanAndConnect() async -> Bool {
-        // 已连接则直接成功。
-        if connectedPeripheral != nil { return true }
+        // 已连接（且特征就绪）则直接成功。
+        // 用 isConnected 而非 connectedPeripheral，避免僵尸态被当成已连接而跳过真正的连接。
+        if isConnected { return true }
         // 等待蓝牙权限就绪（poweredOn）。
         guard await waitForPoweredOn() else {
             logger.error("BLE 蓝牙未就绪，放弃扫描")
             return false
         }
-        if connectedPeripheral != nil { return true }
+        if isConnected { return true }
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             scanContinuation = continuation
             central.scanForPeripherals(
@@ -124,56 +125,59 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         if let connected = connectedPeripheral, connected.identifier.uuidString == deviceID {
             return true
         }
+        return await connectToKnownPeripheral(deviceID: deviceID, logPrefix: "BLE connect")
+    }
+
+    public func reconnect(toDeviceID deviceID: String) async -> Bool {
+        // 已连接（且特征就绪）则直接成功。
+        // 用 isConnected 而非 connectedPeripheral，否则僵尸态会让重连假成功、永远不真正重连。
+        if isConnected { return true }
+        return await connectToKnownPeripheral(deviceID: deviceID, logPrefix: "BLE 重连")
+    }
+
+    /// 按设备 ID 建立连接（connect / reconnect 共用）。
+    ///
+    /// 关键修正：连接前先清掉本 central 对该外设的残留连接。
+    /// bluetoothd 在设备物理链路仍存活时会拒绝新的连接请求
+    /// （日志：Cannot connect device ... as it is already connected），
+    /// 只回一个 connectionReady，应用侧拿不到可用的 GATT 通道，
+    /// 导致重连看似"成功"却始终写不进命令。先 cancel 再 connect 可打破这个死结。
+    private func connectToKnownPeripheral(deviceID: String, logPrefix: String) async -> Bool {
         guard let uuid = UUID(uuidString: deviceID) else {
-            logger.error("BLE connect 失败：无效的设备 ID \(deviceID)")
+            logger.error("\(logPrefix) 失败：无效的设备 ID \(deviceID)")
             return false
         }
         guard await waitForPoweredOn() else {
-            logger.error("BLE 蓝牙未就绪，放弃连接")
+            logger.error("\(logPrefix)：蓝牙未就绪，放弃")
             return false
         }
-        // 优先从系统缓存取，找不到则从已扫描列表取
+        // 优先从系统缓存取，找不到则从当前已连接列表取
+        // （设备被系统保持连接时只会出现在 retrieveConnectedPeripherals 里）。
         var peripheral = central.retrievePeripherals(withIdentifiers: [uuid]).first
         if peripheral == nil {
             peripheral = central.retrieveConnectedPeripherals(withServices: [uartServiceUUID])
                 .first { $0.identifier.uuidString == deviceID }
         }
         guard let peripheral else {
-            logger.error("BLE connect 失败：未找到设备 \(deviceID)")
+            logger.log("\(logPrefix)：未找到设备 \(deviceID)")
             return false
         }
+        peripheral.delegate = self
+        // 清掉残留连接状态，避免撞上 "already connected" 而拿不到 GATT 通道。
+        central.cancelPeripheralConnection(peripheral)
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             scanContinuation = continuation
-            peripheral.delegate = self
             connectedPeripheral = peripheral
             central.connect(peripheral, options: nil)
-        }
-    }
-
-    public func reconnect(toDeviceID deviceID: String) async -> Bool {
-        // 已连接则直接成功。
-        if connectedPeripheral != nil { return true }
-        guard let uuid = UUID(uuidString: deviceID) else {
-            logger.error("BLE 重连失败：无效的设备 ID \(deviceID)")
-            return false
-        }
-        guard await waitForPoweredOn() else {
-            logger.error("BLE 蓝牙未就绪，放弃重连")
-            return false
-        }
-        if connectedPeripheral != nil { return true }
-        // retrievePeripherals 返回系统已知的外设（含上次连接过的），
-        // 避免每次重连都做全量扫描。
-        let peripherals = central.retrievePeripherals(withIdentifiers: [uuid])
-        guard let peripheral = peripherals.first else {
-            logger.log("BLE 未找到已保存的设备 \(deviceID)，将回退到扫描")
-            return false
-        }
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            scanContinuation = continuation
-            peripheral.delegate = self
-            connectedPeripheral = peripheral
-            central.connect(peripheral, options: nil)
+            // 超时兜底：CoreBluetooth 偶尔不回调 didConnect / didFailToConnect，
+            // continuation 若永不 resume 会让上层重连循环永久静默。
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                self.resumeScanIfPending(
+                    false,
+                    reason: "连接超时（\(logPrefix)）"
+                )
+            }
         }
     }
 
@@ -262,6 +266,15 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         logger.log("BLE 已断开：\(error?.localizedDescription ?? "normal")")
+        // 身份校验：旧连接迟到的断连回调不得清空新连接已就绪的特征。
+        // 若不校验，重连刚拿到的 rxCharacteristic 会被这条 stale 回调抹掉，
+        // 使 commander 停在「connectedPeripheral 非空、rxCharacteristic 为 nil」的
+        // 僵尸态：isConnected 为 false，重连守卫却因 connectedPeripheral 非空而假成功，
+        // 所有命令被静默丢弃，只有给硬件断电重启才能恢复。
+        guard peripheral === connectedPeripheral else {
+            logger.log("BLE 忽略过期断连回调：\(peripheral.identifier.uuidString)")
+            return
+        }
         connectedPeripheral = nil
         rxCharacteristic = nil
         // 通知上层 controller 启动重连流程（Issue #3）。
@@ -328,6 +341,16 @@ extension CoreBluetoothSignalLightCommander {
             scanContinuation = nil
             continuation.resume(returning: success)
         }
+    }
+
+    /// 超时兜底：只在 continuation 仍挂起时恢复，避免与正常回调重复 resume。
+    @MainActor
+    private func resumeScanIfPending(_ success: Bool, reason: String) {
+        guard scanContinuation != nil else { return }
+        logger.log("BLE \(reason)，按失败处理")
+        connectedPeripheral = nil
+        rxCharacteristic = nil
+        resumeScan(success)
     }
 
     @MainActor
