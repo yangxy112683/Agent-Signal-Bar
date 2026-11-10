@@ -43,6 +43,10 @@ public final class CoreBluetoothSignalLightCommander: NSObject {
     private var discoveredDevices: [SignalLightBLEDevice] = []
     // 断连回调：让上层 controller 启动重连流程。
     private var onDisconnectHandler: (@Sendable () async -> Void)?
+    /// 主动重连中：connectToKnownPeripheral 会先 cancel 现有连接，
+    /// 这会触发一次 didDisconnectPeripheral。该回调只做状态清理，
+    /// 不再通知上层启动重连（否则会和调用方正在跑的重连流程互相干扰）。
+    private var isReconnecting = false
 
     public init(scanDuration: TimeInterval = 5.0) {
         // 用 main queue 让 CoreBluetooth 的 delegate 回调直接在主线程执行，
@@ -164,6 +168,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
         }
         peripheral.delegate = self
         // 清掉残留连接状态，避免撞上 "already connected" 而拿不到 GATT 通道。
+        isReconnecting = true
         central.cancelPeripheralConnection(peripheral)
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             scanContinuation = continuation
@@ -255,12 +260,15 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        // 连接已建立，主动重连的抑制窗口到此结束。
+        isReconnecting = false
         peripheral.discoverServices([uartServiceUUID])
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         logger.error("BLE 连接失败：\(error?.localizedDescription ?? "unknown")")
         connectedPeripheral = nil
+        isReconnecting = false
         resumeScan(false)
     }
 
@@ -277,6 +285,11 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
         }
         connectedPeripheral = nil
         rxCharacteristic = nil
+        // 主动重连触发的断连：调用方本就在重连流程中，不再通知上层。
+        if isReconnecting {
+            isReconnecting = false
+            return
+        }
         // 通知上层 controller 启动重连流程（Issue #3）。
         // 用 Task 跳出 delegate 调用栈，避免回调中再次触发 CoreBluetooth 操作导致重入。
         if let onDisconnectHandler {
@@ -350,6 +363,7 @@ extension CoreBluetoothSignalLightCommander {
         logger.log("BLE \(reason)，按失败处理")
         connectedPeripheral = nil
         rxCharacteristic = nil
+        isReconnecting = false
         resumeScan(success)
     }
 
