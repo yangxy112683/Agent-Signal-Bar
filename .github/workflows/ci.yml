@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Select Xcode
         run: |
@@ -44,12 +44,18 @@ jobs:
 
       - name: Check shell scripts
         run: |
-          bash -n script/*.sh
+          for script in script/*.sh; do
+            bash -n "$script"
+          done
           bash -n scripts/agent-signal
           bash -n scripts/agent-signal-run
           bash -n scripts/codex-signal-hook
           bash -n scripts/claude-code-signal-hook
           bash -n scripts/generic-agent-signal-hook
+
+      - name: Run script regression tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s script -p 'test_*.py'
 
       - name: Run Swift tests
         run: swift test
@@ -61,6 +67,14 @@ jobs:
           swift build --product agent-signal
           swift build --product agent-signal-checks
           swift build --product agent-signal-icon-preview
+
+      - name: Build Intel compatibility slices
+        run: |
+          swift build --triple x86_64-apple-macosx --product AgentSignalLight
+          swift build --triple x86_64-apple-macosx --product agent-signal-light
+          swift build --triple x86_64-apple-macosx --product agent-signal
+          swift build --triple x86_64-apple-macosx --product agent-signal-checks
+          swift build --triple x86_64-apple-macosx --product agent-signal-icon-preview
 
       - name: Verify local integrations
         run: ./script/verify_local_integrations.sh

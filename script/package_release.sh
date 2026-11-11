@@ -10,9 +10,11 @@ PAYLOAD_DIR="$RELEASE_ROOT/$APP_NAME"
 ARCHIVE="$DIST_DIR/${RELEASE_BASENAME}.zip"
 DMG="$DIST_DIR/${RELEASE_BASENAME}.dmg"
 APPCAST="$DIST_DIR/appcast.xml"
+MACOS_UNIVERSAL_APPCAST="$DIST_DIR/${RELEASE_BASENAME}-macos-universal-appcast.xml"
 CHECKSUMS="$DIST_DIR/${RELEASE_BASENAME}-SHA256SUMS.txt"
 MANIFEST="$DIST_DIR/${RELEASE_BASENAME}-release-manifest.json"
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+source "$ROOT_DIR/script/universal_build.sh"
 
 cd "$ROOT_DIR"
 
@@ -26,13 +28,19 @@ swift_tool() {
   fi
 }
 
+read_version_value() {
+  local key="$1"
+  awk -F= -v key="$key" '$1 == key { print $2; exit }' "$ROOT_DIR/VERSION"
+}
+
 cleanup_duplicate_artifacts() {
   mkdir -p "$DIST_DIR"
   rm -f \
     "$DIST_DIR/$APP_NAME-local.zip" \
     "$DIST_DIR/$APP_NAME-local.dmg" \
     "$DIST_DIR/$APP_NAME-SHA256SUMS.txt" \
-    "$DIST_DIR/$APP_NAME-release-manifest.json"
+    "$DIST_DIR/$APP_NAME-release-manifest.json" \
+    "$DIST_DIR/$RELEASE_BASENAME-macos-universal-appcast.xml"
   find "$DIST_DIR" -maxdepth 1 \( \
     -name "$APP_NAME-local *.zip" -o \
     -name "$APP_NAME-local *.dmg" -o \
@@ -42,11 +50,25 @@ cleanup_duplicate_artifacts() {
     -name "$RELEASE_BASENAME-release-manifest *.json" -o \
     -name "$APP_NAME-SHA256SUMS *.txt" -o \
     -name "$RELEASE_BASENAME-SHA256SUMS *.txt" -o \
+    -name "$RELEASE_BASENAME-v*-macos-universal.zip" -o \
+    -name "$RELEASE_BASENAME-v*-macos-universal.dmg" -o \
     -name "$APP_NAME *.app" \
   \) -exec rm -rf {} +
 }
 
 cleanup_duplicate_artifacts
+
+if [[ -z "${AGENT_SIGNAL_LIGHT_ARCHS+x}" ]]; then
+  RELEASE_ARCHS="arm64 x86_64"
+else
+  RELEASE_ARCHS="${AGENT_SIGNAL_LIGHT_ARCHS:-}"
+fi
+RELEASE_ARCHS="$(agent_signal_normalize_archs "$RELEASE_ARCHS")"
+export AGENT_SIGNAL_LIGHT_ARCHS="$RELEASE_ARCHS"
+APP_VERSION="$(read_version_value VERSION)"
+MACOS_UNIVERSAL_BASENAME="${RELEASE_BASENAME}-v${APP_VERSION}-macos-universal"
+MACOS_UNIVERSAL_ARCHIVE="$DIST_DIR/${MACOS_UNIVERSAL_BASENAME}.zip"
+MACOS_UNIVERSAL_DMG="$DIST_DIR/${MACOS_UNIVERSAL_BASENAME}.dmg"
 
 PACKAGE_APP_DIST_DIR="$(mktemp -d /tmp/agent-signal-light-package.XXXXXX)"
 trap 'rm -rf "$PACKAGE_APP_DIST_DIR"' EXIT
@@ -56,11 +78,12 @@ APP_BUNDLE="$(
   "$ROOT_DIR/script/package_app.sh" --release
 )"
 "$ROOT_DIR/script/install_cli.sh" >/dev/null
-swift_tool build -c release --product agent-signal-icon-preview >/dev/null
-PREVIEW_BINARY="$(swift_tool build -c release --show-bin-path)/agent-signal-icon-preview"
 mkdir -p "$ROOT_DIR/dist/bin"
-cp "$PREVIEW_BINARY" "$ROOT_DIR/dist/bin/agent-signal-icon-preview"
-chmod +x "$ROOT_DIR/dist/bin/agent-signal-icon-preview"
+agent_signal_build_product "agent-signal-icon-preview" "agent-signal-icon-preview" release "$ROOT_DIR/dist/bin/agent-signal-icon-preview" "$RELEASE_ARCHS" >/dev/null
+agent_signal_verify_binary_archs "$APP_BUNDLE/Contents/MacOS/$APP_NAME" "$RELEASE_ARCHS" "$APP_NAME app executable"
+agent_signal_verify_binary_archs "$APP_BUNDLE/Contents/Resources/dist/bin/agent-signal-light" "$RELEASE_ARCHS" "bundled agent-signal-light CLI"
+agent_signal_verify_binary_archs "$ROOT_DIR/dist/bin/agent-signal-light" "$RELEASE_ARCHS" "release agent-signal-light CLI"
+agent_signal_verify_binary_archs "$ROOT_DIR/dist/bin/agent-signal-icon-preview" "$RELEASE_ARCHS" "release icon preview CLI"
 "$ROOT_DIR/dist/bin/agent-signal-icon-preview" "$ROOT_DIR/dist/status-icon-preview" >/dev/null
 
 rm -rf "$PAYLOAD_DIR"
@@ -79,13 +102,6 @@ cp -R "$ROOT_DIR/Tests" "$PAYLOAD_DIR/Tests"
 cp -R "$ROOT_DIR/script" "$PAYLOAD_DIR/script"
 cp -R "$ROOT_DIR/scripts" "$PAYLOAD_DIR/scripts"
 cp -R "$ROOT_DIR/docs" "$PAYLOAD_DIR/docs"
-mkdir -p "$PAYLOAD_DIR/.codex"
-if [[ -f "$ROOT_DIR/.codex/config.toml" ]]; then
-  cp "$ROOT_DIR/.codex/config.toml" "$PAYLOAD_DIR/.codex/config.toml"
-fi
-if [[ -d "$ROOT_DIR/.codex/environments" ]]; then
-  cp -R "$ROOT_DIR/.codex/environments" "$PAYLOAD_DIR/.codex/environments"
-fi
 cp -R "$APP_BUNDLE" "$PAYLOAD_DIR/dist/$APP_NAME.app"
 rm -rf "$DIST_DIR/$APP_NAME.app"
 ditto --norsrc --noextattr "$APP_BUNDLE" "$DIST_DIR/$APP_NAME.app"
@@ -98,7 +114,6 @@ printf "packaged-release\n" >"$PAYLOAD_DIR/dist/.packaged-release"
 find "$PAYLOAD_DIR" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$PAYLOAD_DIR" -type f \( -name '*.pyc' -o -name '.DS_Store' \) -delete
 find "$PAYLOAD_DIR" -type d \( -name marketing -o -name social -o -name video \) -prune -exec rm -rf {} +
-rm -f "$PAYLOAD_DIR/.codex/hooks.json" "$PAYLOAD_DIR/.codex"/hooks.json.*
 
 chmod +x "$PAYLOAD_DIR/dist/bin/agent-signal-light" \
   "$PAYLOAD_DIR/dist/bin/agent-signal" \
@@ -119,11 +134,16 @@ rm -f "$ARCHIVE" "$DMG" "$APPCAST" "$CHECKSUMS" "$MANIFEST"
   cd "$RELEASE_ROOT"
   ditto -c -k --norsrc --keepParent "$APP_NAME" "$ARCHIVE"
 )
+ditto --norsrc --noextattr "$ARCHIVE" "$MACOS_UNIVERSAL_ARCHIVE"
 
 "$ROOT_DIR/script/package_dmg.sh" --use-existing-app --output "$DMG" >/dev/null
+ditto --norsrc --noextattr "$DMG" "$MACOS_UNIVERSAL_DMG"
 "$ROOT_DIR/script/generate_appcast.sh" >/dev/null
+SPARKLE_UPDATE_ARCHIVE="$MACOS_UNIVERSAL_DMG" \
+  SPARKLE_APPCAST="$MACOS_UNIVERSAL_APPCAST" \
+  "$ROOT_DIR/script/generate_appcast.sh" >/dev/null
 
-/usr/bin/python3 - "$ROOT_DIR" "$APP_NAME" "$APP_BUNDLE" "$ARCHIVE" "$DMG" "$APPCAST" "$MANIFEST" <<'PY'
+/usr/bin/python3 - "$ROOT_DIR" "$APP_NAME" "$APP_BUNDLE" "$ARCHIVE" "$DMG" "$APPCAST" "$MACOS_UNIVERSAL_ARCHIVE" "$MACOS_UNIVERSAL_DMG" "$MACOS_UNIVERSAL_APPCAST" "$MANIFEST" <<'PY'
 import hashlib
 import json
 import os
@@ -139,7 +159,10 @@ app_bundle = Path(sys.argv[3])
 archive = Path(sys.argv[4])
 dmg = Path(sys.argv[5])
 appcast = Path(sys.argv[6])
-manifest_path = Path(sys.argv[7])
+macos_universal_archive = Path(sys.argv[7])
+macos_universal_dmg = Path(sys.argv[8])
+macos_universal_appcast = Path(sys.argv[9])
+manifest_path = Path(sys.argv[10])
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -168,7 +191,14 @@ git_commit = run_output(["git", "rev-parse", "--short", "HEAD"])
 git_dirty = run_output(["git", "status", "--short"])
 
 artifacts = []
-for role, path in [("source_zip", archive), ("installer_dmg", dmg), ("sparkle_appcast", appcast)]:
+for role, path in [
+    ("source_zip", archive),
+    ("installer_dmg", dmg),
+    ("sparkle_appcast", appcast),
+    ("macos_universal_zip", macos_universal_archive),
+    ("macos_universal_dmg", macos_universal_dmg),
+    ("macos_universal_appcast", macos_universal_appcast),
+]:
     artifacts.append(
         {
             "role": role,
@@ -210,15 +240,21 @@ PY
 
 (
   cd "$ROOT_DIR"
-  shasum -a 256 \
+    shasum -a 256 \
     "dist/$(basename "$ARCHIVE")" \
     "dist/$(basename "$DMG")" \
     "dist/$(basename "$APPCAST")" \
+    "dist/$(basename "$MACOS_UNIVERSAL_ARCHIVE")" \
+    "dist/$(basename "$MACOS_UNIVERSAL_DMG")" \
+    "dist/$(basename "$MACOS_UNIVERSAL_APPCAST")" \
     "dist/$(basename "$MANIFEST")" >"$CHECKSUMS"
 )
 
 echo "Release archive: $ARCHIVE"
 echo "Release DMG: $DMG"
 echo "Sparkle appcast: $APPCAST"
+echo "macOS universal archive: $MACOS_UNIVERSAL_ARCHIVE"
+echo "macOS universal DMG: $MACOS_UNIVERSAL_DMG"
+echo "macOS universal appcast: $MACOS_UNIVERSAL_APPCAST"
 echo "Release manifest: $MANIFEST"
 echo "Checksums: $CHECKSUMS"

@@ -8,13 +8,22 @@ Use this checklist before treating a build as ready for daily use or local shari
 - Before handing off a build that should be visually smoke-tested, run `./script/verify_release_all.sh --skip-package --ui`.
 - For final verification on this Mac after hooks, login item, and the app process are intentionally configured, run `./script/verify_release_all.sh --skip-package --ui --strict-doctor`.
 - For a faster non-UI re-check after artifacts already exist, run `./script/verify_release_all.sh --skip-package`.
+- When preparing artifacts without reading the user's hook settings, Claude log, launch-agent plist, or signal state, run `./script/verify_release_all.sh --isolated` in an isolated build/test environment. Add `--skip-package` to reuse artifacts. This option creates and removes a temporary diagnostic home and CLI state under `/private/tmp`; it rejects `--ui`, `--launch`, and `--strict-doctor` because those options restart the running app.
+
+`--isolated` scopes the shell diagnostics and CLI state only. Swift tests use Foundation application-support/cache paths and may use Keychain or start monitoring through default dependencies, so a SwiftPM scratch path alone is insufficient. Run those tests with independently isolated fixtures or a process sandbox that denies access to the real user data. Keep SwiftPM scratch and compiler caches under `/private/tmp`.
+
+For standalone diagnostics, set `AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME` to a temporary fixture home. `doctor.sh` and `export_diagnostics.sh` resolve user hook settings, Claude logs, and launch-agent metadata from it, and the exporter forwards it to `install_hooks.py --home`. Explicit `AGENT_SIGNAL_LIGHT_STATE_FILE` / `AGENT_SIGNAL_LIGHT_STATE_DIR` overrides still take precedence. Without the diagnostic-home override, existing local diagnostic behavior is unchanged.
+
+ZIP and DMG verification reject older bundled diagnostic scripts that do not support this override when it is set. Rebuild those artifacts before retrying `--isolated --skip-package`.
 
 The all-in-one release gate replaces the old manual command chain. It packages release artifacts unless `--skip-package` is used, then verifies:
 
 - shell scripts parse
+- isolated Python script regression tests pass
 - Swift tests pass
 - release checksums match
-- Sparkle `appcast.xml` exists and is included in release checksums
+- Sparkle `appcast.xml` and `AgentSignalBar-macos-universal-appcast.xml` exist and are included in release checksums
+- release app, bundled CLI, release CLI, and icon preview CLI include `arm64 x86_64` slices for Apple Silicon and Intel Mac
 - `./scripts/agent-signal status --json` parses
 - release zip extracts, contains the expected app/scripts/docs/previews, and installs without rebuilding
 - release DMG verifies, mounts, copies to a temporary Applications directory, and preserves code signing
@@ -63,7 +72,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
   - `阻塞`
   - `关闭灯` gray paused, not all black/off
 - Use `./scripts/agent-signal stale --session smoke --agent script --event StaleCheck` and confirm stale uses the gray/yellow stale display.
-- Open `连接`, click `导出诊断`, confirm Finder selects a new zip under `dist/diagnostics/`, and confirm the settings window shows the archive path.
+- Open `连接`, click `导出诊断`, confirm Finder selects a new zip under `~/Library/Application Support/AgentSignalLight/Diagnostics/`, and confirm the settings window shows the archive path. The installed app must not attempt to write diagnostics inside its signed bundle.
 - Open `关于`, click `检查更新`, and confirm the Sparkle update UI opens or reports the current build correctly. Confirm the `自动检查更新` switch maps to Sparkle rather than the legacy GitHub notification checker.
 
 ## Hook Smoke Test
@@ -80,7 +89,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 
 - For manual startup, run `./script/install_app.sh`.
 - For release zip startup, confirm `./script/install_app.sh --no-open` installs the existing `dist/AgentSignalLight.app` without rebuilding.
-- For scripted DMG startup, run `./script/install_app.sh --dmg dist/AgentSignalBar.dmg`.
+- For scripted DMG startup, run `./script/install_app.sh --dmg dist/AgentSignalBar.dmg`; for the platform-named universal artifact, also verify `dist/AgentSignalBar-v<version>-macos-universal.dmg` when present.
 - For login startup, run `./script/install_app.sh --login-item`, or toggle `开机自启动` in the app.
 - Run `./script/doctor.sh --full`.
 - If login startup is enabled, confirm:

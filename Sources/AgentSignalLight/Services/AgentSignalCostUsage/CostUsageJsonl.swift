@@ -1,9 +1,16 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 enum CostUsageJsonl {
     struct Line {
         let bytes: Data
         let wasTruncated: Bool
+        let startOffset: Int64
+        let endOffset: Int64
     }
 
     @discardableResult
@@ -12,6 +19,7 @@ enum CostUsageJsonl {
         offset: Int64 = 0,
         maxLineBytes: Int,
         prefixBytes: Int,
+        stopBeforeLine: ((Line) -> Bool)? = nil,
         onLine: (Line) -> Void) throws
         -> Int64
     {
@@ -21,6 +29,7 @@ enum CostUsageJsonl {
             maxLineBytes: maxLineBytes,
             prefixBytes: prefixBytes,
             checkCancellation: nil,
+            stopBeforeLine: stopBeforeLine,
             onLine: onLine)
     }
 
@@ -31,6 +40,7 @@ enum CostUsageJsonl {
         maxLineBytes: Int,
         prefixBytes: Int,
         checkCancellation: (() throws -> Void)? = nil,
+        stopBeforeLine: ((Line) -> Bool)? = nil,
         onLine: (Line) -> Void) throws
         -> Int64
     {
@@ -47,6 +57,8 @@ enum CostUsageJsonl {
         var lineBytes = 0
         var truncated = false
         var bytesRead: Int64 = 0
+        var lineStartOffset: Int64 = 0
+        var stoppedOffset: Int64?
 
         func appendSegment(_ bytes: UnsafePointer<UInt8>, count: Int) {
             guard count > 0 else { return }
@@ -62,13 +74,23 @@ enum CostUsageJsonl {
             }
         }
 
-        func flushLine() {
-            guard lineBytes > 0 else { return }
-            let line = Line(bytes: current, wasTruncated: truncated)
+        func flushLine(contentEndOffset: Int64) -> Bool {
+            guard lineBytes > 0 else { return false }
+            let line = Line(
+                bytes: current,
+                wasTruncated: truncated,
+                startOffset: startOffset + lineStartOffset,
+                endOffset: startOffset + contentEndOffset
+            )
+            if stopBeforeLine?(line) == true {
+                stoppedOffset = startOffset + lineStartOffset
+                return true
+            }
             onLine(line)
             current.removeAll(keepingCapacity: true)
             lineBytes = 0
             truncated = false
+            return false
         }
 
         while true {
@@ -76,34 +98,63 @@ enum CostUsageJsonl {
             let reachedEOF = try autoreleasepool {
                 let chunk = try handle.read(upToCount: 256 * 1024) ?? Data()
                 if chunk.isEmpty {
-                    flushLine()
+                    // Some existing Codex fixtures/files contain a complete
+                    // final JSON object without a trailing newline. Consume it
+                    // only when it is demonstrably complete; otherwise retain
+                    // the line-start cursor for a later writer append.
+                    if lineBytes > 0,
+                       !truncated,
+                       (try? JSONSerialization.jsonObject(with: current)) != nil {
+                        _ = flushLine(contentEndOffset: bytesRead)
+                    }
                     return true
                 }
 
                 try checkCancellation?()
+                let chunkStartOffset = bytesRead
                 bytesRead += Int64(chunk.count)
                 chunk.withUnsafeBytes { rawBuffer in
                     guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
                     var segmentStart = 0
-                    var index = 0
-                    while index < rawBuffer.count {
-                        if base[index] == 0x0A {
-                            appendSegment(base.advanced(by: segmentStart), count: index - segmentStart)
-                            flushLine()
-                            segmentStart = index + 1
+                    while segmentStart < rawBuffer.count {
+                        // Skip payload bytes with the system's vectorized search,
+                        // including bytes beyond the retained line prefix.
+                        #if canImport(Darwin) || canImport(Glibc)
+                        guard let newline = memchr(
+                            base.advanced(by: segmentStart), 0x0A,
+                            rawBuffer.count - segmentStart) else { break }
+                        let index = base.distance(to: newline.assumingMemoryBound(to: UInt8.self))
+                        #else
+                        var index = segmentStart
+                        while index < rawBuffer.count, base[index] != 0x0A { index += 1 }
+                        guard index < rawBuffer.count else { break }
+                        #endif
+                        appendSegment(base.advanced(by: segmentStart), count: index - segmentStart)
+                        if flushLine(contentEndOffset: chunkStartOffset + Int64(index)) {
+                            return
                         }
-                        index += 1
+                        lineStartOffset = chunkStartOffset + Int64(index + 1)
+                        segmentStart = index + 1
                     }
-                    if segmentStart < rawBuffer.count {
+                    if stoppedOffset == nil, segmentStart < rawBuffer.count {
                         appendSegment(base.advanced(by: segmentStart), count: rawBuffer.count - segmentStart)
                     }
                 }
-                return false
+                return stoppedOffset != nil
             }
             if reachedEOF { break }
             try checkCancellation?()
         }
 
+        if let stoppedOffset {
+            return stoppedOffset
+        }
+        // JSONL writers commonly append a record in more than one write. Keep
+        // the cursor at the beginning of an unterminated line so the next scan
+        // re-reads the complete record instead of starting in its middle.
+        if lineBytes > 0 {
+            return startOffset + lineStartOffset
+        }
         return startOffset + bytesRead
     }
 }

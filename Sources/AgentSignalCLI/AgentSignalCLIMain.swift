@@ -231,7 +231,7 @@ struct AgentSignalCLI {
             }
             return 0
         } catch {
-            fputs("\(commandName()): \(error.localizedDescription)\n", stderr)
+            writeError("\(commandName()): \(error.localizedDescription)")
             return 1
         }
     }
@@ -424,7 +424,14 @@ private func printStatusJSON(_ snapshot: SignalSnapshot) {
             print(output)
         }
     } catch {
-        fputs("\(commandName()): \(error.localizedDescription)\n", stderr)
+        writeError("\(commandName()): \(error.localizedDescription)")
+    }
+}
+
+private func writeError(_ message: String) {
+    let line = message.hasSuffix("\n") ? message : "\(message)\n"
+    if let data = line.data(using: .utf8) {
+        FileHandle.standardError.write(data)
     }
 }
 
@@ -479,6 +486,7 @@ private struct SessionOutput: Encodable {
     let signal: AgentSignal
     let lastEvent: String?
     let updatedAt: Date
+    let quota: AgentQuotaStatus?
 
     init(session: SessionStatus) {
         sessionID = session.sessionID
@@ -486,6 +494,7 @@ private struct SessionOutput: Encodable {
         signal = session.signal
         lastEvent = session.lastEvent
         updatedAt = session.updatedAt
+        quota = session.quota
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -494,6 +503,7 @@ private struct SessionOutput: Encodable {
         case signal
         case lastEvent = "last_event"
         case updatedAt = "updated_at"
+        case quota
     }
 }
 

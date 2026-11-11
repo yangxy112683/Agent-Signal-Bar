@@ -1,5 +1,6 @@
 import AgentSignalLightCore
 import Foundation
+import OSLog
 #if canImport(SQLite3)
 import SQLite3
 #endif
@@ -14,6 +15,15 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
     let modelPriorityTokenTotals: [String: Int]
     let modelStandardEstimatedCostTotals: [String: Double]
     let modelPriorityEstimatedCostTotals: [String: Double]
+    // Optional so snapshots written by older versions remain decodable.
+    let hasUnpricedUsage: Bool?
+    let modelUnpricedTokenTotals: [String: Int]?
+    let modelStandardUnpricedTokenTotals: [String: Int]?
+    let modelPriorityUnpricedTokenTotals: [String: Int]?
+
+    var costIsPartial: Bool {
+        hasUnpricedUsage == true || (totalTokens > 0 && estimatedCostUSD == nil)
+    }
 
     init(
         day: Date,
@@ -24,7 +34,11 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
         modelStandardTokenTotals: [String: Int] = [:],
         modelPriorityTokenTotals: [String: Int] = [:],
         modelStandardEstimatedCostTotals: [String: Double] = [:],
-        modelPriorityEstimatedCostTotals: [String: Double] = [:]
+        modelPriorityEstimatedCostTotals: [String: Double] = [:],
+        hasUnpricedUsage: Bool? = nil,
+        modelUnpricedTokenTotals: [String: Int]? = nil,
+        modelStandardUnpricedTokenTotals: [String: Int]? = nil,
+        modelPriorityUnpricedTokenTotals: [String: Int]? = nil
     ) {
         self.day = day
         self.totalTokens = totalTokens
@@ -35,6 +49,10 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
         self.modelPriorityTokenTotals = modelPriorityTokenTotals
         self.modelStandardEstimatedCostTotals = modelStandardEstimatedCostTotals
         self.modelPriorityEstimatedCostTotals = modelPriorityEstimatedCostTotals
+        self.hasUnpricedUsage = hasUnpricedUsage
+        self.modelUnpricedTokenTotals = modelUnpricedTokenTotals
+        self.modelStandardUnpricedTokenTotals = modelStandardUnpricedTokenTotals
+        self.modelPriorityUnpricedTokenTotals = modelPriorityUnpricedTokenTotals
     }
 
     var id: TimeInterval {
@@ -42,10 +60,159 @@ struct CodexTokenActivityDay: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-final class CodexTokenActivityScanner: @unchecked Sendable {
+struct CodexVerifiedPrefixSnapshot: Equatable, Sendable {
+    let statFingerprint: Int64
+    let changeTimeNanoseconds: Int64
+    let size: UInt64
+
+    func matches(_ cursor: CodexTokenObservationCursor) -> Bool {
+        cursor.sourceStatFingerprint == statFingerprint
+            && cursor.sourceChangeTimeNanoseconds == changeTimeNanoseconds
+            && cursor.endOffset <= size
+    }
+}
+
+struct CodexTokenActivityScanWatermark: Equatable, Sendable {
+    let sessionID: String?
+    let sourceID: String
+    let sourceGeneration: String
+    let sourceStatFingerprint: Int64?
+    let sourceChangeTimeNanoseconds: Int64?
+    let endOffset: UInt64
+    let lineFingerprint: String
+    let eventTimestamp: Date?
+    let totalTokens: Int?
+    // Evidence for subtracting this scanned baseline from a later live total.
+    // It does not extend the scanned offset or cover any unscanned token event.
+    let verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot?
+
+    init(
+        sessionID: String?,
+        sourceID: String,
+        sourceGeneration: String,
+        endOffset: UInt64,
+        lineFingerprint: String,
+        eventTimestamp: Date?,
+        totalTokens: Int?,
+        sourceStatFingerprint: Int64? = nil,
+        sourceChangeTimeNanoseconds: Int64? = nil,
+        verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot? = nil
+    ) {
+        self.sessionID = sessionID
+        self.sourceID = sourceID
+        self.sourceGeneration = sourceGeneration
+        self.sourceStatFingerprint = sourceStatFingerprint
+        self.sourceChangeTimeNanoseconds = sourceChangeTimeNanoseconds
+        self.endOffset = endOffset
+        self.lineFingerprint = lineFingerprint
+        self.eventTimestamp = eventTimestamp
+        self.totalTokens = totalTokens
+        self.verifiedPrefixSnapshot = verifiedPrefixSnapshot
+    }
+}
+
+struct CodexTokenActivityScanResult: Equatable, Sendable {
+    let days: [CodexTokenActivityDay]
+    let details: CodexUsageDetails?
+    let watermarks: [CodexTokenActivityScanWatermark]
+    /// A complete transaction can still exclude explicitly ambiguous sources.
+    /// Those sources never contribute days or absorbing watermarks.
+    let isComplete: Bool
+    let failureDescription: String?
+    let isSourceChanging: Bool
+    let warningDescription: String?
+    let excludedSourceIDs: Set<String>
+    let excludedSessionIDs: Set<String>
+
+    init(
+        days: [CodexTokenActivityDay],
+        watermarks: [CodexTokenActivityScanWatermark],
+        isComplete: Bool = true,
+        failureDescription: String? = nil,
+        isSourceChanging: Bool = false,
+        warningDescription: String? = nil,
+        excludedSourceIDs: Set<String> = [],
+        excludedSessionIDs: Set<String> = [],
+        details: CodexUsageDetails? = nil
+    ) {
+        self.days = days
+        self.details = details
+        self.watermarks = watermarks
+        self.isComplete = isComplete
+        self.failureDescription = failureDescription
+        self.isSourceChanging = isSourceChanging
+        self.warningDescription = warningDescription
+        self.excludedSourceIDs = excludedSourceIDs
+        self.excludedSessionIDs = excludedSessionIDs
+    }
+
+    static func failure(days: [CodexTokenActivityDay], error: Error) -> Self {
+        let nsError = error as NSError
+        Logger(subsystem: "com.agentsignallight.AgentSignalLight", category: "TokenScan")
+            .error("History scan failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code)")
+        let changing = (nsError.domain == "AgentSignalCostUsage.CodexConsistency" && nsError.code == 3)
+            || (error as? CostUsageScanner.CodexInventoryError).map {
+                if case .changedDuringEnumeration = $0 { return true }
+                return false
+            } == true
+            || nsError.domain == "AgentSignalCostUsage.CodexCheckpoint"
+        return Self(
+            days: days, watermarks: [], isComplete: false,
+            failureDescription: changing ? nil : "Local session history could not be read.",
+            isSourceChanging: changing)
+    }
+}
+
+protocol CodexTokenActivityScanning: Sendable {
+    func scanDailyActivityResult(now: Date, days: Int,
+        scanProgress: @escaping @Sendable (TokenScanProgress) -> Void) -> CodexTokenActivityScanResult
+
+    func cachedDailyActivity(now: Date, days: Int) -> [CodexTokenActivityDay]?
+
+    func clearCache()
+
+    /// Returns activity through `now`; events timestamped after that cutoff must
+    /// remain available to a later incremental scan.
+    func scanDailyActivity(
+        now: Date,
+        days: Int,
+        progress: (([CodexTokenActivityDay]) -> Void)?
+    ) -> [CodexTokenActivityDay]
+
+    func scanDailyActivityResult(
+        now: Date,
+        days: Int,
+        progress: (([CodexTokenActivityDay]) -> Void)?
+    ) -> CodexTokenActivityScanResult
+}
+
+extension CodexTokenActivityScanning {
+    func scanDailyActivityResult(now: Date, days: Int,
+        scanProgress: @escaping @Sendable (TokenScanProgress) -> Void) -> CodexTokenActivityScanResult {
+        scanProgress(.init(phase: .discovering))
+        let result = scanDailyActivityResult(now: now, days: days, progress: nil)
+        scanProgress(.init(phase: .validating))
+        return result
+    }
+
+    func clearCache() {}
+
+    func scanDailyActivityResult(
+        now: Date,
+        days: Int,
+        progress: (([CodexTokenActivityDay]) -> Void)?
+    ) -> CodexTokenActivityScanResult {
+        CodexTokenActivityScanResult(
+            days: scanDailyActivity(now: now, days: days, progress: progress),
+            watermarks: []
+        )
+    }
+}
+
+final class CodexTokenActivityScanner: CodexTokenActivityScanning, @unchecked Sendable {
     private typealias ModelContext = (lineNumber: Int, model: String, turnID: String?)
 
-    static let currentCacheVersion = 23
+    static let currentCacheVersion = 27
 
     private static let newlineNeedle = Data([0x0A])
     private static let tokenCountNeedle = Data("token_count".utf8)
@@ -64,13 +231,16 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
     private let costUsageCacheRoot: URL?
     private let usesAgentSignalCostUsageScanner: Bool
     private let priorityDatabaseURL: URL?
+    private let costUsageScanCheckpoint = CostUsageScanner.CodexScanCheckpoint()
 
     init(
         sessionRootURLs: [URL]? = nil,
         fileManager: FileManager = .default,
-        calendar: Calendar = .current,
+        calendar: Calendar = .autoupdatingCurrent,
         readChunkBytes: Int = 4 * 1024 * 1024,
         cacheURL: URL? = nil,
+        costUsageCacheRootURL: URL? = nil,
+        usesAgentSignalCostUsageScanner: Bool? = nil,
         priorityDatabaseURL: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
@@ -82,8 +252,8 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         self.calendar = calendar
         self.readChunkBytes = readChunkBytes
         self.cacheURL = cacheURL ?? Self.defaultCacheURL(fileManager: fileManager)
-        self.usesAgentSignalCostUsageScanner = cacheURL == nil
-        self.costUsageCacheRoot = Self.defaultCostUsageCacheRoot(
+        self.usesAgentSignalCostUsageScanner = usesAgentSignalCostUsageScanner ?? (cacheURL == nil)
+        self.costUsageCacheRoot = costUsageCacheRootURL ?? Self.defaultCostUsageCacheRoot(
             fileManager: fileManager,
             cacheURL: cacheURL
         )
@@ -104,6 +274,82 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         let costUsageDays = agentSignalCostUsageDailyActivity(now: now, days: days, forceRefresh: true)
         progress?(costUsageDays)
         return costUsageDays
+    }
+
+    func scanDailyActivityResult(
+        now: Date,
+        days: Int,
+        progress: (([CodexTokenActivityDay]) -> Void)? = nil
+    ) -> CodexTokenActivityScanResult {
+        performDailyActivityScan(now: now, days: days, progress: progress, scanProgress: nil)
+    }
+
+    func scanDailyActivityResult(now: Date, days: Int,
+        scanProgress: @escaping @Sendable (TokenScanProgress) -> Void) -> CodexTokenActivityScanResult {
+        performDailyActivityScan(now: now, days: days, progress: nil, scanProgress: scanProgress)
+    }
+
+    private func performDailyActivityScan(now: Date, days: Int,
+        progress: (([CodexTokenActivityDay]) -> Void)?,
+        scanProgress: (@Sendable (TokenScanProgress) -> Void)?) -> CodexTokenActivityScanResult {
+        guard usesAgentSignalCostUsageScanner else {
+            let activity = scanDailyActivity(now: now, days: days, progress: progress)
+            return CodexTokenActivityScanResult(days: activity, watermarks: [])
+        }
+        do {
+            let report = try agentSignalCostUsageDailyActivityResult(now: now, days: days, scanProgress: scanProgress)
+            let activity = codexTokenActivityDays(from: report)
+            let cache = try CostUsageCacheIO.loadRequired(provider: .codex, cacheRoot: costUsageCacheRoot)
+            let watermarks = try agentSignalCostUsageScanWatermarks(through: now, committedCache: cache)
+            let details = CodexUsageDetails.build(cache: cache, now: now,
+                modelsDevCatalog: CostUsagePricing.modelsDevCatalog(cacheRoot: costUsageCacheRoot)
+                    ?? ModelsDevCatalog(providers: [:]))
+            progress?(activity)
+            return CodexTokenActivityScanResult(
+                days: activity,
+                watermarks: watermarks,
+                warningDescription: report.warnings.isEmpty ? nil
+                    : "Excluded \(report.warnings.count) ambiguous session group(s).",
+                excludedSourceIDs: Set(report.warnings.flatMap(\.sourcePaths).map(Self.canonicalTokenSourceID)),
+                excludedSessionIDs: Set(report.warnings.map(\.sessionID)),
+                details: details
+            )
+        } catch {
+            // Preserve the last known-good aggregate. The model will retry with
+            // backoff, but an I/O/enumeration failure cannot flash usage to zero.
+            return .failure(days: cachedDailyActivity(now: now, days: days) ?? [], error: error)
+        }
+    }
+
+    func clearCache() {
+        costUsageScanCheckpoint.clear()
+        if let cacheURL {
+            try? fileManager.removeItem(at: cacheURL)
+        }
+        guard usesAgentSignalCostUsageScanner else { return }
+        let currentCostCacheURL = CostUsageCacheIO.cacheFileURL(
+            provider: .codex,
+            cacheRoot: costUsageCacheRoot
+        )
+        let costCacheDirectory = currentCostCacheURL.deletingLastPathComponent()
+        if let artifacts = try? fileManager.contentsOfDirectory(
+            at: costCacheDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for artifact in artifacts {
+                let name = artifact.lastPathComponent
+                guard name.hasSuffix(".json"),
+                      (name.hasPrefix("codex-v") || name.hasPrefix("pi-sessions-v"))
+                else { continue }
+                try? fileManager.removeItem(at: artifact)
+            }
+        } else {
+            try? fileManager.removeItem(at: currentCostCacheURL)
+            try? fileManager.removeItem(
+                at: PiSessionCostCacheIO.cacheFileURL(cacheRoot: costUsageCacheRoot)
+            )
+        }
     }
 
     func legacyScanDailyActivity(
@@ -362,6 +608,39 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         return codexTokenActivityDays(from: CostUsageDailyReport.merged([codexReport, piReport]))
     }
 
+    private func agentSignalCostUsageDailyActivityResult(
+        now: Date,
+        days: Int,
+        scanProgress: (@Sendable (TokenScanProgress) -> Void)? = nil
+    ) throws -> CostUsageDailyReport {
+        let range = agentSignalCostUsageDateRange(now: now, days: days)
+        var options = agentSignalCostUsageOptions(forceRefresh: true)
+        options.codexScanProgress = scanProgress
+        let codexReport = try CostUsageScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: range.since,
+            until: range.until,
+            now: now,
+            options: options,
+            checkCancellation: nil
+        )
+        var piOptions = PiSessionCostScanner.Options(
+            cacheRoot: options.cacheRoot,
+            refreshMinIntervalSeconds: 0,
+            forceRescan: false
+        )
+        piOptions.refreshMinIntervalSeconds = 0
+        let piReport = try PiSessionCostScanner.loadDailyReportCancellable(
+            provider: .codex,
+            since: range.since,
+            until: range.until,
+            now: now,
+            options: piOptions,
+            checkCancellation: nil
+        )
+        return CostUsageDailyReport.merged([codexReport, piReport])
+    }
+
     private func agentSignalCachedCostUsageDailyActivity(
         now: Date,
         days: Int
@@ -372,8 +651,11 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         var reports: [CostUsageDailyReport] = []
 
         let cache = CostUsageCacheIO.load(provider: .codex, cacheRoot: options.cacheRoot)
-        if !cache.days.isEmpty,
-           cache.roots == CostUsageScanner.codexRootsFingerprint(options: options),
+        let currentRootIdentities = Set(CostUsageScanner.codexRootsFingerprint(options: options).keys)
+        // Recovered pagination can be the entire history even when the ordinary
+        // inventory contains only empty conflict sentinels. The report builder
+        // applies those ledgers and checks whether any displayable data exists.
+        if cache.roots.map({ Set($0.keys) }) == currentRootIdentities,
            !CostUsageScanner.requestedWindowExpandsCache(range: costRange, cache: cache) {
             let report = CostUsageScanner.buildCodexReportFromCache(
                 cache: cache,
@@ -399,6 +681,357 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         return codexTokenActivityDays(from: CostUsageDailyReport.merged(reports))
     }
 
+    func agentSignalCostUsageScanWatermarks(
+        through: Date,
+        committedCache: CostUsageCache? = nil
+    ) throws -> [CodexTokenActivityScanWatermark] {
+        let options = agentSignalCostUsageOptions(forceRefresh: false)
+        // A complete scan promises both an aggregate and the exact frontier
+        // that produced it. Treat a failed cache read as an incomplete scan;
+        // returning an empty/old frontier here can double-count the next poll.
+        let cache = try committedCache ?? CostUsageCacheIO.loadRequired(
+            provider: .codex,
+            cacheRoot: options.cacheRoot
+        )
+        try CostUsageScanner.validateCodexPaginatedSnapshots(cache: cache, checkCancellation: nil)
+        let effectiveCache = CostUsageScanner.cacheIncludingCodexPaginatedHistory(cache)
+        return try agentSignalCostUsageScanWatermarksFromCache(effectiveCache, through: through)
+    }
+
+    private func agentSignalCostUsageScanWatermarksFromCache(
+        _ cache: CostUsageCache, through: Date
+    ) throws -> [CodexTokenActivityScanWatermark] {
+        let owners = cache.files.compactMap { path, usage -> (String, String, CostUsageFileUsage)? in
+            guard usage.codexInventoryOnly != true,
+                  usage.codexNoncontributingDuplicate != true,
+                  let sessionID = usage.sessionId,
+                  !sessionID.isEmpty
+            else { return nil }
+            return (sessionID, path, usage)
+        }
+        let ownerGroups = Dictionary(grouping: owners, by: { $0.0 })
+        let uniqueOwnerBySessionID = ownerGroups.compactMapValues { entries -> (String, CostUsageFileUsage)? in
+            guard entries.count == 1, let entry = entries.first else { return nil }
+            return (entry.1, entry.2)
+        }
+
+        var watermarks: [CodexTokenActivityScanWatermark] = []
+        for (path, usage) in cache.files.sorted(by: { $0.key < $1.key }) {
+            guard usage.codexInventoryOnly != true,
+                  usage.codexNoncontributingDuplicate != true,
+                  let generation = usage.sourceGeneration,
+                  let event = Self.costUsageTokenEventFrontier(usage, through: through)
+            else { continue }
+
+            // The aggregate and its cursor are only one atomic promise if the
+            // committed prefix still belongs to this generation. A stable
+            // append is safe: the old prefix remains proven and the exported
+            // offset deliberately does not cover the new live bytes.
+            let fileURL = URL(fileURLWithPath: path)
+            let currentMetadata = CostUsageScanner.codexFileMetadata(fileURL: fileURL)
+            var verifiedPrefixSnapshot: CodexVerifiedPrefixSnapshot?
+            if let currentGeneration = currentMetadata.fileId {
+                guard let parsedBytes = usage.parsedBytes,
+                      currentGeneration == generation,
+                      event.endOffset <= parsedBytes,
+                      parsedBytes > 0, parsedBytes <= currentMetadata.size,
+                      usage.committedPrefixFingerprint?.isEmpty == false
+                else {
+                    throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+                // A committed cache already proves this exact stat/ctime and
+                // generation. Avoid rereading every unchanged historical byte.
+                let unchanged = Self.costUsageFileMetadata(currentMetadata, matches: usage)
+                    && Self.costUsageFileMetadata(
+                        CostUsageScanner.codexFileMetadata(fileURL: fileURL), matches: usage)
+                if !unchanged {
+                    guard try CostUsageScanner.codexFileMatchesCommittedFrontier(
+                        fileURL: fileURL,
+                        cached: usage,
+                        checkCancellation: nil
+                    ) else {
+                        throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                    }
+                }
+                let verifiedMetadata = CostUsageScanner.codexFileMetadata(fileURL: fileURL)
+                guard verifiedMetadata.fileId == generation, verifiedMetadata.size >= parsedBytes,
+                      !unchanged || Self.costUsageFileMetadata(verifiedMetadata, matches: usage) else {
+                    throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+                // The digest permits a concurrent append. Only issue an exact
+                // snapshot proof when *all* metadata stayed fixed during it.
+                if CostUsageScanner.codexFileMetadataIsSameSnapshot(currentMetadata, verifiedMetadata),
+                   currentMetadata.changeTimeNanoseconds == verifiedMetadata.changeTimeNanoseconds,
+                   let stat = verifiedMetadata.statFingerprint,
+                   let changeTime = verifiedMetadata.changeTimeNanoseconds {
+                    verifiedPrefixSnapshot = .init(statFingerprint: stat,
+                        changeTimeNanoseconds: changeTime, size: UInt64(verifiedMetadata.size))
+                }
+            } else if fileManager.fileExists(atPath: path) {
+                throw CostUsageScanner.codexChangedDuringScanError(path: path)
+            }
+
+            // Parsing is sequential, so the greatest committed offset proves
+            // every earlier line in this file generation. Exporting one exact
+            // frontier keeps reconciliation bounded even for long sessions.
+            watermarks.append(CodexTokenActivityScanWatermark(
+                sessionID: usage.sessionId,
+                sourceID: Self.canonicalTokenSourceID(path),
+                sourceGeneration: generation,
+                endOffset: UInt64(event.endOffset),
+                lineFingerprint: event.lineFingerprint,
+                eventTimestamp: event.eventTimestamp,
+                totalTokens: event.totalTokens,
+                sourceStatFingerprint: usage.sourceStatFingerprint,
+                sourceChangeTimeNanoseconds: usage.sourceChangeTimeNanoseconds,
+                verifiedPrefixSnapshot: verifiedPrefixSnapshot
+            ))
+        }
+
+        // The live tailer can observe a byte-for-byte rollout copy that the cost
+        // cache retains as an inventory-only duplicate. Its inode differs from
+        // the aggregate owner's inode, so the owner's watermark alone cannot
+        // absorb that exact cursor. Export a generation-specific alias only after
+        // re-proving the common prefix against the committed owner frontier.
+        for (path, usage) in cache.files
+        where usage.codexInventoryOnly == true || usage.codexNoncontributingDuplicate == true {
+            if usage.codexNoncontributingDuplicate == true {
+                // This source was proven to contain no numeric token event at
+                // all. It is not a copy of the owner's token-bearing prefix,
+                // so it must never export an alias or absorbing tombstone.
+                // Re-prove the entire snapshot: even a stable append could
+                // introduce usage that needs a new duplicate reconciliation.
+                guard try Self.verifiedNoncontributingDuplicate(
+                    path: path,
+                    usage: usage
+                ) else {
+                    throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+                continue
+            }
+            // No owner was established for an identity conflict. In particular,
+            // do not publish a quarantine tombstone that would discard live
+            // usage merely because this group's history could not be counted.
+            guard usage.codexIdentityConflict != true else { continue }
+            guard let sessionID = usage.sessionId,
+                  !sessionID.isEmpty
+            else { continue }
+
+            let sentinelURL = URL(fileURLWithPath: path)
+            let sentinelMetadata = CostUsageScanner.codexFileMetadata(fileURL: sentinelURL)
+            if sentinelMetadata.fileId != nil {
+                guard Self.costUsageFileMetadata(sentinelMetadata, matches: usage) else {
+                    throw CostUsageScanner.codexChangedDuringScanError(path: path)
+                }
+            } else if fileManager.fileExists(atPath: path) {
+                throw CostUsageScanner.codexChangedDuringScanError(path: path)
+            } else {
+                continue
+            }
+
+            if usage.codexDuplicateQuarantined == true,
+               let generation = usage.sourceGeneration,
+               Self.costUsageFileMetadata(sentinelMetadata, matches: usage) {
+                // Reconciliation has explicitly rejected this unchanged file
+                // generation as a divergent duplicate. Publish a strict
+                // session+generation tombstone so its live cursor is disposed
+                // instead of being added beside the authoritative owner or
+                // keeping every later scan in an unabsorbable retry loop.
+                watermarks.append(CodexTokenActivityScanWatermark(
+                    sessionID: sessionID,
+                    sourceID: Self.canonicalTokenSourceID(path),
+                    sourceGeneration: generation,
+                    endOffset: .max,
+                    lineFingerprint: "",
+                    eventTimestamp: nil,
+                    totalTokens: nil,
+                    sourceStatFingerprint: usage.sourceStatFingerprint,
+                    sourceChangeTimeNanoseconds: usage.sourceChangeTimeNanoseconds
+                ))
+                continue
+            }
+
+            guard let owner = uniqueOwnerBySessionID[sessionID],
+                  Self.costUsageTokenEventFrontier(owner.1, through: through) != nil
+            else { continue }
+            guard let alias = Self.verifiedDuplicateAliasWatermark(
+                sentinelPath: path,
+                sentinelUsage: usage,
+                ownerPath: owner.0,
+                ownerUsage: owner.1,
+                through: through
+            ) else {
+                throw CostUsageScanner.codexChangedDuringScanError(path: path)
+            }
+            watermarks.append(alias)
+        }
+
+        return watermarks.sorted {
+            if $0.sourceID != $1.sourceID { return $0.sourceID < $1.sourceID }
+            return $0.endOffset < $1.endOffset
+        }
+    }
+
+    private static func verifiedNoncontributingDuplicate(
+        path: String,
+        usage: CostUsageFileUsage
+    ) throws -> Bool {
+        guard usage.codexInventoryOnly == true,
+              usage.codexDuplicateQuarantined != true,
+              usage.codexIdentityConflict != true,
+              usage.sessionId?.isEmpty == false,
+              usage.size > 0,
+              usage.parsedBytes == usage.size,
+              usage.sourceGeneration != nil,
+              usage.sourceStatFingerprint != nil,
+              usage.sourceChangeTimeNanoseconds != nil,
+              let expectedFingerprint = usage.committedPrefixFingerprint,
+              !expectedFingerprint.isEmpty,
+              usage.days.isEmpty,
+              usage.codexRows?.isEmpty != false,
+              usage.tokenEventWatermarks?.isEmpty != false,
+              usage.lastTokenEventEndOffset == nil,
+              usage.lastTokenEventFingerprint == nil,
+              usage.lastTokenEventTimestamp == nil,
+              usage.lastTokenEventTotalTokens == nil
+        else { return false }
+
+        let fileURL = URL(fileURLWithPath: path)
+        guard Self.costUsageFileMetadata(
+            CostUsageScanner.codexFileMetadata(fileURL: fileURL), matches: usage
+        ),
+            try CostUsageScanner.codexCommittedPrefixFingerprint(
+                fileURL: fileURL,
+                throughOffset: usage.size,
+                checkCancellation: nil
+            ) == expectedFingerprint,
+            Self.costUsageFileMetadata(
+                CostUsageScanner.codexFileMetadata(fileURL: fileURL), matches: usage
+            )
+        else { return false }
+        return true
+    }
+
+    private static func costUsageTokenEventFrontier(
+        _ usage: CostUsageFileUsage,
+        through: Date
+    ) -> CostUsageTokenEventWatermark? {
+        let cachedEvents: [CostUsageTokenEventWatermark]
+        if let events = usage.tokenEventWatermarks {
+            cachedEvents = events
+        } else if let endOffset = usage.lastTokenEventEndOffset,
+                  let fingerprint = usage.lastTokenEventFingerprint {
+            cachedEvents = [CostUsageTokenEventWatermark(
+                endOffset: endOffset,
+                lineFingerprint: fingerprint,
+                eventTimestamp: usage.lastTokenEventTimestamp,
+                totalTokens: usage.lastTokenEventTotalTokens
+            )]
+        } else {
+            cachedEvents = []
+        }
+        return cachedEvents
+            .filter { event in
+                event.endOffset >= 0
+                    && (event.eventTimestamp.map { $0 <= through } ?? true)
+            }
+            .max(by: { $0.endOffset < $1.endOffset })
+    }
+
+    private static func verifiedDuplicateAliasWatermark(
+        sentinelPath: String,
+        sentinelUsage: CostUsageFileUsage,
+        ownerPath: String,
+        ownerUsage: CostUsageFileUsage,
+        through: Date
+    ) -> CodexTokenActivityScanWatermark? {
+        guard let sessionID = sentinelUsage.sessionId,
+              let sentinelGeneration = sentinelUsage.sourceGeneration,
+              let ownerEvent = Self.costUsageTokenEventFrontier(ownerUsage, through: through)
+        else { return nil }
+
+        let sentinelURL = URL(fileURLWithPath: sentinelPath)
+        let ownerURL = URL(fileURLWithPath: ownerPath)
+        let sentinelMetadata = CostUsageScanner.codexFileMetadata(fileURL: sentinelURL)
+        let ownerMetadata = CostUsageScanner.codexFileMetadata(fileURL: ownerURL)
+        let ownerParsedBytes = ownerUsage.parsedBytes ?? ownerUsage.size
+        guard Self.costUsageFileMetadata(sentinelMetadata, matches: sentinelUsage),
+              ownerMetadata.fileId == ownerUsage.sourceGeneration,
+              ownerMetadata.size >= ownerParsedBytes,
+              (try? CostUsageScanner.codexFileMatchesCommittedFrontier(
+                  fileURL: ownerURL,
+                  cached: ownerUsage,
+                  checkCancellation: nil
+              )) == true
+        else { return nil }
+
+        // A newline-terminated live cursor ends at the newline byte, so a proven
+        // byte count equal to the sentinel size is strictly beyond every cursor
+        // the tailer can emit from that file. If the owner's exact token frontier
+        // is earlier, retain its fingerprint for equality at that offset.
+        let provenEndOffset = min(ownerEvent.endOffset, sentinelUsage.size)
+        guard provenEndOffset > 0,
+              provenEndOffset <= sentinelMetadata.size,
+              provenEndOffset <= ownerMetadata.size,
+              let sentinelFingerprint = try? CostUsageScanner.codexCommittedPrefixFingerprint(
+                  fileURL: sentinelURL,
+                  throughOffset: provenEndOffset,
+                  checkCancellation: nil
+              ),
+              let ownerFingerprint = try? CostUsageScanner.codexCommittedPrefixFingerprint(
+                  fileURL: ownerURL,
+                  throughOffset: provenEndOffset,
+                  checkCancellation: nil
+              ),
+              sentinelFingerprint == ownerFingerprint,
+              Self.costUsageFileMetadata(
+                  CostUsageScanner.codexFileMetadata(fileURL: sentinelURL),
+                  matches: sentinelUsage
+              ),
+              CostUsageScanner.codexFileMetadata(fileURL: ownerURL).fileId
+                  == ownerUsage.sourceGeneration,
+              (try? CostUsageScanner.codexFileMatchesCommittedFrontier(
+                  fileURL: ownerURL,
+                  cached: ownerUsage,
+                  checkCancellation: nil
+              )) == true
+        else { return nil }
+
+        let aliasesExactOwnerEvent = provenEndOffset == ownerEvent.endOffset
+        return CodexTokenActivityScanWatermark(
+            sessionID: sessionID,
+            sourceID: Self.canonicalTokenSourceID(sentinelPath),
+            sourceGeneration: sentinelGeneration,
+            endOffset: UInt64(provenEndOffset),
+            lineFingerprint: aliasesExactOwnerEvent ? ownerEvent.lineFingerprint : "",
+            eventTimestamp: aliasesExactOwnerEvent ? ownerEvent.eventTimestamp : nil,
+            totalTokens: aliasesExactOwnerEvent ? ownerEvent.totalTokens : nil,
+            sourceStatFingerprint: sentinelUsage.sourceStatFingerprint,
+            sourceChangeTimeNanoseconds: sentinelUsage.sourceChangeTimeNanoseconds
+        )
+    }
+
+    private static func costUsageFileMetadata(
+        _ metadata: CostUsageScanner.CodexFileMetadata,
+        matches usage: CostUsageFileUsage
+    ) -> Bool {
+        let generation = metadata.fileId
+            ?? URL(fileURLWithPath: metadata.path).standardizedFileURL.resolvingSymlinksInPath().path
+        return metadata.fileId != nil
+            && usage.sourceGeneration == generation
+            && usage.sourceStatFingerprint == metadata.statFingerprint
+            && usage.sourceChangeTimeNanoseconds == metadata.changeTimeNanoseconds
+            && usage.mtimeUnixMs == metadata.mtimeUnixMs
+            && usage.size == metadata.size
+    }
+
+    private static func canonicalTokenSourceID(_ path: String) -> String {
+        URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+    }
+
     private func agentSignalCostUsageDateRange(now: Date, days: Int) -> (since: Date, until: Date) {
         let clampedDays = max(1, min(365, days))
         let today = calendar.startOfDay(for: now)
@@ -410,11 +1043,10 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
         var options = CostUsageScanner.Options(
             cacheRoot: costUsageCacheRoot,
             codexTraceDatabaseURL: priorityDatabaseURL,
+            codexScanCheckpoint: costUsageScanCheckpoint,
             forceRescan: false
         )
-        if sessionRootURLs.count == 1 {
-            options.codexSessionsRoot = sessionRootURLs[0]
-        }
+        options.codexSessionsRoots = sessionRootURLs
         if forceRefresh {
             options.refreshMinIntervalSeconds = 0
         }
@@ -430,8 +1062,20 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
             var modelPriorityTokenTotals: [String: Int] = [:]
             var modelStandardCostTotals: [String: Double] = [:]
             var modelPriorityCostTotals: [String: Double] = [:]
+            var modelUnpricedTokens: [String: Int] = [:]
+            var modelStandardUnpricedTokens: [String: Int] = [:]
+            var modelPriorityUnpricedTokens: [String: Int] = [:]
 
             for breakdown in entry.modelBreakdowns ?? [] {
+                if let tokens = breakdown.standardUnpricedTokens, tokens > 0 {
+                    modelStandardUnpricedTokens[breakdown.modelName, default: 0] += tokens
+                }
+                if let tokens = breakdown.priorityUnpricedTokens, tokens > 0 {
+                    modelPriorityUnpricedTokens[breakdown.modelName, default: 0] += tokens
+                }
+                if breakdown.hasUnpricedUsage {
+                    modelUnpricedTokens[breakdown.modelName, default: 0] += max(breakdown.unpricedTokens ?? breakdown.totalTokens ?? 0, 1)
+                }
                 if let tokens = breakdown.totalTokens, tokens > 0 {
                     modelTokenTotals[breakdown.modelName, default: 0] += tokens
                 }
@@ -461,7 +1105,11 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
                 modelStandardTokenTotals: modelStandardTokenTotals,
                 modelPriorityTokenTotals: modelPriorityTokenTotals,
                 modelStandardEstimatedCostTotals: modelStandardCostTotals,
-                modelPriorityEstimatedCostTotals: modelPriorityCostTotals
+                modelPriorityEstimatedCostTotals: modelPriorityCostTotals,
+                hasUnpricedUsage: !modelUnpricedTokens.isEmpty,
+                modelUnpricedTokenTotals: modelUnpricedTokens,
+                modelStandardUnpricedTokenTotals: modelStandardUnpricedTokens,
+                modelPriorityUnpricedTokenTotals: modelPriorityUnpricedTokens
             )
         }
         .sorted { $0.day < $1.day }
@@ -1445,7 +2093,9 @@ final class CodexTokenActivityScanner: @unchecked Sendable {
                     modelStandardTokenTotals: $0.value.modelStandardTokenTotals,
                     modelPriorityTokenTotals: $0.value.modelPriorityTokenTotals,
                     modelStandardEstimatedCostTotals: $0.value.modelStandardEstimatedCostTotals,
-                    modelPriorityEstimatedCostTotals: $0.value.modelPriorityEstimatedCostTotals
+                    modelPriorityEstimatedCostTotals: $0.value.modelPriorityEstimatedCostTotals,
+                    hasUnpricedUsage: !($0.value.modelUnpricedTokenTotals ?? [:]).isEmpty,
+                    modelUnpricedTokenTotals: $0.value.modelUnpricedTokenTotals
                 )
             }
             .sorted { $0.day < $1.day }
@@ -1952,6 +2602,7 @@ private struct CodexTokenActivityDayCache: Codable, Equatable {
     var modelPriorityTokenTotals: [String: Int]
     var modelStandardEstimatedCostTotals: [String: Double]
     var modelPriorityEstimatedCostTotals: [String: Double]
+    var modelUnpricedTokenTotals: [String: Int]?
 
     mutating func add(
         tokens: Int,
@@ -1962,6 +2613,11 @@ private struct CodexTokenActivityDayCache: Codable, Equatable {
         let positiveTokens = max(tokens, 0)
         guard positiveTokens > 0 else { return }
         totalTokens += positiveTokens
+        if cost == nil {
+            var unpriced = modelUnpricedTokenTotals ?? [:]
+            unpriced[model ?? "unknown", default: 0] += positiveTokens
+            modelUnpricedTokenTotals = unpriced
+        }
         if let cost {
             estimatedCostUSD = (estimatedCostUSD ?? 0) + max(cost, 0)
         }
@@ -1987,6 +2643,11 @@ private struct CodexTokenActivityDayCache: Codable, Equatable {
     }
 
     mutating func merge(_ other: CodexTokenActivityDayCache) {
+        var unpriced = modelUnpricedTokenTotals ?? [:]
+        for (model, tokens) in other.modelUnpricedTokenTotals ?? [:] {
+            unpriced[model, default: 0] += tokens
+        }
+        modelUnpricedTokenTotals = unpriced.isEmpty ? nil : unpriced
         totalTokens += max(other.totalTokens, 0)
         if let otherCost = other.estimatedCostUSD {
             estimatedCostUSD = (estimatedCostUSD ?? 0) + max(otherCost, 0)

@@ -1,3 +1,8 @@
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 #if canImport(Musl)
 import Musl
@@ -185,6 +190,9 @@ extension CostUsageScanner {
         var priorityCostUSD: Double = 0
         var standardTokens: Int = 0
         var priorityTokens: Int = 0
+        var unpricedTokens: Int = 0
+        var standardUnpricedTokens: Int = 0
+        var priorityUnpricedTokens: Int = 0
         var sawStandardCost = false
         var sawPriorityCost = false
 
@@ -248,12 +256,16 @@ extension CostUsageScanner {
             {
                 breakdown.priorityCostUSD += max(priorityCost, baseCost ?? priorityCost)
                 breakdown.sawPriorityCost = true
-            } else if isPriority, let baseCost {
-                breakdown.priorityCostUSD += baseCost
-                breakdown.sawPriorityCost = true
-            } else if let baseCost {
+            } else if !isPriority, let baseCost {
                 breakdown.standardCostUSD += baseCost
                 breakdown.sawStandardCost = true
+            } else {
+                breakdown.unpricedTokens += tokenCount
+                if isPriority {
+                    breakdown.priorityUnpricedTokens += tokenCount
+                } else {
+                    breakdown.standardUnpricedTokens += tokenCount
+                }
             }
         }
         return breakdown
@@ -274,17 +286,39 @@ extension CostUsageScanner {
         lastCodexTurnID: String? = nil,
         sessionId: String? = nil,
         forkedFromId: String? = nil,
+        sourceGeneration: String? = nil,
+        sourceStatFingerprint: Int64? = nil,
+        sourceChangeTimeNanoseconds: Int64? = nil,
+        committedPrefixFingerprint: String? = nil,
+        codexInventoryOnly: Bool? = nil,
+        codexDuplicateQuarantined: Bool? = nil,
+        codexIdentityConflict: Bool? = nil,
+        codexNoncontributingDuplicate: Bool? = nil,
+        lastTokenEventEndOffset: Int64? = nil,
+        lastTokenEventFingerprint: String? = nil,
+        lastTokenEventTimestamp: Date? = nil,
+        lastTokenEventTotalTokens: Int? = nil,
+        tokenEventWatermarks: [CostUsageTokenEventWatermark]? = nil,
         codexCostNanos: [String: [String: Int64]]? = nil,
         codexPrioritySurchargeNanos: [String: [String: Int64]]? = nil,
         codexStandardCostNanos: [String: [String: Int64]]? = nil,
         codexPriorityCostNanos: [String: [String: Int64]]? = nil,
         codexStandardTokens: [String: [String: Int]]? = nil,
         codexPriorityTokens: [String: [String: Int]]? = nil,
+        codexUnpricedTokens: [String: [String: Int]]? = nil,
+        codexStandardUnpricedTokens: [String: [String: Int]]? = nil,
+        codexPriorityUnpricedTokens: [String: [String: Int]]? = nil,
         codexTurnIDs: [String]? = nil,
         codexRows: [CodexUsageRow]? = nil,
         claudeRows: [ClaudeUsageRow]? = nil) -> CostUsageFileUsage
     {
-        CostUsageFileUsage(
+        let retainedTokenEventWatermarks: [CostUsageTokenEventWatermark]? = tokenEventWatermarks.map { watermarks in
+            guard let frontier = watermarks.max(by: { $0.endOffset < $1.endOffset }) else {
+                return []
+            }
+            return [frontier]
+        }
+        return CostUsageFileUsage(
             mtimeUnixMs: mtimeUnixMs,
             size: size,
             days: days,
@@ -297,12 +331,28 @@ extension CostUsageScanner {
             lastCodexTurnID: lastCodexTurnID,
             sessionId: sessionId,
             forkedFromId: forkedFromId,
+            sourceGeneration: sourceGeneration,
+            sourceStatFingerprint: sourceStatFingerprint,
+            sourceChangeTimeNanoseconds: sourceChangeTimeNanoseconds,
+            committedPrefixFingerprint: committedPrefixFingerprint,
+            codexInventoryOnly: codexInventoryOnly,
+            codexDuplicateQuarantined: codexDuplicateQuarantined,
+            codexIdentityConflict: codexIdentityConflict,
+            codexNoncontributingDuplicate: codexNoncontributingDuplicate,
+            lastTokenEventEndOffset: lastTokenEventEndOffset,
+            lastTokenEventFingerprint: lastTokenEventFingerprint,
+            lastTokenEventTimestamp: lastTokenEventTimestamp,
+            lastTokenEventTotalTokens: lastTokenEventTotalTokens,
+            tokenEventWatermarks: retainedTokenEventWatermarks,
             codexCostNanos: codexCostNanos,
             codexPrioritySurchargeNanos: codexPrioritySurchargeNanos,
             codexStandardCostNanos: codexStandardCostNanos,
             codexPriorityCostNanos: codexPriorityCostNanos,
             codexStandardTokens: codexStandardTokens,
             codexPriorityTokens: codexPriorityTokens,
+            codexUnpricedTokens: codexUnpricedTokens,
+            codexStandardUnpricedTokens: codexStandardUnpricedTokens,
+            codexPriorityUnpricedTokens: codexPriorityUnpricedTokens,
             codexTurnIDs: codexTurnIDs,
             codexRows: codexRows,
             claudeRows: claudeRows)
@@ -381,6 +431,9 @@ extension CostUsageScanner {
         updated.codexPriorityTokens = Self.mergeMissingIntMaps(
             usage.codexPriorityTokens,
             splitMaps.priorityTokens)
+        updated.codexUnpricedTokens = Self.mergeMissingIntMaps(usage.codexUnpricedTokens, splitMaps.unpricedTokens)
+        updated.codexStandardUnpricedTokens = Self.mergeMissingIntMaps(usage.codexStandardUnpricedTokens, splitMaps.standardUnpricedTokens)
+        updated.codexPriorityUnpricedTokens = Self.mergeMissingIntMaps(usage.codexPriorityUnpricedTokens, splitMaps.priorityUnpricedTokens)
         updated.codexTurnIDs = Self.mergeCodexTurnIDs(usage.codexTurnIDs, rows: migratedRows)
         updated.codexRows = retainedRows.isEmpty ? nil : retainedRows
         return updated
@@ -469,12 +522,18 @@ extension CostUsageScanner {
         standardCostNanos: [String: [String: Int64]]?,
         priorityCostNanos: [String: [String: Int64]]?,
         standardTokens: [String: [String: Int]]?,
-        priorityTokens: [String: [String: Int]]?)
+        priorityTokens: [String: [String: Int]]?,
+        unpricedTokens: [String: [String: Int]]?,
+        standardUnpricedTokens: [String: [String: Int]]?,
+        priorityUnpricedTokens: [String: [String: Int]]?)
     {
         var standardCostNanos: [String: [String: Int64]] = [:]
         var priorityCostNanos: [String: [String: Int64]] = [:]
         var standardTokens: [String: [String: Int]] = [:]
         var priorityTokens: [String: [String: Int]] = [:]
+        var unpricedTokens: [String: [String: Int]] = [:]
+        var standardUnpricedTokens: [String: [String: Int]] = [:]
+        var priorityUnpricedTokens: [String: [String: Int]] = [:]
 
         for row in rows {
             guard CostUsageDayRange.isInRange(dayKey: row.day, since: range.sinceKey, until: range.untilKey)
@@ -508,12 +567,16 @@ extension CostUsageScanner {
             {
                 priorityCostNanos[row.day, default: [:]][row.model, default: 0] += Int64(
                     (max(priorityCost, baseCost ?? priorityCost) * Self.costScale).rounded())
-            } else if isPriority, let baseCost {
-                priorityCostNanos[row.day, default: [:]][row.model, default: 0] += Int64(
-                    (baseCost * Self.costScale).rounded())
-            } else if let baseCost {
+            } else if !isPriority, let baseCost {
                 standardCostNanos[row.day, default: [:]][row.model, default: 0] += Int64(
                     (baseCost * Self.costScale).rounded())
+            } else {
+                unpricedTokens[row.day, default: [:]][row.model, default: 0] += tokenCount
+                if isPriority {
+                    priorityUnpricedTokens[row.day, default: [:]][row.model, default: 0] += tokenCount
+                } else {
+                    standardUnpricedTokens[row.day, default: [:]][row.model, default: 0] += tokenCount
+                }
             }
         }
 
@@ -521,7 +584,10 @@ extension CostUsageScanner {
             standardCostNanos.isEmpty ? nil : standardCostNanos,
             priorityCostNanos.isEmpty ? nil : priorityCostNanos,
             standardTokens.isEmpty ? nil : standardTokens,
-            priorityTokens.isEmpty ? nil : priorityTokens)
+            priorityTokens.isEmpty ? nil : priorityTokens,
+            unpricedTokens.isEmpty ? nil : unpricedTokens,
+            standardUnpricedTokens.isEmpty ? nil : standardUnpricedTokens,
+            priorityUnpricedTokens.isEmpty ? nil : priorityUnpricedTokens)
     }
 
     static func codexTurnIDs(rows: [CodexUsageRow]) -> [String]? {
@@ -614,6 +680,8 @@ extension CostUsageScanner {
         let mtimeUnixMs: Int64
         let size: Int64
         let fileId: String?
+        let statFingerprint: Int64?
+        let changeTimeNanoseconds: Int64?
     }
 
     struct CodexFileScanInput {
@@ -626,20 +694,81 @@ extension CostUsageScanner {
         let path = fileURL.path
         var info = stat()
         guard path.withCString({ fstatat(AT_FDCWD, $0, &info, 0) }) == 0 else {
-            return CodexFileMetadata(path: path, mtimeUnixMs: 0, size: 0, fileId: nil)
+            return CodexFileMetadata(
+                path: path,
+                mtimeUnixMs: 0,
+                size: 0,
+                fileId: nil,
+                statFingerprint: nil,
+                changeTimeNanoseconds: nil
+            )
         }
         #if os(Linux)
         let modifiedSeconds = Int64(info.st_mtim.tv_sec)
         let modifiedNanoseconds = Int64(info.st_mtim.tv_nsec)
+        let changedSeconds = Int64(info.st_ctim.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctim.tv_nsec)
         #else
         let modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
         let modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        let changedSeconds = Int64(info.st_ctimespec.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctimespec.tv_nsec)
         #endif
         return CodexFileMetadata(
             path: path,
             mtimeUnixMs: modifiedSeconds * 1000 + modifiedNanoseconds / 1_000_000,
             size: Int64(info.st_size),
-            fileId: "\(info.st_dev):\(info.st_ino)")
+            fileId: "\(info.st_dev):\(info.st_ino)",
+            statFingerprint: Self.codexStableStatFingerprint(info),
+            changeTimeNanoseconds: changedSeconds * 1_000_000_000 + changedNanoseconds
+        )
+    }
+
+    static func codexFileMetadata(
+        fileDescriptor: Int32,
+        path: String
+    ) -> CodexFileMetadata {
+        var info = stat()
+        guard fstat(fileDescriptor, &info) == 0 else {
+            return CodexFileMetadata(
+                path: path,
+                mtimeUnixMs: 0,
+                size: 0,
+                fileId: nil,
+                statFingerprint: nil,
+                changeTimeNanoseconds: nil
+            )
+        }
+        #if os(Linux)
+        let modifiedSeconds = Int64(info.st_mtim.tv_sec)
+        let modifiedNanoseconds = Int64(info.st_mtim.tv_nsec)
+        let changedSeconds = Int64(info.st_ctim.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctim.tv_nsec)
+        #else
+        let modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
+        let modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        let changedSeconds = Int64(info.st_ctimespec.tv_sec)
+        let changedNanoseconds = Int64(info.st_ctimespec.tv_nsec)
+        #endif
+        return CodexFileMetadata(
+            path: path,
+            mtimeUnixMs: modifiedSeconds * 1000 + modifiedNanoseconds / 1_000_000,
+            size: Int64(info.st_size),
+            fileId: "\(info.st_dev):\(info.st_ino)",
+            statFingerprint: Self.codexStableStatFingerprint(info),
+            changeTimeNanoseconds: changedSeconds * 1_000_000_000 + changedNanoseconds
+        )
+    }
+
+    static func codexFileMetadataIsSameSnapshot(
+        _ lhs: CodexFileMetadata,
+        _ rhs: CodexFileMetadata
+    ) -> Bool {
+        lhs.fileId != nil
+            && lhs.fileId == rhs.fileId
+            && lhs.statFingerprint == rhs.statFingerprint
+            && lhs.mtimeUnixMs == rhs.mtimeUnixMs
+            && lhs.size == rhs.size
     }
 
     static func dropCachedCodexFile(
@@ -651,6 +780,210 @@ extension CostUsageScanner {
             self.applyFileDays(cache: &cache, fileDays: cached.days, sign: -1)
         }
         cache.files.removeValue(forKey: path)
+    }
+
+    static func codexAmbiguousDuplicateSessionError(
+        sessionId: String,
+        path: String
+    ) -> Error {
+        NSError(
+            domain: "AgentSignalCostUsage.CodexConsistency",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Multiple changed Codex files claim session \(sessionId)",
+                NSFilePathErrorKey: path,
+            ]
+        )
+    }
+
+    static func codexMissingSessionMetadataError(
+        previousSessionId: String,
+        path: String
+    ) -> Error {
+        NSError(
+            domain: "AgentSignalCostUsage.CodexConsistency",
+            code: 2,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Codex session metadata disappeared for cached session \(previousSessionId)",
+                NSFilePathErrorKey: path,
+            ]
+        )
+    }
+
+    static func codexChangedDuringScanError(path: String) -> Error {
+        NSError(
+            domain: "AgentSignalCostUsage.CodexConsistency",
+            code: 3,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Codex session changed while its committed prefix was being scanned",
+                NSFilePathErrorKey: path,
+            ]
+        )
+    }
+
+    static func codexCommittedPrefixFingerprint(
+        fileURL: URL,
+        throughOffset: Int64,
+        allowingAppend: Bool = false,
+        checkCancellation: CancellationCheck?
+    ) throws -> String? {
+        guard throughOffset > 0 else { return nil }
+        let maximumAttempts = allowingAppend ? 3 : 1
+        var sourceGeneration: String?
+        for _ in 0..<maximumAttempts {
+            let before = Self.codexFileMetadata(fileURL: fileURL)
+            guard let generation = before.fileId, before.size >= throughOffset,
+                  sourceGeneration == nil || sourceGeneration == generation else { return nil }
+            sourceGeneration = generation
+            try checkCancellation?()
+            let handle = try FileHandle(forReadingFrom: fileURL)
+            defer { try? handle.close() }
+            // Bind the proof to the opened descriptor and the current path.
+            // Replacement or truncation cannot be retried as an append.
+            try checkCancellation?()
+            let descriptorBefore = Self.codexFileMetadata(
+                fileDescriptor: handle.fileDescriptor, path: fileURL.path)
+            let pathBefore = Self.codexFileMetadata(fileURL: fileURL)
+            guard Self.codexFileMetadataIsSameSnapshot(descriptorBefore, before),
+                  Self.codexFileMetadataIsSameSnapshot(pathBefore, before) else {
+                guard allowingAppend,
+                      descriptorBefore.fileId == generation, pathBefore.fileId == generation,
+                      descriptorBefore.size >= before.size, pathBefore.size >= before.size else { return nil }
+                continue
+            }
+            var hasher = SHA256()
+            var remaining = throughOffset
+            while remaining > 0 {
+                try checkCancellation?()
+                let count = Int(min(remaining, 256 * 1024))
+                guard let bytes = try handle.read(upToCount: count), bytes.count == count else { return nil }
+                hasher.update(data: bytes)
+                remaining -= Int64(count)
+            }
+            try checkCancellation?()
+            let descriptorAfter = Self.codexFileMetadata(
+                fileDescriptor: handle.fileDescriptor, path: fileURL.path)
+            let after = Self.codexFileMetadata(fileURL: fileURL)
+            if Self.codexFileMetadataIsSameSnapshot(descriptorAfter, before),
+               Self.codexFileMetadataIsSameSnapshot(after, before) {
+                return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            }
+            // Growth alone cannot prove append-only behavior: a writer may
+            // rewrite an already-hashed block and append before this stat.
+            // Discard the digest and re-read the same fixed prefix from zero.
+            guard allowingAppend,
+                  descriptorAfter.fileId == generation, after.fileId == generation,
+                  descriptorAfter.size >= before.size, after.size >= before.size else { return nil }
+        }
+        throw Self.codexChangedDuringScanError(path: fileURL.path)
+    }
+
+    static func codexFileMatchesCommittedFrontier(
+        fileURL: URL,
+        cached: CostUsageFileUsage,
+        checkCancellation: CancellationCheck?
+    ) throws -> Bool {
+        guard let parsedBytes = cached.parsedBytes,
+              let expectedFingerprint = cached.committedPrefixFingerprint
+        else {
+            return false
+        }
+        return try Self.codexCommittedPrefixFingerprint(
+            fileURL: fileURL,
+            throughOffset: parsedBytes,
+            allowingAppend: true,
+            checkCancellation: checkCancellation
+        ) == expectedFingerprint
+    }
+
+    final class CodexReadSnapshot {
+        let url: URL
+        init(url: URL) { self.url = url }
+        deinit { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+    }
+
+    /// Read a fixed prefix, never chase a live writer to EOF. Keep the private
+    /// copy on disk to bound memory even for multi-GB session logs.
+    static func codexReadSnapshot(
+        input: CodexFileScanInput, checkCancellation: CancellationCheck?
+    ) throws -> CodexReadSnapshot {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-read-snapshot-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        let snapshot = CodexReadSnapshot(url: directory.appendingPathComponent("session.jsonl"))
+        let source = try FileHandle(forReadingFrom: input.fileURL)
+        defer { try? source.close() }
+        let opened = Self.codexFileMetadata(fileDescriptor: source.fileDescriptor, path: input.metadata.path)
+        guard opened.fileId != nil, opened.fileId == input.metadata.fileId,
+              opened.size >= input.metadata.size else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
+        // APFS clones avoid copying the full history on each incremental scan.
+        #if canImport(Darwin)
+        if fclonefileat(source.fileDescriptor, AT_FDCWD, snapshot.url.path, 0) == 0 {
+            let handle = try FileHandle(forWritingTo: snapshot.url)
+            defer { try? handle.close() }
+            guard try handle.seekToEnd() >= UInt64(input.metadata.size) else {
+                throw Self.codexChangedDuringScanError(path: input.metadata.path)
+            }
+            try handle.truncate(atOffset: UInt64(input.metadata.size))
+            return snapshot
+        }
+        #endif
+        guard FileManager.default.createFile(
+            atPath: snapshot.url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let destination = try FileHandle(forWritingTo: snapshot.url)
+        defer { try? destination.close() }
+        var remaining = input.metadata.size
+        while remaining > 0 {
+            try checkCancellation?()
+            let count = Int(min(remaining, 256 * 1024))
+            guard let bytes = try source.read(upToCount: count), bytes.count == count else {
+                throw Self.codexChangedDuringScanError(path: input.metadata.path)
+            }
+            try destination.write(contentsOf: bytes)
+            remaining -= Int64(count)
+        }
+        return snapshot
+    }
+
+    static func verifiedCodexSnapshotPrefix(
+        snapshot: CodexReadSnapshot, input: CodexFileScanInput,
+        parsedBytes: Int64, checkCancellation: CancellationCheck?
+    ) throws -> String? {
+        let current = Self.codexFileMetadata(fileURL: input.fileURL)
+        guard current.fileId == input.metadata.fileId, current.size >= input.metadata.size else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
+        guard parsedBytes > 0 else { return nil }
+        let expected = try Self.codexCommittedPrefixFingerprint(
+            fileURL: snapshot.url, throughOffset: parsedBytes, checkCancellation: checkCancellation)
+        let actual = try Self.codexCommittedPrefixFingerprint(
+            fileURL: input.fileURL, throughOffset: parsedBytes,
+            allowingAppend: true, checkCancellation: checkCancellation)
+        guard let expected, actual == expected,
+              Self.codexFileMetadata(fileURL: input.fileURL).fileId == input.metadata.fileId else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
+        return expected
+    }
+
+    static func hasDifferentCodexSessionOwner(
+        sessionId: String,
+        excludingPath: String,
+        cache: CostUsageCache
+    ) -> Bool {
+        cache.files.contains { path, usage in
+            path != excludingPath
+                && usage.codexInventoryOnly != true
+                && usage.sessionId == sessionId
+        }
     }
 
     static func rememberScannedCodexFile(
@@ -676,10 +1009,19 @@ extension CostUsageScanner {
         state: inout CodexScanState) -> Bool
     {
         guard let cached = input.cached else { return false }
+        guard cached.codexInventoryOnly != true else { return false }
         let needsSessionId = cached.sessionId == nil
+        let parsedThroughEnd = (cached.parsedBytes ?? cached.size) >= cached.size
+        let currentGeneration = input.metadata.fileId
+            ?? URL(fileURLWithPath: input.metadata.path).standardizedFileURL.resolvingSymlinksInPath().path
         guard cached.mtimeUnixMs == input.metadata.mtimeUnixMs,
               cached.size == input.metadata.size,
+              parsedThroughEnd,
               !needsSessionId,
+              cached.committedPrefixFingerprint != nil,
+              cached.sourceGeneration == currentGeneration,
+              cached.sourceStatFingerprint == input.metadata.statFingerprint,
+              cached.sourceChangeTimeNanoseconds == input.metadata.changeTimeNanoseconds,
               !context.forceFullScan
         else { return false }
 
@@ -720,15 +1062,37 @@ extension CostUsageScanner {
         let startOffset = cached.parsedBytes ?? cached.size
         let initialCountedTotals = cached.lastCountedTotals ?? cached.lastTotals
         let initialRawTotalsBaseline = cached.lastRawTotalsBaseline ?? cached.lastTotals
-        let canIncremental = input.metadata.size > cached.size && startOffset > 0
+        let currentGeneration = input.metadata.fileId
+            ?? URL(fileURLWithPath: input.metadata.path).standardizedFileURL.resolvingSymlinksInPath().path
+        let fileWasNotTruncated = input.metadata.size >= cached.size
+        let hasUnreadCachedBytes = startOffset < cached.size
+        let hasAppendedBytes = input.metadata.size > cached.size
+        let canIncremental = fileWasNotTruncated
+            && (hasUnreadCachedBytes || hasAppendedBytes)
+            && startOffset > 0
             && startOffset <= input.metadata.size
             && initialCountedTotals != nil
             && cached.forkedFromId == nil
+            && cached.sourceGeneration == currentGeneration
         guard canIncremental else { return false }
-
-        let delta = try Self.parseCodexFileCancellable(
+        guard try Self.codexFileMatchesCommittedFrontier(
             fileURL: input.fileURL,
+            cached: cached,
+            checkCancellation: context.checkCancellation
+        ) else {
+            return false
+        }
+
+        let readSnapshot = try Self.codexReadSnapshot(input: input, checkCancellation: context.checkCancellation)
+        // Revalidate the inherited numeric baseline against the exact bytes
+        // parsed below, not just the live file checked before the copy.
+        guard try Self.codexFileMatchesCommittedFrontier(
+            fileURL: readSnapshot.url, cached: cached, checkCancellation: context.checkCancellation
+        ) else { return false }
+        let delta = try Self.parseCodexFileCancellable(
+            fileURL: readSnapshot.url,
             range: context.range,
+            through: context.through,
             startOffset: startOffset,
             initialModel: cached.lastModel,
             initialTotals: initialCountedTotals,
@@ -739,10 +1103,25 @@ extension CostUsageScanner {
         if delta.forkedFromId != nil {
             return false
         }
+        context.resources.beforeSnapshotValidation?(input.fileURL)
+        guard let committedPrefixFingerprint = try Self.verifiedCodexSnapshotPrefix(
+            snapshot: readSnapshot, input: input, parsedBytes: delta.parsedBytes,
+            checkCancellation: context.checkCancellation
+        ) else {
+            throw Self.codexChangedDuringScanError(path: input.metadata.path)
+        }
         let sessionId = delta.sessionId ?? cached.sessionId
-        if let sessionId, state.seenSessionIds.contains(sessionId) {
-            Self.dropCachedCodexFile(path: input.metadata.path, cached: cached, cache: &cache)
-            return true
+        if let sessionId,
+           state.seenSessionIds.contains(sessionId)
+            || Self.hasDifferentCodexSessionOwner(
+                sessionId: sessionId,
+                excludingPath: input.metadata.path,
+                cache: cache
+            ) {
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: sessionId,
+                path: input.metadata.path
+            )
         }
 
         let migratedCached = Self.codexFileUsageWithCostCache(cached, context: context)
@@ -771,6 +1150,21 @@ extension CostUsageScanner {
             lastCodexTurnID: delta.lastCodexTurnID,
             sessionId: sessionId,
             forkedFromId: delta.forkedFromId ?? migratedCached.forkedFromId,
+            sourceGeneration: currentGeneration,
+            sourceStatFingerprint: input.metadata.statFingerprint,
+            sourceChangeTimeNanoseconds: input.metadata.changeTimeNanoseconds,
+            committedPrefixFingerprint: committedPrefixFingerprint,
+            lastTokenEventEndOffset: delta.lastTokenEventEndOffset ?? migratedCached.lastTokenEventEndOffset,
+            lastTokenEventFingerprint: delta.lastTokenEventFingerprint ?? migratedCached.lastTokenEventFingerprint,
+            lastTokenEventTimestamp: delta.lastTokenEventTimestamp ?? migratedCached.lastTokenEventTimestamp,
+            lastTokenEventTotalTokens: delta.lastTokenEventTimestamp == nil
+                ? migratedCached.lastTokenEventTotalTokens
+                : delta.lastTokenEventTotalTokens,
+            // A sequential parser's greatest exact offset proves that all
+            // earlier offsets in the same file generation were committed.
+            // `makeFileUsage` compacts this list to that single frontier.
+            tokenEventWatermarks: (migratedCached.tokenEventWatermarks ?? [])
+                + delta.tokenEventWatermarks,
             codexCostNanos: Self.codexMergedCostMap(
                 migratedCached.codexCostNanos,
                 deltaRows: delta.rows,
@@ -791,6 +1185,9 @@ extension CostUsageScanner {
             codexPriorityTokens: Self.mergeIntMaps(
                 migratedCached.codexPriorityTokens,
                 splitMaps.priorityTokens),
+            codexUnpricedTokens: Self.mergeIntMaps(migratedCached.codexUnpricedTokens, splitMaps.unpricedTokens),
+            codexStandardUnpricedTokens: Self.mergeIntMaps(migratedCached.codexStandardUnpricedTokens, splitMaps.standardUnpricedTokens),
+            codexPriorityUnpricedTokens: Self.mergeIntMaps(migratedCached.codexPriorityUnpricedTokens, splitMaps.priorityUnpricedTokens),
             codexTurnIDs: Self.mergeCodexTurnIDs(migratedCached.codexTurnIDs, rows: delta.rows),
             codexRows: migratedCached.codexRows)
         Self.rememberScannedCodexFile(
@@ -817,15 +1214,60 @@ extension CostUsageScanner {
             ? [:]
             : Self.fileDaysOutsideScanWindow(migratedCached?.days ?? [:], range: context.range)
 
+        let readSnapshot = try Self.codexReadSnapshot(input: input, checkCancellation: context.checkCancellation)
         let parsed = try Self.parseCodexFileCancellable(
-            fileURL: input.fileURL,
+            fileURL: readSnapshot.url,
             range: context.range,
+            through: context.through,
             inheritedTotalsResolver: context.resources.inheritedResolver.inheritedTotals(for:atOrBefore:),
             checkCancellation: context.checkCancellation)
+        context.resources.beforeSnapshotValidation?(input.fileURL)
+        let committedPrefixFingerprint = try Self.verifiedCodexSnapshotPrefix(
+            snapshot: readSnapshot, input: input, parsedBytes: parsed.parsedBytes,
+            checkCancellation: context.checkCancellation
+        )
+        if parsed.sessionId == nil,
+           let cached = input.cached,
+           cached.codexInventoryOnly != true,
+           let previousSessionId = cached.sessionId,
+           !previousSessionId.isEmpty {
+            throw Self.codexMissingSessionMetadataError(
+                previousSessionId: previousSessionId,
+                path: input.metadata.path
+            )
+        }
         let sessionId = parsed.sessionId ?? input.cached?.sessionId
-        if let sessionId, state.seenSessionIds.contains(sessionId) {
-            cache.files.removeValue(forKey: input.metadata.path)
+        guard let sessionId, !sessionId.isEmpty else {
+            cache.files[input.metadata.path] = Self.makeFileUsage(
+                mtimeUnixMs: input.metadata.mtimeUnixMs,
+                size: input.metadata.size,
+                days: [:],
+                parsedBytes: 0,
+                sourceGeneration: input.metadata.fileId
+                    ?? input.fileURL.standardizedFileURL.resolvingSymlinksInPath().path,
+                sourceStatFingerprint: input.metadata.statFingerprint,
+                sourceChangeTimeNanoseconds: input.metadata.changeTimeNanoseconds,
+                codexInventoryOnly: true
+            )
+            Self.rememberScannedCodexFile(
+                fileURL: input.fileURL,
+                metadata: input.metadata,
+                sessionId: nil,
+                context: context,
+                state: &state
+            )
             return
+        }
+        if state.seenSessionIds.contains(sessionId)
+            || Self.hasDifferentCodexSessionOwner(
+                sessionId: sessionId,
+                excludingPath: input.metadata.path,
+                cache: cache
+            ) {
+            throw Self.codexAmbiguousDuplicateSessionError(
+                sessionId: sessionId,
+                path: input.metadata.path
+            )
         }
         Self.mergeFileDays(existing: &usageDays, delta: parsed.days)
         let splitMaps = Self.codexModeSplitMaps(
@@ -848,6 +1290,16 @@ extension CostUsageScanner {
             lastCodexTurnID: parsed.lastCodexTurnID,
             sessionId: sessionId,
             forkedFromId: parsed.forkedFromId,
+            sourceGeneration: input.metadata.fileId
+                ?? URL(fileURLWithPath: input.metadata.path).standardizedFileURL.resolvingSymlinksInPath().path,
+            sourceStatFingerprint: input.metadata.statFingerprint,
+            sourceChangeTimeNanoseconds: input.metadata.changeTimeNanoseconds,
+            committedPrefixFingerprint: committedPrefixFingerprint,
+            lastTokenEventEndOffset: parsed.lastTokenEventEndOffset,
+            lastTokenEventFingerprint: parsed.lastTokenEventFingerprint,
+            lastTokenEventTimestamp: parsed.lastTokenEventTimestamp,
+            lastTokenEventTotalTokens: parsed.lastTokenEventTotalTokens,
+            tokenEventWatermarks: parsed.tokenEventWatermarks,
             codexCostNanos: Self.mergeCostMaps(
                 context.dropDeferredCodexRows
                     ? nil
@@ -887,6 +1339,21 @@ extension CostUsageScanner {
                     ? nil
                     : Self.intMapOutsideScanWindow(migratedCached?.codexPriorityTokens, range: context.range),
                 splitMaps.priorityTokens),
+            codexUnpricedTokens: Self.mergeIntMaps(
+                context.dropDeferredCodexRows
+                    ? nil
+                    : Self.intMapOutsideScanWindow(migratedCached?.codexUnpricedTokens, range: context.range),
+                splitMaps.unpricedTokens),
+            codexStandardUnpricedTokens: Self.mergeIntMaps(
+                context.dropDeferredCodexRows
+                    ? nil
+                    : Self.intMapOutsideScanWindow(migratedCached?.codexStandardUnpricedTokens, range: context.range),
+                splitMaps.standardUnpricedTokens),
+            codexPriorityUnpricedTokens: Self.mergeIntMaps(
+                context.dropDeferredCodexRows
+                    ? nil
+                    : Self.intMapOutsideScanWindow(migratedCached?.codexPriorityUnpricedTokens, range: context.range),
+                splitMaps.priorityUnpricedTokens),
             codexTurnIDs: context.dropDeferredCodexRows
                 ? Self.codexTurnIDs(rows: parsed.rows)
                 : Self.mergeCodexTurnIDs(migratedCached?.codexTurnIDs, rows: parsed.rows),
@@ -963,10 +1430,11 @@ extension CostUsageScanner {
     static func pruneForceRescanFilesOutsideWindow(
         cache: inout CostUsageCache,
         range: CostUsageDayRange,
-        isForceRescan: Bool)
+        isForceRescan: Bool,
+        preservingPaths: Set<String> = [])
     {
         guard isForceRescan else { return }
-        for key in cache.files.keys {
+        for key in cache.files.keys where !preservingPaths.contains(key) {
             guard let old = cache.files[key] else { continue }
             guard !old.touchesCodexScanWindow(sinceKey: range.scanSinceKey, untilKey: range.scanUntilKey)
             else { continue }
@@ -1001,6 +1469,7 @@ extension CostUsageScanner {
         modelsDevCacheRoot: URL? = nil,
         priorityTurns: [String: CodexPriorityTurnMetadata] = [:]) -> CostUsageDailyReport
     {
+        let cache = Self.cacheIncludingCodexPaginatedHistory(cache)
         var entries: [CostUsageDailyReport.Entry] = []
         var totalInput = 0
         var totalOutput = 0
@@ -1017,6 +1486,9 @@ extension CostUsageScanner {
         let priorityCostNanosByDayModel = self.codexPriorityCostNanosByDayModel(cache: cache, range: range)
         let standardTokensByDayModel = self.codexStandardTokensByDayModel(cache: cache, range: range)
         let priorityTokensByDayModel = self.codexPriorityTokensByDayModel(cache: cache, range: range)
+        let unpricedTokensByDayModel = self.codexIntByDayModel(cache: cache, range: range) { $0.codexUnpricedTokens }
+        let standardUnpricedTokensByDayModel = self.codexIntByDayModel(cache: cache, range: range) { $0.codexStandardUnpricedTokens }
+        let priorityUnpricedTokensByDayModel = self.codexIntByDayModel(cache: cache, range: range) { $0.codexPriorityUnpricedTokens }
 
         let hasCodexRows = cache.files.values.contains {
             !($0.codexRows?.isEmpty ?? true)
@@ -1062,7 +1534,14 @@ extension CostUsageScanner {
                 } else {
                     nil
                 }
-                var cost = splitTotalCost
+                let standardModeTokens = standardTokensByDayModel[day]?[model]
+                    ?? (rowCostBreakdown?.hasModeSplit == true ? rowCostBreakdown?.optionalStandardTokens : nil)
+                let priorityModeTokens = priorityTokensByDayModel[day]?[model]
+                    ?? (rowCostBreakdown?.hasModeSplit == true ? rowCostBreakdown?.optionalPriorityTokens : nil)
+                let hasModeSplit = priorityCost != nil || priorityModeTokens != nil
+                // A known Fast request can have no verified Fast price. Its
+                // standard-price cache is not a fallback for that missing rate.
+                var cost = hasModeSplit ? splitTotalCost : (splitTotalCost
                     ?? cachedBaseCost
                     ?? rowTotalCost
                     ?? CostUsagePricing.codexCostUSD(
@@ -1071,13 +1550,13 @@ extension CostUsageScanner {
                         cachedInputTokens: cached,
                         outputTokens: output,
                         modelsDevCatalog: modelsDevCatalog,
-                        modelsDevCacheRoot: modelsDevCacheRoot)
-                if splitTotalCost == nil,
+                        modelsDevCacheRoot: modelsDevCacheRoot))
+                if !hasModeSplit,
                    let surchargeNanos = prioritySurchargeNanosByDayModel[day]?[model],
                    cachedBaseCost != nil
                 {
                     cost = (cost ?? 0) + (Double(surchargeNanos) / Self.costScale)
-                } else if splitTotalCost == nil,
+                } else if !hasModeSplit,
                           rowTotalCost == nil,
                           !priorityTurns.isEmpty,
                           let rows,
@@ -1089,11 +1568,6 @@ extension CostUsageScanner {
                 {
                     cost = (cost ?? 0) + surcharge
                 }
-                let standardModeTokens = standardTokensByDayModel[day]?[model]
-                    ?? (rowCostBreakdown?.hasModeSplit == true ? rowCostBreakdown?.optionalStandardTokens : nil)
-                let priorityModeTokens = priorityTokensByDayModel[day]?[model]
-                    ?? (rowCostBreakdown?.hasModeSplit == true ? rowCostBreakdown?.optionalPriorityTokens : nil)
-                let hasModeSplit = priorityCost != nil || priorityModeTokens != nil
                 breakdown.append(
                     CostUsageDailyReport.ModelBreakdown(
                         modelName: model,
@@ -1102,7 +1576,10 @@ extension CostUsageScanner {
                         standardCostUSD: hasModeSplit ? standardCost : nil,
                         priorityCostUSD: hasModeSplit ? priorityCost : nil,
                         standardTokens: hasModeSplit ? standardModeTokens : nil,
-                        priorityTokens: hasModeSplit ? priorityModeTokens : nil))
+                        priorityTokens: hasModeSplit ? priorityModeTokens : nil,
+                        unpricedTokens: unpricedTokensByDayModel[day]?[model] ?? rowCostBreakdown?.unpricedTokens,
+                        standardUnpricedTokens: standardUnpricedTokensByDayModel[day]?[model] ?? rowCostBreakdown?.standardUnpricedTokens,
+                        priorityUnpricedTokens: priorityUnpricedTokensByDayModel[day]?[model] ?? rowCostBreakdown?.priorityUnpricedTokens))
                 if let cost {
                     dayCost += cost
                     dayCostSeen = true
@@ -1137,7 +1614,7 @@ extension CostUsageScanner {
                 totalTokens: totalTokens,
                 totalCostUSD: costSeen ? totalCost : nil)
 
-        return CostUsageDailyReport(data: entries, summary: summary)
+        return CostUsageDailyReport(data: entries, summary: summary, warnings: cache.codexScanWarnings ?? [])
     }
 
     static func sortedModelBreakdowns(_ breakdowns: [CostUsageDailyReport.ModelBreakdown])

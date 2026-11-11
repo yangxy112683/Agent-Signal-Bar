@@ -4,6 +4,17 @@ Detailed bilingual release notes live in `docs/releases/` and are used as the Gi
 
 | Version | Date | Notes |
 | --- | --- | --- |
+| 1.6.2 | 2026-10-05 | [English + 简体中文](docs/releases/v1.6.2.md) |
+| 1.6.1 | 2026-09-23 | [English + 简体中文](docs/releases/v1.6.1.md) |
+| 1.6.0 | 2026-09-08 | [English + 简体中文](docs/releases/v1.6.0.md) |
+| 1.5.10 | 2026-09-05 | [English + 简体中文](docs/releases/v1.5.10.md) |
+| 1.5.9 | 2026-09-03 | [English + 简体中文](docs/releases/v1.5.9.md) |
+| 1.5.8 | 2026-08-24 | [English + 简体中文](docs/releases/v1.5.8.md) |
+| 1.5.7 | 2026-07-26 | [English + 简体中文](docs/releases/v1.5.7.md) |
+| 1.5.6 | 2026-07-18 | [English + 简体中文](docs/releases/v1.5.6.md) |
+| 1.5.5 | 2026-07-11 | [English + 简体中文](docs/releases/v1.5.5.md) |
+| 1.5.4 | 2026-07-11 | [English + 简体中文](docs/releases/v1.5.4.md) |
+| 1.5.3 | 2026-07-08 | [English + 简体中文](docs/releases/v1.5.3.md) |
 | 1.5.2 | 2026-06-30 | [English + 简体中文](docs/releases/v1.5.2.md) |
 | 1.5.1 | 2026-06-29 | [English + 简体中文](docs/releases/v1.5.1.md) |
 | 1.5.0 | 2026-06-29 | [English + 简体中文](docs/releases/v1.5.0.md) |

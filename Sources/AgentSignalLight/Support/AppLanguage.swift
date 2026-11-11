@@ -2,6 +2,23 @@ import AgentSignalLightCore
 import AgentSignalLightUI
 import Foundation
 
+enum CodexQuotaSummaryState: Equatable {
+    case authoritative(AgentQuotaStatus, localObservation: AgentQuotaStatus?)
+    case localObservation(AgentQuotaStatus)
+    case unavailable
+
+    var displayedQuota: AgentQuotaStatus? {
+        switch self {
+        case let .authoritative(quota, _):
+            quota
+        case let .localObservation(observation):
+            observation
+        case .unavailable:
+            nil
+        }
+    }
+}
+
 enum AppLanguage: String, CaseIterable {
     case system = "system"
     case zhHans = "zh-Hans"
@@ -135,9 +152,73 @@ extension AppLanguage {
     }
 }
 
+struct CodexQuotaIdentityPresentation: Equatable {
+    let title: String
+    let context: String
+    let limitID: String?
+    let hasKnownLimitIdentity: Bool
+}
+
 extension MenuBarStatusModel {
     func text(_ zhHans: String, _ english: String) -> String {
         AppLocalization.text(english, language: appLanguage, zhHans: zhHans)
+    }
+
+    func codexResetCreditsPresentation(now: Date = Date()) -> CodexResetCreditsPresentation? {
+        guard let snapshot = latestCodexResetCredits else { return nil }
+        return codexResetCreditsPresentation(for: snapshot, now: now)
+    }
+
+    func codexResetCreditsPresentation(
+        for snapshot: CodexRateLimitResetCreditsSnapshot,
+        now: Date = Date()
+    ) -> CodexResetCreditsPresentation? {
+        let credits = snapshot.availableCredits(at: now)
+
+        let expiryItems = credits.map { credit -> String in
+            guard let expiresAt = credit.expiresAt else {
+                return text("无到期时间", "No expiry")
+            }
+            return compactResetCreditCountdown(from: now, to: expiresAt)
+        }
+        let visibleItems = Array(expiryItems.prefix(4))
+        let hiddenCount = expiryItems.count - visibleItems.count
+        let expirySummary = credits.isEmpty
+            ? text("暂无可用额度", "No credits available")
+            : (visibleItems + (hiddenCount > 0 ? ["+\(hiddenCount)"] : []))
+                .joined(separator: " · ")
+        let creditHelpText = credits.enumerated().map { index, credit in
+            let detail = credit.expiresAt.map {
+                text("到期 \(localizedDateTimeString(for: $0))", "Expires \(localizedDateTimeString(for: $0))")
+            } ?? text("无到期时间", "No expiry")
+            return "\(index + 1). \(detail)"
+        }.joined(separator: "\n")
+        let helpText = creditHelpText.isEmpty ? expirySummary : creditHelpText
+
+        return CodexResetCreditsPresentation(
+            title: text("限额重置额度", "Limit Reset Credits"),
+            availableText: text(
+                "\(credits.count) 次可用",
+                credits.count == 1 ? "1 available" : "\(credits.count) available"
+            ),
+            expirySummaryText: expirySummary,
+            helpText: helpText
+        )
+    }
+
+    private func compactResetCreditCountdown(from now: Date, to expiry: Date) -> String {
+        let totalMinutes = max(0, Int(expiry.timeIntervalSince(now) / 60))
+        if totalMinutes < 1 { return text("现在", "now") }
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+        if days > 0 {
+            return hours > 0 ? "\(days)d \(hours)h" : "\(days)d"
+        }
+        if hours > 0 {
+            return minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h"
+        }
+        return "\(minutes)m"
     }
 
     func displayName(for signal: AgentSignal) -> String {
@@ -183,9 +264,9 @@ extension MenuBarStatusModel {
     func displayName(for mode: StatusMenuMode) -> String {
         switch mode {
         case .detailed:
-            return text("复杂", "Detailed")
+            return text("卡片面板", "Card Panel")
         case .simple:
-            return text("简约", "Simple")
+            return text("系统菜单", "System Menu")
         }
     }
 
@@ -235,12 +316,187 @@ extension MenuBarStatusModel {
         for badgeWindow: FloatingSignalQuotaBadgeWindow,
         quota: AgentQuotaStatus
     ) -> AgentQuotaWindowStatus? {
-        switch badgeWindow {
-        case .fiveHours:
-            return quota.primaryWindow
-        case .weekly:
-            return quota.secondaryWindow ?? quota.primaryWindow
+        let fiveHourMinutes = 5 * 60
+        let weeklyMinutes = 7 * 24 * 60
+        let windows = [quota.primaryWindow, quota.secondaryWindow].compactMap { $0 }
+
+        let exactMinutes = badgeWindow == .fiveHours ? fiveHourMinutes : weeklyMinutes
+        if let exactMatch = windows.first(where: { $0.windowMinutes == exactMinutes }) {
+            return exactMatch
         }
+
+        // A lone legacy or non-standard primary window still gets a dynamic
+        // title through the first badge slot. With multiple windows, however,
+        // only exact 5-hour/weekly durations are safe to map: treating a known
+        // weekly or monthly window as the other selection recreates the silent
+        // substitution that made the reported 100% quota misleading.
+        if windows.count == 1,
+           badgeWindow == .fiveHours,
+           windows[0].windowMinutes != weeklyMinutes {
+            return windows[0]
+        }
+
+        if windows.count > 1,
+           windows.allSatisfy({ $0.windowMinutes == nil }) {
+            switch badgeWindow {
+            case .fiveHours:
+                return quota.primaryWindow
+            case .weekly:
+                return quota.secondaryWindow
+            }
+        }
+
+        return nil
+    }
+
+    func quotaBadgeWindows(for quota: AgentQuotaStatus) -> [FloatingSignalQuotaBadgeWindow] {
+        if quota.secondaryWindow == nil,
+           quota.primaryWindow?.windowMinutes == 7 * 24 * 60 {
+            return [.weekly]
+        }
+
+        var result: [FloatingSignalQuotaBadgeWindow] = []
+        var seen: [AgentQuotaWindowStatus] = []
+
+        for badgeWindow in FloatingSignalQuotaBadgeWindow.allCases {
+            guard let window = quotaWindow(for: badgeWindow, quota: quota) else { continue }
+            guard !seen.contains(window) else { continue }
+            result.append(badgeWindow)
+            seen.append(window)
+        }
+
+        return result
+    }
+
+    func isQuotaBadgeWindowAvailable(
+        _ badgeWindow: FloatingSignalQuotaBadgeWindow,
+        quota: AgentQuotaStatus
+    ) -> Bool {
+        quotaBadgeWindows(for: quota).contains(badgeWindow)
+            && quotaWindow(for: badgeWindow, quota: quota) != nil
+    }
+
+    func selectedQuotaBadgeWindowStatus(for quota: AgentQuotaStatus) -> AgentQuotaWindowStatus? {
+        guard isQuotaBadgeWindowAvailable(floatingSignalQuotaBadgeWindow, quota: quota) else {
+            return nil
+        }
+        return quotaWindow(for: floatingSignalQuotaBadgeWindow, quota: quota)
+    }
+
+    func recentLocalQuotaObservation(now: Date = Date()) -> AgentQuotaStatus? {
+        // Local observations are a fallback, not a second user-facing quota.
+        // Keep the underlying observation for attribution checks without showing
+        // a competing card when the primary quota is already available.
+        guard latestAgentQuota == nil,
+              let observation = latestLocalAgentQuotaObservation else {
+            return nil
+        }
+        let age = now.timeIntervalSince(observation.updatedAt)
+        guard age >= -60, age <= 15 * 60 else { return nil }
+        return observation
+    }
+
+    func codexQuotaSummaryState(now: Date = Date()) -> CodexQuotaSummaryState {
+        if let latestAgentQuota {
+            return .authoritative(
+                latestAgentQuota,
+                localObservation: nil
+            )
+        }
+        if let localObservation = recentLocalQuotaObservation(now: now) {
+            return .localObservation(localObservation)
+        }
+        return .unavailable
+    }
+
+    func localQuotaObservationAddsContext(
+        _ observation: AgentQuotaStatus,
+        comparedTo authoritativeQuota: AgentQuotaStatus
+    ) -> Bool {
+        if normalizedQuotaIdentity(authoritativeQuota.limitID) == nil,
+           normalizedQuotaIdentity(observation.limitID) != nil {
+            return true
+        }
+        if normalizedQuotaIdentity(authoritativeQuota.limitName) == nil,
+           normalizedQuotaIdentity(observation.limitName) != nil {
+            return true
+        }
+        guard quotaLimitIdentityMatches(observation, authoritativeQuota) else {
+            return true
+        }
+
+        let authoritativeWindows = [
+            authoritativeQuota.primaryWindow,
+            authoritativeQuota.secondaryWindow,
+        ].compactMap { $0 }
+        let observationWindows = [
+            observation.primaryWindow,
+            observation.secondaryWindow,
+        ].compactMap { $0 }
+
+        return observationWindows.contains { observationWindow in
+            guard let authoritativeWindow = authoritativeWindows.first(where: {
+                $0.windowMinutes == observationWindow.windowMinutes
+            }) else {
+                return true
+            }
+            guard observation.updatedAt > authoritativeQuota.updatedAt else {
+                return false
+            }
+            return quotaWindowMateriallyDiffers(
+                observationWindow,
+                from: authoritativeWindow
+            )
+        }
+    }
+
+    private func quotaWindowMateriallyDiffers(
+        _ observation: AgentQuotaWindowStatus,
+        from authoritative: AgentQuotaWindowStatus
+    ) -> Bool {
+        let percentTolerance = 0.01
+        if abs(observation.remainingPercent - authoritative.remainingPercent) > percentTolerance
+            || abs(observation.usedPercent - authoritative.usedPercent) > percentTolerance {
+            return true
+        }
+
+        switch (observation.resetsAt, authoritative.resetsAt) {
+        case let (observationReset?, authoritativeReset?):
+            return abs(observationReset.timeIntervalSince(authoritativeReset)) > 1
+        case (nil, nil):
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func quotaLimitIdentityMatches(
+        _ lhs: AgentQuotaStatus,
+        _ rhs: AgentQuotaStatus
+    ) -> Bool {
+        let lhsID = normalizedQuotaIdentity(lhs.limitID)
+        let rhsID = normalizedQuotaIdentity(rhs.limitID)
+        if lhsID != nil || rhsID != nil {
+            return lhsID == rhsID
+        }
+
+        let lhsName = normalizedQuotaIdentity(lhs.limitName)
+        let rhsName = normalizedQuotaIdentity(rhs.limitName)
+        if lhsName != nil || rhsName != nil {
+            return lhsName == rhsName
+        }
+        return true
+    }
+
+    private func normalizedQuotaIdentity(_ value: String?) -> String? {
+        guard let normalized = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+            !normalized.isEmpty
+        else {
+            return nil
+        }
+        return normalized
     }
 
     func quotaPercentText(for window: AgentQuotaWindowStatus?) -> String {
@@ -261,6 +517,83 @@ extension MenuBarStatusModel {
             "\(title) · 剩余 \(percent)",
             "\(title) · \(percent) left"
         )
+    }
+
+    func quotaUnavailableTitleLine(for badgeWindow: FloatingSignalQuotaBadgeWindow) -> String {
+        text(
+            "\(displayName(for: badgeWindow)) · 暂不可用",
+            "\(displayName(for: badgeWindow)) · unavailable"
+        )
+    }
+
+    func codexQuotaIdentityPresentation(
+        for quota: AgentQuotaStatus
+    ) -> CodexQuotaIdentityPresentation {
+        let limitID = quota.limitID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limitName = quota.limitName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedLimitID = limitID?.isEmpty == false ? limitID : nil
+        let normalizedLimitName = limitName?.isEmpty == false ? limitName : nil
+        let hasKnownLimitIdentity = normalizedLimitID != nil || normalizedLimitName != nil
+        let title = normalizedLimitName
+            ?? normalizedLimitID
+            ?? text("Codex 配额", "Codex quota")
+
+        let savedAccount = quota.accountScopeID.flatMap { accountScopeID in
+            codexSavedAccounts.first { $0.id == accountScopeID }
+        }
+        // A successful account-scoped OAuth response can omit the pool name.
+        // Suppress only the display warning; never infer an identity for merging.
+        let isConfirmedOAuthQuota = quota.source == .oauth
+            && savedAccount != nil
+            && quota.accountScopeID == codexActiveSavedAccountID
+            && codexCurrentAccount?.credentialKind == .oauth
+            && quota == latestAgentQuota
+            && codexUsageFetchState?.source == .oauth
+            && codexUsageFetchState?.lastSuccessfulAt == quota.updatedAt
+            && codexUsageFetchState?.isStale == false
+            && codexUsageFetchState?.errorMessage == nil
+
+        var contextParts: [String] = []
+        if !hasKnownLimitIdentity && !isConfirmedOAuthQuota {
+            contextParts.append(text("额度范围未知", "Scope unavailable"))
+        }
+
+        if let savedAccount {
+            contextParts.append(savedAccount.displayName)
+        } else if quota.accountScopeID != nil {
+            contextParts.append(text("已保存账户", "Saved account"))
+        } else {
+            contextParts.append(text("账户未验证", "Account unverified"))
+        }
+
+        contextParts.append(displayName(for: quota.source))
+
+        return CodexQuotaIdentityPresentation(
+            title: title,
+            context: contextParts.joined(separator: " · "),
+            limitID: normalizedLimitID == title ? nil : normalizedLimitID,
+            hasKnownLimitIdentity: hasKnownLimitIdentity
+        )
+    }
+
+    func displayName(for quotaSource: AgentQuotaSource?) -> String {
+        guard let quotaSource else {
+            return text("来源未知", "Source unavailable")
+        }
+        switch quotaSource {
+        case .manualCookie:
+            return text("手动 Cookie", "Manual Cookie")
+        case .browserCookie:
+            return text("浏览器 Cookie", "Browser Cookie")
+        case .oauth:
+            return "Codex OAuth"
+        case .apiKey:
+            return "API Key"
+        case .desktopSession:
+            return text("本地会话", "Local session")
+        case .unknown:
+            return text("来源未知", "Source unavailable")
+        }
     }
 
     func quotaResetText(
@@ -289,14 +622,21 @@ extension MenuBarStatusModel {
         )
     }
 
-    func tokenUsageCostText(_ cost: Double?) -> String {
+    func tokenUsageCostText(_ cost: Double?, isLoading: Bool = false, partial: Bool = false) -> String {
         guard let cost else {
+            if isLoading {
+                return text("正在计算…", "calculating…")
+            }
             return text("费用未知", "cost unavailable")
         }
         return text(
-            "费用 \(String(format: "$%.2f", max(0, cost)))",
-            "cost \(String(format: "$%.2f", max(0, cost)))"
+            "费用 \(estimatedCostText(cost, partial: partial))",
+            "cost \(estimatedCostText(cost, partial: partial))"
         )
+    }
+
+    func estimatedCostText(_ costUSD: Double?, partial: Bool = false) -> String {
+        costCurrency.format(costUSD, partial: partial, locale: Locale(identifier: appLanguage.localeIdentifier))
     }
 
     func localizedTimeString(for date: Date) -> String {
@@ -783,13 +1123,20 @@ extension MenuBarStatusModel {
         case "DesktopTurnAborted":
             return text("已取消", "Canceled")
         case "DesktopAppRunning":
-            return text("桌面版运行中", "Desktop app running")
+            return text("桌面版已打开", "Desktop app open")
         default:
             return rawValue
                 .replacingOccurrences(of: "_", with: " ")
                 .replacingOccurrences(of: "-", with: " ")
         }
     }
+}
+
+struct CodexResetCreditsPresentation: Equatable, Sendable {
+    let title: String
+    let availableText: String
+    let expirySummaryText: String
+    let helpText: String
 }
 
 private enum AppLocalization {
@@ -946,9 +1293,9 @@ private enum AppLocalization {
         "Light": localized(zhHant: "淺色", ja: "ライト", ko: "밝게", es: "Claro", fr: "Clair", de: "Hell", pt: "Claro"),
         "Dark": localized(zhHant: "深色", ja: "ダーク", ko: "어둡게", es: "Oscuro", fr: "Sombre", de: "Dunkel", pt: "Escuro"),
         "Status bar style": localized(zhHant: "狀態列風格", ja: "表示スタイル", ko: "상태 막대 스타일", es: "Estilo de barra", fr: "Style de barre", de: "Statusleistenstil", pt: "Estilo da barra"),
-        "Status bar menu": localized(zhHant: "狀態列選單", ja: "ステータスメニュー", ko: "상태 막대 메뉴", es: "Menu de barra", fr: "Menu de barre", de: "Statusleistenmenue", pt: "Menu da barra"),
-        "Simple": localized(zhHant: "簡約", ja: "シンプル", ko: "간단", es: "Simple", fr: "Simple", de: "Einfach", pt: "Simples"),
-        "Detailed": localized(zhHant: "複雜", ja: "詳細", ko: "상세", es: "Detallado", fr: "Detaille", de: "Detailliert", pt: "Detalhado"),
+        "Menu bar presentation": localized(zhHant: "選單列顯示方式", ja: "メニューバーの表示", ko: "메뉴 막대 표시 방식", es: "Vista de la barra de menús", fr: "Affichage de la barre des menus", de: "Menüleistendarstellung", pt: "Apresentação da barra de menus"),
+        "System Menu": localized(zhHant: "系統選單", ja: "システムメニュー", ko: "시스템 메뉴", es: "Menú del sistema", fr: "Menu système", de: "Systemmenü", pt: "Menu do sistema"),
+        "Card Panel": localized(zhHant: "卡片面板", ja: "カードパネル", ko: "카드 패널", es: "Panel de tarjetas", fr: "Panneau de cartes", de: "Kartenansicht", pt: "Painel de cartões"),
         "Direction": localized(zhHant: "方向", ja: "方向", ko: "방향", es: "Direccion", fr: "Direction", de: "Richtung", pt: "Direcao"),
         "Dot breathing": localized(zhHant: "圓點呼吸強度", ja: "ドットの呼吸", ko: "점 호흡", es: "Respiracion del punto", fr: "Respiration du point", de: "Punkt Atmung", pt: "Respiracao do ponto"),
         "Effect Customization": localized(zhHant: "燈效自訂", ja: "効果設定", ko: "등 효과 사용자화", es: "Personalizacion de efectos", fr: "Personnalisation des effets", de: "Effektanpassung", pt: "Personalizacao de efeitos"),
@@ -960,9 +1307,15 @@ private enum AppLocalization {
         "Light Agent": localized(zhHant: "燈效 Agent", ja: "信号対象", ko: "신호 Agent", es: "Agent de luz", fr: "Agent du signal", de: "Signal Agent", pt: "Agent do sinal"),
         "Horizontal dot size": localized(zhHant: "圓點橫向尺寸", ja: "横ドットサイズ", ko: "가로 점 크기", es: "Tamano horizontal del punto", fr: "Taille horizontale du point", de: "Horizontale Punktgroesse", pt: "Tamanho horizontal do ponto"),
         "Vertical lamp size": localized(zhHant: "燈牌直向尺寸", ja: "縦ランプサイズ", ko: "세로 램프 크기", es: "Tamano vertical de la lampara", fr: "Taille verticale du feu", de: "Vertikale Lampengroesse", pt: "Tamanho vertical da lampada"),
+        "Floating Signal": localized(zhHant: "懸浮信號燈", ja: "フローティング信号", ko: "플로팅 신호등", es: "Senal flotante", fr: "Signal flottant", de: "Schwebendes Signal", pt: "Sinal flutuante"),
+        "Floating signal direction": localized(zhHant: "懸浮信號燈方向", ja: "フローティング信号の向き", ko: "플로팅 신호등 방향", es: "Direccion de la senal flotante", fr: "Direction du signal flottant", de: "Ausrichtung des schwebenden Signals", pt: "Direcao do sinal flutuante"),
+        "Floating signal size": localized(zhHant: "懸浮信號燈尺寸", ja: "フローティング信号のサイズ", ko: "플로팅 신호등 크기", es: "Tamano de la senal flotante", fr: "Taille du signal flottant", de: "Groesse des schwebenden Signals", pt: "Tamanho do sinal flutuante"),
         "Default": localized(zhHant: "預設", ja: "標準", ko: "기본", es: "Predeterminado", fr: "Par defaut", de: "Standard", pt: "Padrao"),
         "Small": localized(zhHant: "小", ja: "小", ko: "작게", es: "Pequeno", fr: "Petit", de: "Klein", pt: "Pequeno"),
         "Large": localized(zhHant: "大", ja: "大", ko: "크게", es: "Grande", fr: "Grand", de: "Gross", pt: "Grande"),
+        "Custom": localized(zhHant: "自訂", ja: "カスタム", ko: "사용자 지정", es: "Personalizado", fr: "Personnalise", de: "Benutzerdefiniert", pt: "Personalizado"),
+        "Choose a size preset shared by horizontal and vertical layouts.": localized(zhHant: "選擇橫向與直向共用的尺寸預設。", ja: "横向きと縦向きで共通のサイズプリセットを選択します。", ko: "가로 및 세로 레이아웃에 공통으로 적용할 크기 프리셋을 선택합니다.", es: "Elige un tamano preestablecido para los disenos horizontal y vertical.", fr: "Choisissez une taille commune aux dispositions horizontale et verticale.", de: "Waehle eine gemeinsame Groessenvoreinstellung fuer horizontale und vertikale Layouts.", pt: "Escolha um tamanho predefinido para os layouts horizontal e vertical."),
+        "Size presets apply to both horizontal and vertical layouts; drag the bottom-right handle for custom sizing.": localized(zhHant: "尺寸預設同時適用於橫向與直向；拖動右下角控制點可自由微調。", ja: "サイズプリセットは横向きと縦向きの両方に適用されます。右下のハンドルをドラッグして自由に調整できます。", ko: "크기 프리셋은 가로 및 세로 레이아웃에 모두 적용됩니다. 오른쪽 아래 핸들을 드래그해 자유롭게 조정할 수 있습니다.", es: "Los preajustes se aplican a los disenos horizontal y vertical; arrastra el control inferior derecho para ajustar el tamano.", fr: "Les prereglages s'appliquent aux dispositions horizontale et verticale ; faites glisser la poignee en bas a droite pour ajuster la taille.", de: "Voreinstellungen gelten fuer horizontale und vertikale Layouts; ziehe den Griff unten rechts fuer eine freie Groessenanpassung.", pt: "As predefinicoes valem para os layouts horizontal e vertical; arraste a alca inferior direita para ajustar o tamanho."),
         "Enable signal test": localized(zhHant: "啟用燈效測試", ja: "テスト有効", ko: "신호 테스트 켜기", es: "Activar prueba de senal", fr: "Activer le test du signal", de: "Signaltest aktivieren", pt: "Ativar teste de sinal"),
         "Turn this off to leave manual testing and return to live agent status.": localized(zhHant: "關閉後會退出手動測試，並恢復真實 Agent 狀態。", ja: "オフにすると手動テストを終了し、実際の Agent 状態に戻ります。", ko: "끄면 수동 테스트를 종료하고 실제 Agent 상태로 돌아갑니다.", es: "Desactivalo para salir de la prueba manual y volver al estado real del Agent.", fr: "Desactivez pour quitter le test manuel et revenir a l'etat reel de l'agent.", de: "Ausschalten beendet den manuellen Test und kehrt zum echten Agent Status zurueck.", pt: "Desative para sair do teste manual e voltar ao status real do Agent."),
         "Idle": localized(zhHant: "空閒", ja: "待機中", ko: "유휴", es: "Inactivo", fr: "Inactif", de: "Leerlauf", pt: "Ocioso"),
@@ -1051,6 +1404,7 @@ private enum AppLocalization {
         "Prompt Received": localized(zhHant: "收到任務", ja: "プロンプト受信", ko: "프롬프트 수신", es: "Prompt recibido", fr: "Prompt recu", de: "Prompt empfangen", pt: "Prompt recebido"),
         "Running Step": localized(zhHant: "正在執行步驟", ja: "ステップ実行中", ko: "단계 실행 중", es: "Ejecutando paso", fr: "Execution de l'etape", de: "Schritt wird ausgefuehrt", pt: "Executando etapa"),
         "Step Done": localized(zhHant: "步驟完成", ja: "ステップ完了", ko: "단계 완료", es: "Paso listo", fr: "Etape terminee", de: "Schritt fertig", pt: "Etapa concluida"),
+        "Desktop app open": localized(zhHant: "桌面版已開啟", ja: "デスクトップ版が開いています", ko: "데스크톱 앱 열림", es: "App de escritorio abierta", fr: "App de bureau ouverte", de: "Desktop App geoeffnet", pt: "App desktop aberto"),
         "Desktop app running": localized(zhHant: "桌面版執行中", ja: "デスクトップ版実行中", ko: "데스크톱 앱 실행 중", es: "App de escritorio en ejecucion", fr: "App de bureau en cours", de: "Desktop App laeuft", pt: "App desktop em execucao"),
         "Desktop app is running": localized(zhHant: "桌面端正在執行", ja: "デスクトップ版が実行中", ko: "데스크톱 앱 실행 중", es: "La app de escritorio esta en ejecucion", fr: "L'app de bureau est en cours", de: "Desktop App laeuft", pt: "O app desktop esta em execucao"),
         "CLI / hook is running": localized(zhHant: "CLI / Hook 正在執行", ja: "CLI / Hook が実行中", ko: "CLI / Hook 실행 중", es: "CLI / hook en ejecucion", fr: "CLI / hook en cours", de: "CLI / Hook laeuft", pt: "CLI / hook em execucao"),

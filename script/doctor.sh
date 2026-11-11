@@ -7,16 +7,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="AgentSignalLight"
 RELEASE_BASENAME="AgentSignalBar"
 BUNDLE_ID="com.agentsignallight.AgentSignalLight"
-STATE_DIR="${AGENT_SIGNAL_LIGHT_STATE_DIR:-/tmp/agent-signal}"
+DIAGNOSTIC_HOME="${AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME:-$HOME}"
+DEFAULT_STATE_DIR="$DIAGNOSTIC_HOME/Library/Application Support/Agent Signal Bar/SignalState"
+STATE_DIR="${AGENT_SIGNAL_LIGHT_STATE_DIR:-${SIGNAL_LIGHT_STATE_DIR:-$DEFAULT_STATE_DIR}}"
 STATE_FILE="${AGENT_SIGNAL_LIGHT_STATE_FILE:-$STATE_DIR/status.json}"
 APP_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
 CLI_BIN="$ROOT_DIR/dist/bin/agent-signal"
 DMG="$ROOT_DIR/dist/$RELEASE_BASENAME.dmg"
 RELEASE_MANIFEST="$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json"
-LAUNCH_AGENT_PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
-CODEX_HOOKS_FILE="$HOME/.codex/hooks.json"
+LAUNCH_AGENT_PLIST="$DIAGNOSTIC_HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
+CODEX_HOOKS_FILE="$DIAGNOSTIC_HOME/.codex/hooks.json"
 CODEX_PROJECT_HOOKS_FILE="$ROOT_DIR/.codex/hooks.json"
-CLAUDE_SETTINGS_FILE="$HOME/.claude/settings.json"
+CLAUDE_SETTINGS_FILE="$DIAGNOSTIC_HOME/.claude/settings.json"
+CLAUDE_DESKTOP_LOG="$DIAGNOSTIC_HOME/Library/Logs/Claude/main.log"
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 
 FAILED=0
@@ -77,6 +80,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --help|-h)
       echo "usage: $0 [quick|--full] [--strict]"
+      echo "AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME overrides user diagnostic paths."
       exit 0
       ;;
     *)
@@ -97,10 +101,10 @@ if [[ "$MODE" == "full" ]]; then
   run_check "core checks pass" swift_tool run agent-signal-checks
   run_check "app builds" swift_tool build --product "$APP_NAME"
   run_check "test suite passes" swift_tool test
-  run_check "status bar lamp language renders consistently" swift_tool test --filter statusBarRendererMatchesLampLanguageAcrossStylesAndLayouts
-  run_check "macOS status bar breathing is visibly rendered" swift_tool test --filter macOSStatusBarBreathingChangesRenderedActiveArea
-  run_check "macOS horizontal status bar can use traffic-light sizing" swift_tool test --filter macOSHorizontalStatusBarCanUseTrafficLightSizingWithoutTrafficLightHousing
-  run_check "traffic-light vertical status bar uses compact large sizing" swift_tool test --filter trafficLightVerticalStatusBarCanUseCompactLargeSizingWithTrafficLightHousing
+  run_check "status bar lamp language renders consistently" swift_tool test --filter StatusBarIconRendererTests/testStatusBarRendererMatchesLampLanguageAcrossStylesAndLayouts
+  run_check "macOS status bar breathing is visibly rendered" swift_tool test --filter StatusBarIconRendererTests/testMacOSStatusBarBreathingChangesRenderedActiveArea
+  run_check "macOS horizontal status bar can use traffic-light sizing" swift_tool test --filter StatusBarIconRendererTests/testMacOSHorizontalStatusBarCanUseTrafficLightSizingWithoutTrafficLightHousing
+  run_check "traffic-light vertical status bar uses compact large sizing" swift_tool test --filter StatusBarIconRendererTests/testTrafficLightVerticalStatusBarCanUseCompactLargeSizingWithTrafficLightHousing
   if swift_tool run agent-signal-icon-preview "$ROOT_DIR/dist/status-icon-preview" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
     if /usr/bin/python3 - "$ROOT_DIR/dist/status-icon-preview" <<'PY'
 import json
@@ -769,7 +773,6 @@ else
   warn "Claude Code CLI not found in PATH; terminal Claude Code sessions cannot exercise the hook"
 fi
 
-CLAUDE_DESKTOP_LOG="$HOME/Library/Logs/Claude/main.log"
 if [[ -f "$CLAUDE_DESKTOP_LOG" ]]; then
   if tail -c 512000 "$CLAUDE_DESKTOP_LOG" | grep -q "Claude Code requires a Pro or Max subscription"; then
     warn "Claude Desktop log says Claude Code requires a Pro or Max subscription; Claude Code hook events will not fire until that runtime can start"
@@ -1147,9 +1150,13 @@ assert manifest["build"]
 assert manifest["signing"]["mode"] in {"ad_hoc", "developer_id"}
 assert isinstance(manifest["notarization"]["ready_to_submit"], bool)
 
-artifacts = {item["role"]: item for item in manifest["artifacts"]}
-for role in ("source_zip", "installer_dmg"):
-    item = artifacts[role]
+required_roles = {"source_zip", "installer_dmg", "sparkle_appcast"}
+roles = {item.get("role") for item in manifest["artifacts"]}
+missing_roles = required_roles - roles
+if missing_roles:
+    raise SystemExit(f"missing artifact roles: {sorted(missing_roles)}")
+
+for item in manifest["artifacts"]:
     path = root / item["path"]
     if not path.exists():
         raise SystemExit(f"missing artifact {path}")
@@ -1247,6 +1254,13 @@ if [[ -f "$STATE_FILE" ]]; then
   pass "state file exists at $STATE_FILE"
 else
   warn "state file not present yet at $STATE_FILE"
+fi
+
+if [[ -z "${AGENT_SIGNAL_LIGHT_STATE_FILE:-}" \
+  && -z "${AGENT_SIGNAL_LIGHT_STATE_DIR:-}" \
+  && -z "${SIGNAL_LIGHT_STATE_DIR:-}" \
+  && -e "/tmp/agent-signal" ]]; then
+  warn "legacy /tmp/agent-signal exists but is intentionally ignored; no automatic migration is performed"
 fi
 
 if [[ -f "$LAUNCH_AGENT_PLIST" ]]; then

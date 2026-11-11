@@ -13,6 +13,13 @@ TMP_ROOT=""
 MOUNT_DIR=""
 INSTALL_ROOT=""
 LAUNCHED_PID=""
+source "$ROOT_DIR/script/universal_build.sh"
+if [[ -z "${AGENT_SIGNAL_LIGHT_ARCHS+x}" ]]; then
+  EXPECTED_ARCHS="arm64 x86_64"
+else
+  EXPECTED_ARCHS="${AGENT_SIGNAL_LIGHT_ARCHS:-}"
+fi
+EXPECTED_ARCHS="$(agent_signal_normalize_archs "$EXPECTED_ARCHS")"
 
 usage() {
   cat <<EOF
@@ -126,6 +133,12 @@ RELEASE_INFO="$APP_RESOURCES/$APP_NAME-release-info.json"
 [[ -f "$RELEASE_INFO" ]] || die "release info JSON missing"
 pass "installed app bundle resources are present"
 
+if [[ -n "$EXPECTED_ARCHS" ]]; then
+  agent_signal_verify_binary_archs "$APP_BINARY" "$EXPECTED_ARCHS" "DMG installed app executable" || die "installed app executable architecture mismatch"
+  agent_signal_verify_binary_archs "$APP_RESOURCES/dist/bin/agent-signal-light" "$EXPECTED_ARCHS" "DMG installed agent-signal-light CLI" || die "installed CLI architecture mismatch"
+  pass "DMG installed executable architectures include $EXPECTED_ARCHS"
+fi
+
 /usr/bin/python3 - "$INSTALLED_APP" "$RELEASE_INFO" "$BUNDLE_ID" <<'PY'
 import json
 import plistlib
@@ -221,6 +234,17 @@ PY
 pass "bundled agent-signal-run preserves exit code and marks blocked"
 
 DIAGNOSTICS_DIR="$TMP_ROOT/diagnostics"
+if [[ -n "${AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME:-}" ]]; then
+  diagnostic_scripts=("$DIAGNOSTICS_EXPORTER")
+  if [[ -x "$APP_RESOURCES/script/doctor.sh" ]]; then
+    diagnostic_scripts+=("$APP_RESOURCES/script/doctor.sh")
+  fi
+  for diagnostic_script in "${diagnostic_scripts[@]}"; do
+    if ! "$diagnostic_script" --help | grep -Fq "AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME"; then
+      die "packaged diagnostics do not support isolated verification; rebuild release artifacts"
+    fi
+  done
+fi
 "$DIAGNOSTICS_EXPORTER" --output "$DIAGNOSTICS_DIR" >"$TMP_ROOT/diagnostics.out"
 /usr/bin/python3 - "$TMP_ROOT/diagnostics.out" <<'PY'
 import sys

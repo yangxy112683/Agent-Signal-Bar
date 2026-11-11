@@ -5,17 +5,26 @@ import Combine
 import SwiftUI
 
 struct MenuBarPanelView: View {
-    static let panelWidth: CGFloat = 304
-    static let panelHeight: CGFloat = 372
+    static let panelWidth: CGFloat = 360
+    static let panelHeight: CGFloat = 560
     private static let contentInset: CGFloat = 16
     private static let actionColumnSpacing: CGFloat = 8
 
     let model: MenuBarStatusModel
     var onOpenSettings: (() -> Void)?
+    let claudeSupport: ClaudeSupportModel
+    let usageNavigation: UsageMenuNavigation
+    var onOpenUsage: (UsageMenuNavigation.Provider) -> Void
     @StateObject private var viewState: MenuBarPanelViewState
     @Environment(\.colorScheme) private var colorScheme
 
-    init(model: MenuBarStatusModel, onOpenSettings: (() -> Void)? = nil) {
+    init(model: MenuBarStatusModel, claudeSupport: ClaudeSupportModel? = nil,
+         usageNavigation: UsageMenuNavigation? = nil,
+         onOpenUsage: @escaping (UsageMenuNavigation.Provider) -> Void = { _ in },
+         onOpenSettings: (() -> Void)? = nil) {
+        self.claudeSupport = claudeSupport ?? ClaudeSupportModel()
+        self.usageNavigation = usageNavigation ?? UsageMenuNavigation()
+        self.onOpenUsage = onOpenUsage
         self.model = model
         self.onOpenSettings = onOpenSettings
         _viewState = StateObject(wrappedValue: MenuBarPanelViewState(model: model))
@@ -28,16 +37,17 @@ struct MenuBarPanelView: View {
                 .zIndex(0)
 
             VStack(spacing: 0) {
-                ScrollView {
+                Group {
                     VStack(alignment: .leading, spacing: 14) {
                         header
-                        statusSummary
+                        MenuUsageSummaryView(model: model, claude: claudeSupport,
+                                             navigation: usageNavigation, onOpenSettings: onOpenUsage)
 
                         if let lastError = viewState.lastError {
                             Text(lastError)
                                 .font(.caption)
                                 .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .lineLimit(2)
                         }
                     }
                     .padding(.horizontal, Self.contentInset)
@@ -46,8 +56,7 @@ struct MenuBarPanelView: View {
                     .frame(width: Self.panelWidth, alignment: .leading)
                 }
                 .contentShape(Rectangle())
-                .scrollIndicators(.hidden)
-                .frame(maxHeight: .infinity)
+
                 .zIndex(0)
 
                 Divider()
@@ -62,35 +71,27 @@ struct MenuBarPanelView: View {
                     .zIndex(1)
             }
         }
-        .frame(width: Self.panelWidth, height: Self.panelHeight)
+        .frame(width: Self.panelWidth)
+        .fixedSize(horizontal: false, vertical: true)
         .preferredColorScheme(viewState.appTheme.colorScheme)
-        .onAppear {
-            model.pollCodexRateLimitsIfNeeded()
-        }
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            PanelTrafficSignalView(model: model)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Agent Signal Bar")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(model.displayName(for: viewState.lightSnapshot.aggregate))
-                    .font(.title2.weight(.semibold))
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.80)
-                Text(model.humanAction(for: viewState.lightSnapshot.aggregate))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .allowsTightening(true)
-                    .minimumScaleFactor(0.80)
-            }
-
+        HStack(spacing: 8) {
+            Circle().fill(statusColor)
+                .frame(width: 7, height: 7)
+            Text("Agent Signal Bar").fontWeight(.semibold)
             Spacer()
+            Text(model.displayName(for: viewState.lightSnapshot.aggregate))
+                .foregroundStyle(.secondary).lineLimit(1)
+        }.font(.caption)
+    }
+
+    private var statusColor: Color {
+        switch viewState.lightSnapshot.aggregate.displayState {
+        case .ready, .active, .completed: return .green
+        case .needsReview, .stale, .paused: return .yellow
+        case .permission, .blocked: return .red
         }
     }
 
@@ -281,6 +282,7 @@ private final class MenuBarPanelViewState: ObservableObject {
     @Published var isMonitoringPaused: Bool
     @Published var lastError: String?
     @Published var appLanguage: AppLanguage
+    @Published var latestCodexResetCredits: CodexRateLimitResetCreditsSnapshot?
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -292,6 +294,7 @@ private final class MenuBarPanelViewState: ObservableObject {
         isMonitoringPaused = model.isMonitoringPaused
         lastError = model.lastError
         appLanguage = model.appLanguage
+        latestCodexResetCredits = model.latestCodexResetCredits
 
         model.$snapshot
             .sink { [weak self, weak model] _ in
@@ -356,6 +359,13 @@ private final class MenuBarPanelViewState: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] lastError in
                 self?.lastError = lastError
+            }
+            .store(in: &cancellables)
+
+        model.$latestCodexResetCredits
+            .removeDuplicates()
+            .sink { [weak self] resetCredits in
+                self?.latestCodexResetCredits = resetCredits
             }
             .store(in: &cancellables)
 

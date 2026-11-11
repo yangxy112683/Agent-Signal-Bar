@@ -152,11 +152,6 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
         }
         .store(in: &cancellables)
 
-        model.$trafficLightVerticalUsesMacOSSize.sink { [weak self] _ in
-            Task { @MainActor in self?.resizePanelForCurrentScale(keepingCenter: true) }
-        }
-        .store(in: &cancellables)
-
         model.$appTheme.sink { [weak self] _ in
             Task { @MainActor in self?.applyAppearance() }
         }
@@ -380,7 +375,6 @@ final class FloatingSignalWindowController: NSObject, NSWindowDelegate {
     private func panelSize(forVisualScale visualScale: CGFloat) -> NSSize {
         let contentSize = model.floatingSignalScale.panelSize(
             layout: model.floatingSignalLayout,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             visualScale: visualScale
         )
         return FloatingSignalPanelLayout.outerSize(
@@ -613,17 +607,14 @@ private struct FloatingSignalPanelView: View {
         let scale = effectiveVisualScale
         let contentSize = model.floatingSignalScale.panelSize(
             layout: model.floatingSignalLayout,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             visualScale: scale
         )
         let signalSize = model.floatingSignalScale.signalFrameSize(
             layout: model.floatingSignalLayout,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             visualScale: scale
         )
         let backingSize = model.floatingSignalScale.housingBackingSize(
             layout: model.floatingSignalLayout,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             visualScale: scale
         )
         let contentOrigin = FloatingSignalPanelLayout.contentOrigin(scale: scale)
@@ -1062,14 +1053,13 @@ private struct FloatingSignalPanelView: View {
     }
 
     private func quotaBadgeText(for quota: AgentQuotaStatus) -> String {
-        model.quotaPercentText(for: model.quotaWindow(for: model.floatingSignalQuotaBadgeWindow, quota: quota))
+        model.quotaPercentText(for: model.selectedQuotaBadgeWindowStatus(for: quota))
     }
 
     private func quotaBadgeForeground(for quota: AgentQuotaStatus) -> Color {
-        let remainingPercent = model.quotaWindow(
-            for: model.floatingSignalQuotaBadgeWindow,
-            quota: quota
-        )?.remainingPercent ?? quota.remainingPercent
+        guard let remainingPercent = model.selectedQuotaBadgeWindowStatus(for: quota)?.remainingPercent else {
+            return Color.white.opacity(0.62)
+        }
 
         if remainingPercent <= 15 {
             return Color(red: 1.0, green: 0.26, blue: 0.22)
@@ -1081,16 +1071,17 @@ private struct FloatingSignalPanelView: View {
     }
 
     private func quotaBadgeHelp(for quota: AgentQuotaStatus) -> String {
-        let percent = quotaBadgeText(for: quota)
-        if let limitName = quota.limitName, !limitName.isEmpty {
+        guard model.selectedQuotaBadgeWindowStatus(for: quota) != nil else {
             return model.text(
-                "Agent 剩余额度 \(percent) · \(limitName)",
-                "Agent quota remaining \(percent) · \(limitName)"
+                "\(model.displayName(for: model.floatingSignalQuotaBadgeWindow))额度暂不可用，点击查看可用额度。",
+                "\(model.displayName(for: model.floatingSignalQuotaBadgeWindow)) quota is unavailable. Click to view available quota."
             )
         }
+        let percent = quotaBadgeText(for: quota)
+        let identity = model.codexQuotaIdentityPresentation(for: quota)
         return model.text(
-            "Agent 剩余额度 \(percent)",
-            "Agent quota remaining \(percent)"
+            "\(identity.title)剩余额度 \(percent) · \(identity.context)",
+            "\(identity.title) quota remaining \(percent) · \(identity.context)"
         )
     }
 
@@ -1296,8 +1287,8 @@ private struct FloatingSignalPanelView: View {
             tokens: floatingTokenUsageTokens
         )
         return model.text(
-            "Token 使用量 \(tokenText)",
-            "Token usage \(tokenText)"
+            "本机 Token 使用量 \(tokenText)",
+            "Device token usage \(tokenText)"
         )
     }
 
@@ -1321,7 +1312,6 @@ private struct FloatingSignalPanelView: View {
             scale: scale,
             layout: model.floatingSignalLayout,
             macOSBreathingStrength: model.macOSBreathingStrength,
-            trafficLightVerticalUsesMacOSSize: model.trafficLightVerticalUsesMacOSSize,
             allLightsOn: model.floatingSignalLightAllLightsOn,
             usesSystemGrayLights: model.floatingSignalLightUsesSystemGrayLights,
             effectCustomization: model.floatingSignalLightEffectCustomization
@@ -1410,7 +1400,6 @@ private struct FloatingSignalLightsView: View {
     let scale: CGFloat
     let layout: TrafficSignalLayout
     let macOSBreathingStrength: MacOSBreathingStrength
-    let trafficLightVerticalUsesMacOSSize: Bool
     let allLightsOn: Bool
     let usesSystemGrayLights: Bool
     let effectCustomization: SignalEffectCustomization
@@ -1434,7 +1423,7 @@ private struct FloatingSignalLightsView: View {
                 style: .trafficLight,
                 macOSBreathingStrength: macOSBreathingStrength,
                 macOSHorizontalUsesTrafficLightSize: false,
-                trafficLightVerticalUsesMacOSSize: trafficLightVerticalUsesMacOSSize,
+                trafficLightVerticalUsesMacOSSize: false,
                 allLightsOn: allLightsOn,
                 usesSystemGrayLights: usesSystemGrayLights,
                 effectCustomization: effectCustomization
@@ -1504,7 +1493,7 @@ private struct FloatingSignalDragCursorRegion: NSViewRepresentable {
 }
 
 @MainActor
-private final class FloatingSignalInfoBadgeDragView: NSView {
+final class FloatingSignalInfoBadgeDragView: NSView {
     var badgeSize: CGFloat = 24 {
         didSet {
             needsLayout = true
@@ -1554,7 +1543,9 @@ private final class FloatingSignalInfoBadgeDragView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        badgeHitRect.contains(point) ? self : nil
+        guard !isHiddenOrHasHiddenAncestor else { return nil }
+        let localPoint = superview.map { convert(point, from: $0) } ?? point
+        return badgeHitRect.contains(localPoint) ? self : nil
     }
 
     override func updateTrackingAreas() {
@@ -1674,40 +1665,22 @@ private final class FloatingSignalInfoBadgeDragView: NSView {
 }
 
 @MainActor
-private final class FloatingSignalDragCursorView: NSView {
-    private var trackingArea: NSTrackingArea?
-    private var isHovering = false
-    private var isPointerDownInside = false
-    private var isDragging = false
-    private let cursorPush = FloatingSignalCursorPush()
-    nonisolated(unsafe) private var mouseMonitor: Any?
-
+final class FloatingSignalDragCursorView: NSView {
     override var isFlipped: Bool {
         true
     }
 
     override var mouseDownCanMoveWindow: Bool {
-        true
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setUpMonitor()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setUpMonitor()
-    }
-
-    deinit {
-        if let mouseMonitor {
-            NSEvent.removeMonitor(mouseMonitor)
-        }
+        // Handle this surface explicitly instead of relying on NSHostingView's
+        // background-drag responder chain (which also hosts the context menu).
+        false
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        bounds.contains(point) ? self : nil
+        guard !isHiddenOrHasHiddenAncestor else { return nil }
+        // NSView.hitTest receives a point in the superview's coordinate space.
+        let localPoint = superview.map { convert(point, from: $0) } ?? point
+        return bounds.contains(localPoint) ? self : nil
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -1716,111 +1689,36 @@ private final class FloatingSignalDragCursorView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil {
-            isHovering = false
-            isPointerDownInside = false
-            isDragging = false
-            cursorPush.pop()
-        }
         invalidateCursorRects()
     }
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
-        }
-
-        let nextTrackingArea = NSTrackingArea(
-            rect: .zero,
-            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .enabledDuringMouseDrag],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(nextTrackingArea)
-        trackingArea = nextTrackingArea
+    override func layout() {
+        super.layout()
         invalidateCursorRects()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        isHovering = true
-        invalidateCursorRects()
-        updateCursor()
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        guard !isDragging else { return }
-        isHovering = false
-        invalidateCursorRects()
-        cursorPush.pop()
-    }
-
-    override func cursorUpdate(with event: NSEvent) {
-        updateCursor()
     }
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        if isDragging {
-            addCursorRect(bounds, cursor: NSCursor.closedHand)
-        }
+        addCursorRect(bounds, cursor: .openHand)
     }
 
-    private func setUpMonitor() {
-        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
-            guard let self else { return event }
-            let eventTargetsDragView = self.eventTargetsDragView(event)
-            guard eventTargetsDragView || self.isPointerDownInside || self.isDragging else { return event }
-
-            switch event.type {
-            case .leftMouseDown:
-                self.isHovering = eventTargetsDragView
-                self.isPointerDownInside = eventTargetsDragView
-                self.isDragging = false
-            case .leftMouseDragged:
-                guard self.isPointerDownInside || self.isDragging else { return event }
-                self.isDragging = true
-            case .leftMouseUp:
-                self.isPointerDownInside = false
-                self.isDragging = false
-                self.isHovering = self.contains(event)
-            default:
-                break
-            }
-            self.invalidateCursorRects()
-            self.updateCursor()
-            return event
-        }
-    }
-
-    private func contains(_ event: NSEvent) -> Bool {
-        guard event.window === window else { return false }
-        let localPoint = convert(event.locationInWindow, from: nil)
-        return bounds.contains(localPoint)
-    }
-
-    private func eventTargetsDragView(_ event: NSEvent) -> Bool {
-        guard let window,
-              event.window === window,
-              let contentView = window.contentView
-        else {
-            return false
-        }
-
-        let contentPoint = contentView.convert(event.locationInWindow, from: nil)
-        guard let hitView = contentView.hitTest(contentPoint) else {
-            return false
-        }
-        return hitView === self || hitView.isDescendant(of: self)
-    }
-
-    private func updateCursor() {
-        guard isDragging else {
-            cursorPush.pop()
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            super.mouseDown(with: event)
             return
         }
-        cursorPush.push(NSCursor.closedHand)
+        guard event.type == .leftMouseDown,
+              !isHiddenOrHasHiddenAncestor,
+              let window,
+              event.window === window,
+              bounds.contains(convert(event.locationInWindow, from: nil))
+        else {
+            return
+        }
+
+        // Window Server owns the drag and may consume mouseUp. Do not retain
+        // pressed/cursor state that would depend on receiving that final event.
+        window.performDrag(with: event)
     }
 
     private func invalidateCursorRects() {
@@ -1828,7 +1726,7 @@ private final class FloatingSignalDragCursorView: NSView {
     }
 }
 
-private final class FloatingSignalResizeHandleView: NSView {
+final class FloatingSignalResizeHandleView: NSView {
     var handleSize: CGFloat = 18 {
         didSet {
             needsLayout = true
@@ -1888,7 +1786,9 @@ private final class FloatingSignalResizeHandleView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        resizeHandleHitRect.contains(point) ? self : nil
+        guard !isHiddenOrHasHiddenAncestor else { return nil }
+        let localPoint = superview.map { convert(point, from: $0) } ?? point
+        return resizeHandleHitRect.contains(localPoint) ? self : nil
     }
 
     override func layout() {
@@ -2104,11 +2004,16 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
         var isPresented: Binding<Bool>
         private var panel: NSPanel?
         private var hostingController: NSHostingController<FloatingSignalInfoPopoverView>?
-        private var mouseMonitor: Any?
+        nonisolated(unsafe) private var localMouseMonitor: Any?
+        nonisolated(unsafe) private var globalMouseMonitor: Any?
         private weak var anchorView: NSView?
 
         init(isPresented: Binding<Bool>) {
             self.isPresented = isPresented
+        }
+
+        deinit {
+            removeMouseMonitors()
         }
 
         func update(isPresented: Bool, model: MenuBarStatusModel, anchorView: NSView) {
@@ -2143,7 +2048,7 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
             panel?.contentViewController = nil
             panel = nil
             hostingController = nil
-            removeMouseMonitor()
+            removeMouseMonitors()
         }
 
         func windowWillClose(_ notification: Notification) {
@@ -2218,27 +2123,42 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
         }
 
         private func installMouseMonitorIfNeeded() {
-            guard mouseMonitor == nil else { return }
+            let mouseDownEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
 
-            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                guard let self else { return event }
-                guard !self.contains(event, in: self.panel?.contentView),
-                      !self.contains(event, in: self.anchorView)
-                else {
+            if localMouseMonitor == nil {
+                localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseDownEvents) { [weak self] event in
+                    guard let self else { return event }
+                    guard !self.contains(event, in: self.panel?.contentView),
+                          !self.contains(event, in: self.anchorView)
+                    else {
+                        return event
+                    }
+
+                    self.dismiss()
                     return event
                 }
+            }
 
-                self.isPresented.wrappedValue = false
-                self.close()
-                return event
+            if globalMouseMonitor == nil {
+                globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseDownEvents) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.dismiss()
+                    }
+                }
             }
         }
 
-        private func removeMouseMonitor() {
-            if let mouseMonitor {
-                NSEvent.removeMonitor(mouseMonitor)
-            }
-            mouseMonitor = nil
+        private func dismiss() {
+            isPresented.wrappedValue = false
+            close()
+        }
+
+        nonisolated private func removeMouseMonitors() {
+            [localMouseMonitor, globalMouseMonitor]
+                .compactMap { $0 }
+                .forEach(NSEvent.removeMonitor)
+            localMouseMonitor = nil
+            globalMouseMonitor = nil
         }
 
         private func contains(_ event: NSEvent, in view: NSView?) -> Bool {
@@ -2277,11 +2197,16 @@ private struct FloatingSignalQuotaPanelAnchor: NSViewRepresentable {
         var isPresented: Binding<Bool>
         private var panel: NSPanel?
         private var hostingController: NSHostingController<FloatingSignalQuotaPopoverView>?
-        private var mouseMonitor: Any?
+        nonisolated(unsafe) private var localMouseMonitor: Any?
+        nonisolated(unsafe) private var globalMouseMonitor: Any?
         private weak var anchorView: NSView?
 
         init(isPresented: Binding<Bool>) {
             self.isPresented = isPresented
+        }
+
+        deinit {
+            removeMouseMonitors()
         }
 
         func update(isPresented: Bool, model: MenuBarStatusModel, quota: AgentQuotaStatus, anchorView: NSView) {
@@ -2316,7 +2241,7 @@ private struct FloatingSignalQuotaPanelAnchor: NSViewRepresentable {
             panel?.contentViewController = nil
             panel = nil
             hostingController = nil
-            removeMouseMonitor()
+            removeMouseMonitors()
         }
 
         func windowWillClose(_ notification: Notification) {
@@ -2391,27 +2316,42 @@ private struct FloatingSignalQuotaPanelAnchor: NSViewRepresentable {
         }
 
         private func installMouseMonitorIfNeeded() {
-            guard mouseMonitor == nil else { return }
+            let mouseDownEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
 
-            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                guard let self else { return event }
-                guard !self.contains(event, in: self.panel?.contentView),
-                      !self.contains(event, in: self.anchorView)
-                else {
+            if localMouseMonitor == nil {
+                localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseDownEvents) { [weak self] event in
+                    guard let self else { return event }
+                    guard !self.contains(event, in: self.panel?.contentView),
+                          !self.contains(event, in: self.anchorView)
+                    else {
+                        return event
+                    }
+
+                    self.dismiss()
                     return event
                 }
+            }
 
-                self.isPresented.wrappedValue = false
-                self.close()
-                return event
+            if globalMouseMonitor == nil {
+                globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseDownEvents) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.dismiss()
+                    }
+                }
             }
         }
 
-        private func removeMouseMonitor() {
-            if let mouseMonitor {
-                NSEvent.removeMonitor(mouseMonitor)
-            }
-            mouseMonitor = nil
+        private func dismiss() {
+            isPresented.wrappedValue = false
+            close()
+        }
+
+        nonisolated private func removeMouseMonitors() {
+            [localMouseMonitor, globalMouseMonitor]
+                .compactMap { $0 }
+                .forEach(NSEvent.removeMonitor)
+            localMouseMonitor = nil
+            globalMouseMonitor = nil
         }
 
         private func contains(_ event: NSEvent, in view: NSView?) -> Bool {
@@ -2449,11 +2389,16 @@ private struct FloatingSignalTokenPanelAnchor: NSViewRepresentable {
         var isPresented: Binding<Bool>
         private var panel: NSPanel?
         private var hostingController: NSHostingController<FloatingSignalTokenPopoverView>?
-        private var mouseMonitor: Any?
+        nonisolated(unsafe) private var localMouseMonitor: Any?
+        nonisolated(unsafe) private var globalMouseMonitor: Any?
         private weak var anchorView: NSView?
 
         init(isPresented: Binding<Bool>) {
             self.isPresented = isPresented
+        }
+
+        deinit {
+            removeMouseMonitors()
         }
 
         func update(isPresented: Bool, model: MenuBarStatusModel, anchorView: NSView) {
@@ -2488,7 +2433,7 @@ private struct FloatingSignalTokenPanelAnchor: NSViewRepresentable {
             panel?.contentViewController = nil
             panel = nil
             hostingController = nil
-            removeMouseMonitor()
+            removeMouseMonitors()
         }
 
         func windowWillClose(_ notification: Notification) {
@@ -2563,27 +2508,42 @@ private struct FloatingSignalTokenPanelAnchor: NSViewRepresentable {
         }
 
         private func installMouseMonitorIfNeeded() {
-            guard mouseMonitor == nil else { return }
+            let mouseDownEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
 
-            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                guard let self else { return event }
-                guard !self.contains(event, in: self.panel?.contentView),
-                      !self.contains(event, in: self.anchorView)
-                else {
+            if localMouseMonitor == nil {
+                localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseDownEvents) { [weak self] event in
+                    guard let self else { return event }
+                    guard !self.contains(event, in: self.panel?.contentView),
+                          !self.contains(event, in: self.anchorView)
+                    else {
+                        return event
+                    }
+
+                    self.dismiss()
                     return event
                 }
+            }
 
-                self.isPresented.wrappedValue = false
-                self.close()
-                return event
+            if globalMouseMonitor == nil {
+                globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseDownEvents) { [weak self] _ in
+                    Task { @MainActor in
+                        self?.dismiss()
+                    }
+                }
             }
         }
 
-        private func removeMouseMonitor() {
-            if let mouseMonitor {
-                NSEvent.removeMonitor(mouseMonitor)
-            }
-            mouseMonitor = nil
+        private func dismiss() {
+            isPresented.wrappedValue = false
+            close()
+        }
+
+        nonisolated private func removeMouseMonitors() {
+            [localMouseMonitor, globalMouseMonitor]
+                .compactMap { $0 }
+                .forEach(NSEvent.removeMonitor)
+            localMouseMonitor = nil
+            globalMouseMonitor = nil
         }
 
         private func contains(_ event: NSEvent, in view: NSView?) -> Bool {
@@ -2598,28 +2558,60 @@ private struct FloatingSignalQuotaPopoverView: View {
     let quota: AgentQuotaStatus
 
     var body: some View {
+        let badgeWindows = model.quotaBadgeWindows(for: quota)
+        let identity = model.codexQuotaIdentityPresentation(for: quota)
+        let isSelectedWindowAvailable = model.isQuotaBadgeWindowAvailable(
+            model.floatingSignalQuotaBadgeWindow,
+            quota: quota
+        )
+
         VStack(alignment: .leading, spacing: 7) {
-            Text("Codex")
+            Text(identity.title)
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
 
-            quotaRow(
-                quota: quota,
-                badgeWindow: .fiveHours
-            )
+            Text(identity.context)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.66))
+                .lineLimit(2)
+                .truncationMode(.tail)
 
-            Divider()
-                .overlay(Color.white.opacity(0.12))
+            if let limitID = identity.limitID {
+                Text("ID · \(limitID)")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.54))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
 
-            quotaRow(
-                quota: quota,
-                badgeWindow: .weekly
-            )
+            if !isSelectedWindowAvailable {
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+                unavailableQuotaRow(model.floatingSignalQuotaBadgeWindow)
+            }
+
+            ForEach(Array(badgeWindows.enumerated()), id: \.element) { index, badgeWindow in
+                if index > 0 || !isSelectedWindowAvailable {
+                    Divider()
+                        .overlay(Color.white.opacity(0.12))
+                }
+
+                quotaRow(
+                    quota: quota,
+                    badgeWindow: badgeWindow
+                )
+            }
+
+            if let localObservation = recentLocalObservation {
+                Divider()
+                    .overlay(Color.white.opacity(0.12))
+                localObservationRow(localObservation)
+            }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
-        .frame(width: 250, alignment: .leading)
+        .frame(width: 286, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.black.opacity(0.92))
@@ -2632,7 +2624,6 @@ private struct FloatingSignalQuotaPopoverView: View {
         badgeWindow: FloatingSignalQuotaBadgeWindow
     ) -> some View {
         let window = model.quotaWindow(for: badgeWindow, quota: quota)
-
         return Button {
             model.setFloatingSignalQuotaBadgeWindow(badgeWindow)
         } label: {
@@ -2662,6 +2653,74 @@ private struct FloatingSignalQuotaPopoverView: View {
         .focusable(false)
     }
 
+    private func unavailableQuotaRow(_ badgeWindow: FloatingSignalQuotaBadgeWindow) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.quotaUnavailableTitleLine(for: badgeWindow))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
+
+                Text(model.text(
+                    "当前主额度来源没有返回这个窗口",
+                    "The primary quota source did not return this window"
+                ))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.52))
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+            selectionCircle(isSelected: true)
+        }
+        .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var recentLocalObservation: AgentQuotaStatus? {
+        model.recentLocalQuotaObservation()
+    }
+
+    private func localObservationRow(_ observation: AgentQuotaStatus) -> some View {
+        let identity = model.codexQuotaIdentityPresentation(for: observation)
+        let summaries = model.quotaBadgeWindows(for: observation)
+            .map { model.quotaTitleLine(for: $0, quota: observation) }
+            .joined(separator: " · ")
+
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(model.text("本地会话观察（未合并）", "Local session observation (not merged)"))
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.orange.opacity(0.92))
+                .lineLimit(1)
+
+            Text(identity.title)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.84))
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            if let limitID = identity.limitID {
+                Text("ID · \(limitID)")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.54))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Text(summaries)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.62))
+                .lineLimit(2)
+
+            Text(identity.context)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(0.48))
+                .lineLimit(2)
+                .truncationMode(.tail)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     private func selectionCircle(isSelected: Bool) -> some View {
         ZStack {
             Circle()
@@ -2685,7 +2744,7 @@ private struct FloatingSignalTokenPopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Text("Codex")
+                Text(model.text("Codex · 本机", "Codex · Device"))
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -2706,6 +2765,9 @@ private struct FloatingSignalTokenPopoverView: View {
                 .overlay(Color.white.opacity(0.12))
 
             tokenRow(.last30Days)
+
+            CostCurrencyRateNote(store: model.costCurrency, text: model.text, compact: true)
+                .environment(\.colorScheme, .dark)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
@@ -2735,7 +2797,8 @@ private struct FloatingSignalTokenPopoverView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
 
-                    Text(model.tokenUsageCostText(cost))
+                    Text(model.tokenUsageCostText(cost, isLoading: model.isTokenActivityLoading,
+                        partial: model.tokenActivityCostIsPartial(for: tokenWindow)))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(1)

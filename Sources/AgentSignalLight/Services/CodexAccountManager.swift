@@ -103,7 +103,7 @@ enum CodexAccountManagerError: LocalizedError, Equatable {
     case emptyStoredAuth
     case writeFailed(String)
     case missingCodexBinary
-    case codexLoginTimedOut
+    case codexLoginTimedOut(String)
     case codexLoginFailed(Int32, String)
     case codexLoginLaunchFailed(String)
     case missingManagedAuth(String)
@@ -125,9 +125,17 @@ enum CodexAccountManagerError: LocalizedError, Equatable {
         case let .writeFailed(path):
             return "Could not write Codex auth file at \(path)."
         case .missingCodexBinary:
-            return "Could not find the codex command. Install Codex CLI, then try adding the account again."
-        case .codexLoginTimedOut:
-            return "Codex login timed out. Try adding the account again."
+            return "Could not find the codex command. Install Codex CLI, or run `codex login` in Terminal and then use Save Current."
+        case let .codexLoginTimedOut(output):
+            let trimmed = Self.trimmedLoginOutput(output)
+            if trimmed.isEmpty {
+                return "Codex login timed out. If the browser did not open, run `codex login` in Terminal, then use Save Current."
+            }
+            return """
+            Codex login timed out. If the browser did not open, use the login output below, or run `codex login` in Terminal, then use Save Current.
+
+            \(trimmed)
+            """
         case let .codexLoginFailed(status, output):
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
@@ -143,6 +151,14 @@ enum CodexAccountManagerError: LocalizedError, Equatable {
         case let .keychainFailure(message):
             return "Could not access saved Codex account credentials: \(message)"
         }
+    }
+
+    private static func trimmedLoginOutput(_ output: String) -> String {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limit = 1200
+        guard trimmed.count > limit else { return trimmed }
+        let end = trimmed.index(trimmed.startIndex, offsetBy: limit)
+        return "\(trimmed[..<end])..."
     }
 }
 
@@ -187,7 +203,7 @@ extension CodexAccountManaging {
     }
 }
 
-final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
+final class CodexAccountManager: CodexAccountManaging, CodexRefreshedCredentialPersisting, @unchecked Sendable {
     private struct StoreDocument: Codable {
         var version: Int
         var accounts: [CodexAccountProfile]
@@ -281,6 +297,14 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
     }
 
     func saveCurrentAccount(label requestedLabel: String? = nil) throws -> CodexAccountProfile {
+        try CodexActiveAuthFileCoordinator.withLock {
+            try saveCurrentAccountWithoutCoordination(label: requestedLabel)
+        }
+    }
+
+    private func saveCurrentAccountWithoutCoordination(
+        label requestedLabel: String?
+    ) throws -> CodexAccountProfile {
         let url = authFileURL()
         guard fileManager.fileExists(atPath: url.path) else {
             throw CodexAccountManagerError.missingAuthFile(url.path)
@@ -319,11 +343,33 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
                 createdAt: existing.createdAt,
                 updatedAt: now
             )
-            try storeAuthData(data, reference: credentialReference)
+            do {
+                try storeAuthData(data, reference: credentialReference)
+                try storeAccounts(accounts)
+                CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                    replacingAuthFingerprint: existing.authFingerprint
+                )
+                removePersistedPendingRefresh(
+                    replacingAuthFingerprint: existing.authFingerprint
+                )
+            } catch {
+                let originalError = error
+                CodexActiveAuthFileCoordinator.rememberRefreshedAuthData(
+                    data,
+                    replacingAuthFingerprint: existing.authFingerprint
+                )
+                do {
+                    try persistPendingRefresh(
+                        data,
+                        replacingAuthFingerprint: existing.authFingerprint
+                    )
+                } catch {
+                    throw originalError
+                }
+            }
             if let managedHomeURL = managedHomeURL(for: existing) {
                 try? removeManagedHomeIfSafe(at: managedHomeURL)
             }
-            try storeAccounts(accounts)
             return accounts[index]
         }
 
@@ -350,27 +396,129 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
     }
 
     func switchToAccount(id: UUID) throws -> CodexAccountProfile {
-        let stateBeforeSwitch = try loadState()
-        if stateBeforeSwitch.currentAccount != nil,
-           stateBeforeSwitch.activeSavedAccountID != id {
-            _ = try saveCurrentAccount()
-        }
+        try CodexActiveAuthFileCoordinator.withLock {
+            let stateBeforeSwitch = try loadState()
+            if let currentAccount = stateBeforeSwitch.currentAccount,
+               stateBeforeSwitch.activeSavedAccountID != id {
+                let activeSavedAccount = stateBeforeSwitch.activeSavedAccountID.flatMap { activeID in
+                    stateBeforeSwitch.savedAccounts.first { $0.id == activeID }
+                }
+                let pendingRefreshMatchesCurrent = activeSavedAccount.flatMap { account in
+                    pendingRefreshedAuthData(
+                        replacingAuthFingerprint: account.authFingerprint
+                    )
+                }.map(Self.fingerprint) == currentAccount.authFingerprint
+                if activeSavedAccount == nil
+                    || (activeSavedAccount?.authFingerprint != currentAccount.authFingerprint
+                        && !pendingRefreshMatchesCurrent) {
+                    _ = try saveCurrentAccount()
+                }
+            }
 
-        let accounts = try loadAccounts()
-        guard let account = accounts.first(where: { $0.id == id }) else {
-            throw CodexAccountManagerError.accountNotFound
+            let accounts = try loadAccounts()
+            guard let account = accounts.first(where: { $0.id == id }) else {
+                throw CodexAccountManagerError.accountNotFound
+            }
+            let credential = try activationCredential(for: account)
+            try writeActiveAuthData(credential.data)
+            retryPendingCredentialPersistence(credential, for: account)
+            return account
         }
-        let data = try storedAuthData(for: account)
-        guard !data.isEmpty else {
-            throw CodexAccountManagerError.emptyStoredAuth
+    }
+
+    func persistRefreshedAuthData(
+        _ data: Data,
+        replacingAuthFingerprint authFingerprint: String
+    ) throws {
+        try CodexActiveAuthFileCoordinator.withLock {
+            CodexActiveAuthFileCoordinator.rememberRefreshedAuthData(
+                data,
+                replacingAuthFingerprint: authFingerprint
+            )
+            var pendingStorageFingerprint = authFingerprint
+            do {
+                var accounts = try loadAccounts()
+                let refreshedFingerprint = Self.fingerprint(data)
+                let fingerprintIndex = accounts.firstIndex(where: { account in
+                    if account.authFingerprint == authFingerprint {
+                        return true
+                    }
+                    guard let pendingData = pendingRefreshedAuthData(
+                        replacingAuthFingerprint: account.authFingerprint
+                    ) else {
+                        return false
+                    }
+                    return Self.fingerprint(pendingData) == authFingerprint
+                })
+                guard let index = fingerprintIndex else {
+                    CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                        replacingAuthFingerprint: authFingerprint
+                    )
+                    removePersistedPendingRefresh(
+                        replacingAuthFingerprint: authFingerprint
+                    )
+                    return
+                }
+
+                let existing = accounts[index]
+                pendingStorageFingerprint = existing.authFingerprint
+                if pendingStorageFingerprint != authFingerprint {
+                    CodexActiveAuthFileCoordinator.rememberRefreshedAuthData(
+                        data,
+                        replacingAuthFingerprint: pendingStorageFingerprint
+                    )
+                    CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                        replacingAuthFingerprint: authFingerprint
+                    )
+                    removePersistedPendingRefresh(
+                        replacingAuthFingerprint: authFingerprint
+                    )
+                }
+                let identity = try parseAuthIdentity(data: data, authFileURL: authFileURL())
+                let credentialReference = existing.credentialReference
+                    ?? Self.credentialReference(for: existing.id)
+                let now = Date()
+                let updated = CodexAccountProfile(
+                    id: existing.id,
+                    label: existing.label,
+                    email: identity.email ?? existing.email,
+                    accountID: identity.accountID ?? existing.accountID,
+                    credentialKind: identity.credentialKind,
+                    planName: identity.planName ?? existing.planName,
+                    authFingerprint: refreshedFingerprint,
+                    credentialReference: credentialReference,
+                    authDataBase64: nil,
+                    managedHomePath: nil,
+                    createdAt: existing.createdAt,
+                    updatedAt: now
+                )
+                try storeAuthData(data, reference: credentialReference)
+                accounts[index] = updated
+                try storeAccounts(accounts)
+                CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                    replacingAuthFingerprint: pendingStorageFingerprint
+                )
+                removePersistedPendingRefresh(
+                    replacingAuthFingerprint: pendingStorageFingerprint
+                )
+            } catch {
+                let originalError = error
+                do {
+                    try persistPendingRefresh(
+                        data,
+                        replacingAuthFingerprint: pendingStorageFingerprint
+                    )
+                } catch {
+                    throw originalError
+                }
+            }
         }
-        try writeActiveAuthData(data)
-        return account
     }
 
     func authenticateManagedAccount(timeout: TimeInterval = 120) async throws -> CodexAccountProfile {
         let homeURL = makeManagedHomeURL()
         try fileManager.createDirectory(at: homeURL, withIntermediateDirectories: true)
+        defer { try? removeManagedHomeIfSafe(at: homeURL) }
         try? fileManager.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o700))],
             ofItemAtPath: homeURL.path
@@ -382,13 +530,11 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
             environment: environment
         )
         guard case .success = result.outcome else {
-            try? removeManagedHomeIfSafe(at: homeURL)
             throw error(from: result)
         }
 
         let authURL = homeURL.appendingPathComponent("auth.json", isDirectory: false)
         guard fileManager.fileExists(atPath: authURL.path) else {
-            try? removeManagedHomeIfSafe(at: homeURL)
             throw CodexAccountManagerError.missingManagedAuth(authURL.path)
         }
 
@@ -396,49 +542,58 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
         do {
             data = try Data(contentsOf: authURL)
         } catch {
-            try? removeManagedHomeIfSafe(at: homeURL)
             throw CodexAccountManagerError.unreadableAuthFile(authURL.path)
         }
 
-        let identity = try parseAuthIdentity(data: data, authFileURL: authURL)
-        let fingerprint = Self.fingerprint(data)
-        let now = Date()
-        var accounts = try loadAccounts()
-        let label = uniqueLabel(identity.suggestedLabel, existingAccounts: accounts)
-        let existingIndex = matchingAccountIndex(
-            identity: identity,
-            fingerprint: fingerprint,
-            in: accounts
-        )
-        let existing = existingIndex.map { accounts[$0] }
-        let existingManagedHomeToRemove = existing?.managedHomePath.flatMap(URL.init(fileURLWithPath:))
-        let id = existing?.id ?? UUID()
-        let credentialReference = existing?.credentialReference ?? Self.credentialReference(for: id)
+        let (account, existingManagedHomeToRemove) = try CodexActiveAuthFileCoordinator.withLock {
+            let identity = try parseAuthIdentity(data: data, authFileURL: authURL)
+            let fingerprint = Self.fingerprint(data)
+            let now = Date()
+            var accounts = try loadAccounts()
+            let label = uniqueLabel(identity.suggestedLabel, existingAccounts: accounts)
+            let existingIndex = matchingAccountIndex(
+                identity: identity,
+                fingerprint: fingerprint,
+                in: accounts
+            )
+            let existing = existingIndex.map { accounts[$0] }
+            let existingManagedHomeToRemove = existing?.managedHomePath.flatMap(URL.init(fileURLWithPath:))
+            let id = existing?.id ?? UUID()
+            let credentialReference = existing?.credentialReference ?? Self.credentialReference(for: id)
 
-        let account = CodexAccountProfile(
-            id: id,
-            label: existing?.displayName ?? label,
-            email: identity.email,
-            accountID: identity.accountID,
-            credentialKind: identity.credentialKind,
-            planName: identity.planName,
-            authFingerprint: fingerprint,
-            credentialReference: credentialReference,
-            authDataBase64: nil,
-            managedHomePath: nil,
-            createdAt: existing?.createdAt ?? now,
-            updatedAt: now
-        )
-        try storeAuthData(data, reference: credentialReference)
+            let account = CodexAccountProfile(
+                id: id,
+                label: existing?.displayName ?? label,
+                email: identity.email,
+                accountID: identity.accountID,
+                credentialKind: identity.credentialKind,
+                planName: identity.planName,
+                authFingerprint: fingerprint,
+                credentialReference: credentialReference,
+                authDataBase64: nil,
+                managedHomePath: nil,
+                createdAt: existing?.createdAt ?? now,
+                updatedAt: now
+            )
+            try storeAuthData(data, reference: credentialReference)
 
-        if let existingIndex {
-            accounts[existingIndex] = account
-        } else {
-            accounts.append(account)
+            if let existingIndex {
+                accounts[existingIndex] = account
+            } else {
+                accounts.append(account)
+            }
+            try storeAccounts(accounts)
+            if let existing {
+                CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                    replacingAuthFingerprint: existing.authFingerprint
+                )
+                removePersistedPendingRefresh(
+                    replacingAuthFingerprint: existing.authFingerprint
+                )
+            }
+            return (account, existingManagedHomeToRemove)
         }
-        try storeAccounts(accounts)
 
-        try? removeManagedHomeIfSafe(at: homeURL)
         if let existingManagedHomeToRemove {
             try? removeManagedHomeIfSafe(at: existingManagedHomeToRemove)
         }
@@ -447,12 +602,47 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
     }
 
     func removeAccount(id: UUID) throws {
+        try CodexActiveAuthFileCoordinator.withLock {
+            try removeAccountWithoutCoordination(id: id)
+        }
+    }
+
+    private func removeAccountWithoutCoordination(id: UUID) throws {
         let accounts = try loadAccounts()
         let removedAccounts = accounts.filter { $0.id == id }
         let filtered = accounts.filter { $0.id != id }
         guard filtered.count != accounts.count else { return }
+
+        let current = try? currentAccount()
+        let removesActiveAccount = current.flatMap { activeAccountID(for: $0, in: accounts) } == id
+        let nextAccount = removesActiveAccount ? filtered.first : nil
+        let nextCredential = try nextAccount.map(activationCredential(for:))
+
         try storeAccounts(filtered)
+        do {
+            if removesActiveAccount {
+                if let nextCredential {
+                    try writeActiveAuthData(nextCredential.data)
+                } else {
+                    try removeActiveAuthData()
+                }
+            }
+        } catch {
+            // Auth writes are atomic. Roll back the list before deleting any
+            // credential if changing the active authentication fails.
+            try storeAccounts(accounts)
+            throw error
+        }
+        if let nextAccount, let nextCredential {
+            retryPendingCredentialPersistence(nextCredential, for: nextAccount)
+        }
         for account in removedAccounts {
+            CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                replacingAuthFingerprint: account.authFingerprint
+            )
+            removePersistedPendingRefresh(
+                replacingAuthFingerprint: account.authFingerprint
+            )
             try? deleteStoredAuthData(for: account)
             if let managedHomeURL = managedHomeURL(for: account) {
                 try? removeManagedHomeIfSafe(at: managedHomeURL)
@@ -462,8 +652,15 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
 
     func refreshSavedCurrentAccountIfPossible() throws -> CodexAccountProfile? {
         let state = try loadState()
-        guard state.activeSavedAccountID != nil else {
+        guard let activeSavedAccountID = state.activeSavedAccountID,
+              let savedAccount = state.savedAccounts.first(where: {
+                  $0.id == activeSavedAccountID
+              })
+        else {
             return nil
+        }
+        if savedAccount.authFingerprint == state.currentAccount?.authFingerprint {
+            return savedAccount
         }
         return try saveCurrentAccount()
     }
@@ -495,7 +692,11 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
             let reference = account.credentialReference ?? Self.credentialReference(for: account.id)
             var dataToStore: Data?
 
-            if try keychainAuthData(reference: reference) == nil {
+            // A credential reference is written only after its secret has been stored.
+            // Once present, normal state loading must not touch Keychain: doing so made
+            // every account switch prompt once per saved account, several times over.
+            if account.credentialReference == nil,
+               try keychainAuthData(reference: reference) == nil {
                 if let legacyData = account.legacyAuthData, !legacyData.isEmpty {
                     dataToStore = legacyData
                 } else if let managedHomeURL = managedHomeURL(for: account) {
@@ -532,6 +733,28 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
             try storeAccounts(accounts)
         }
         return accounts
+    }
+
+    private struct ActivationCredential {
+        let data: Data
+        let isPendingRefresh: Bool
+    }
+
+    private func activationCredential(for account: CodexAccountProfile) throws -> ActivationCredential {
+        let pending = pendingRefreshedAuthData(replacingAuthFingerprint: account.authFingerprint)
+        let data = try pending ?? storedAuthData(for: account)
+        guard !data.isEmpty else { throw CodexAccountManagerError.emptyStoredAuth }
+        return ActivationCredential(data: data, isPendingRefresh: pending != nil)
+    }
+
+    private func retryPendingCredentialPersistence(
+        _ credential: ActivationCredential, for account: CodexAccountProfile
+    ) {
+        guard credential.isPendingRefresh else { return }
+        // Activation remains usable while Keychain is unavailable. Only retry
+        // after the active auth transaction succeeds, keeping rollback intact.
+        try? persistRefreshedAuthData(
+            credential.data, replacingAuthFingerprint: account.authFingerprint)
     }
 
     private func storedAuthData(for account: CodexAccountProfile) throws -> Data {
@@ -643,35 +866,109 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
         return "\(base) \(index)"
     }
 
-    private func writeActiveAuthData(_ data: Data) throws {
-        let url = authFileURL()
+    private func pendingRefreshedAuthData(
+        replacingAuthFingerprint authFingerprint: String
+    ) -> Data? {
+        if let inMemoryData = CodexActiveAuthFileCoordinator.refreshedAuthData(
+            replacingAuthFingerprint: authFingerprint
+        ), (try? parseAuthIdentity(data: inMemoryData, authFileURL: authFileURL())) != nil {
+            return inMemoryData
+        }
+        let persistedURL = persistedPendingRefreshURL(
+            replacingAuthFingerprint: authFingerprint
+        )
+        guard let persistedData = try? Data(contentsOf: persistedURL),
+              (try? parseAuthIdentity(data: persistedData, authFileURL: authFileURL())) != nil
+        else {
+            try? fileManager.removeItem(at: persistedURL)
+            return nil
+        }
+        return persistedData
+    }
+
+    private func persistPendingRefresh(
+        _ data: Data,
+        replacingAuthFingerprint authFingerprint: String
+    ) throws {
+        // Emergency fallback for a temporarily unavailable Keychain. Codex's
+        // active auth.json is also a mode-0600 file; keep the same protection
+        // here and remove this copy as soon as Keychain persistence succeeds.
+        let url = persistedPendingRefreshURL(
+            replacingAuthFingerprint: authFingerprint
+        )
         let directory = url.deletingLastPathComponent()
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let stagedURL = directory.appendingPathComponent(
-            "auth.json.agent-signal-staged-\(UUID().uuidString)",
-            isDirectory: false
+        try fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o700))],
+            ofItemAtPath: directory.path
         )
+        try data.write(to: url, options: .atomic)
+        try fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: url.path
+        )
+    }
 
-        do {
-            try data.write(to: stagedURL)
-            try fileManager.setAttributes(
-                [.posixPermissions: NSNumber(value: Int16(0o600))],
-                ofItemAtPath: stagedURL.path
+    private func removePersistedPendingRefresh(
+        replacingAuthFingerprint authFingerprint: String
+    ) {
+        try? fileManager.removeItem(at: persistedPendingRefreshURL(
+            replacingAuthFingerprint: authFingerprint
+        ))
+    }
+
+    private func persistedPendingRefreshURL(
+        replacingAuthFingerprint authFingerprint: String
+    ) -> URL {
+        let fileName = Self.fingerprint(Data(authFingerprint.utf8))
+        return storeURL.deletingLastPathComponent()
+            .appendingPathComponent("PendingCodexCredentialRefreshes", isDirectory: true)
+            .appendingPathComponent("\(fileName).json", isDirectory: false)
+    }
+
+    private func writeActiveAuthData(_ data: Data) throws {
+        try CodexActiveAuthFileCoordinator.withLock {
+            let url = authFileURL()
+            let directory = url.deletingLastPathComponent()
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let stagedURL = directory.appendingPathComponent(
+                "auth.json.agent-signal-staged-\(UUID().uuidString)",
+                isDirectory: false
             )
-            let result = stagedURL.path.withCString { sourcePath in
-                url.path.withCString { destinationPath in
-                    rename(sourcePath, destinationPath)
+
+            do {
+                try data.write(to: stagedURL)
+                try fileManager.setAttributes(
+                    [.posixPermissions: NSNumber(value: Int16(0o600))],
+                    ofItemAtPath: stagedURL.path
+                )
+                let result = stagedURL.path.withCString { sourcePath in
+                    url.path.withCString { destinationPath in
+                        rename(sourcePath, destinationPath)
+                    }
                 }
-            }
-            guard result == 0 else {
+                guard result == 0 else {
+                    throw CodexAccountManagerError.writeFailed(url.path)
+                }
+            } catch let error as CodexAccountManagerError {
+                try? fileManager.removeItem(at: stagedURL)
+                throw error
+            } catch {
+                try? fileManager.removeItem(at: stagedURL)
                 throw CodexAccountManagerError.writeFailed(url.path)
             }
-        } catch let error as CodexAccountManagerError {
-            try? fileManager.removeItem(at: stagedURL)
-            throw error
-        } catch {
-            try? fileManager.removeItem(at: stagedURL)
-            throw CodexAccountManagerError.writeFailed(url.path)
+        }
+    }
+
+    private func removeActiveAuthData() throws {
+        try CodexActiveAuthFileCoordinator.withLock {
+            let url = authFileURL()
+            guard fileManager.fileExists(atPath: url.path) else { return }
+            do {
+                try fileManager.removeItem(at: url)
+            } catch {
+                throw CodexAccountManagerError.writeFailed(url.path)
+            }
         }
     }
 
@@ -708,7 +1005,7 @@ final class CodexAccountManager: CodexAccountManaging, @unchecked Sendable {
         case .success:
             return .missingManagedAuth(makeManagedHomeURL().appendingPathComponent("auth.json").path)
         case .timedOut:
-            return .codexLoginTimedOut
+            return .codexLoginTimedOut(result.output)
         case let .failed(status):
             return .codexLoginFailed(status, result.output)
         case .missingBinary:
@@ -898,9 +1195,12 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
     ) -> CodexAccountLoginResult {
         var scopedEnvironment = environment
         scopedEnvironment["CODEX_HOME"] = homePath
-        scopedEnvironment["PATH"] = effectivePATH(from: environment)
+        scopedEnvironment = CodexExecutableResolver.effectiveEnvironment(from: scopedEnvironment)
 
-        guard let executable = resolveCodexExecutable(environment: scopedEnvironment) else {
+        guard let executable = CodexExecutableResolver.resolve(
+            environment: scopedEnvironment,
+            includeLoginShellLookup: true
+        ) else {
             return CodexAccountLoginResult(outcome: .missingBinary, output: "")
         }
 
@@ -934,7 +1234,12 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
                 )
             }
 
-            let timedOut = waitForProcess(process, timeout: timeout)
+            let timedOut = waitForProcess(
+                process,
+                timeout: timeout,
+                stdoutURL: stdoutURL,
+                stderrURL: stderrURL
+            )
             let output = combinedOutput(stdoutURL: stdoutURL, stderrURL: stderrURL)
             if timedOut {
                 return CodexAccountLoginResult(outcome: .timedOut, output: output)
@@ -954,15 +1259,53 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
         }
     }
 
-    private static func waitForProcess(_ process: Process, timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
+    private static func waitForProcess(
+        _ process: Process,
+        timeout: TimeInterval,
+        stdoutURL: URL,
+        stderrURL: URL
+    ) -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
+        var nextOutputScan = Date()
+        var didOpenAuthenticationURL = false
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+            let now = Date()
+            if !didOpenAuthenticationURL, now >= nextOutputScan {
+                let output = combinedOutput(stdoutURL: stdoutURL, stderrURL: stderrURL)
+                if let url = authenticationURL(in: output) {
+                    openAuthenticationURL(url)
+                    didOpenAuthenticationURL = true
+                }
+                nextOutputScan = now.addingTimeInterval(0.25)
+            }
             Thread.sleep(forTimeInterval: 0.05)
         }
+        if !didOpenAuthenticationURL {
+            let output = combinedOutput(stdoutURL: stdoutURL, stderrURL: stderrURL)
+            if let url = authenticationURL(in: output) {
+                openAuthenticationURL(url)
+            }
+        }
         guard process.isRunning else { return false }
-        process.terminate()
-        process.waitUntilExit()
+        BoundedProcessTermination.terminate(process)
         return true
+    }
+
+    static func authenticationURL(in output: String) -> URL? {
+        let pattern = #"https://auth\.openai\.com/[^\s"'<>)]+"#
+        guard let range = output.range(of: pattern, options: .regularExpression) else {
+            return nil
+        }
+        let rawURL = String(output[range])
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,;:"))
+        return URL(string: rawURL)
+    }
+
+    private static func openAuthenticationURL(_ url: URL) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [url.absoluteString]
+        try? process.run()
     }
 
     private static func combinedOutput(stdoutURL: URL, stderrURL: URL) -> String {
@@ -985,48 +1328,4 @@ struct CodexAccountLoginRunner: CodexAccountLoginRunning {
             .appendingPathComponent("agent-signal-codex-login-\(UUID().uuidString).\(suffix)")
     }
 
-    private static func effectivePATH(from environment: [String: String]) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            environment["PATH"],
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "\(home)/.local/bin",
-            "\(home)/.npm-global/bin",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin"
-        ]
-        var seen = Set<String>()
-        return candidates
-            .flatMap { ($0 ?? "").split(separator: ":").map(String.init) }
-            .filter { path in
-                let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty, !seen.contains(trimmed) else { return false }
-                seen.insert(trimmed)
-                return true
-            }
-            .joined(separator: ":")
-    }
-
-    private static func resolveCodexExecutable(environment: [String: String]) -> String? {
-        if let explicit = environment["CODEX_BINARY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !explicit.isEmpty,
-           FileManager.default.isExecutableFile(atPath: explicit) {
-            return explicit
-        }
-
-        let pathValue = environment["PATH"] ?? ""
-        for directory in pathValue.split(separator: ":").map(String.init) {
-            let executable = URL(fileURLWithPath: directory)
-                .appendingPathComponent("codex", isDirectory: false)
-                .path
-            if FileManager.default.isExecutableFile(atPath: executable) {
-                return executable
-            }
-        }
-
-        return nil
-    }
 }

@@ -1,88 +1,251 @@
 import AgentSignalLightCore
+import CryptoKit
 import Foundation
 
 final class CodexRateLimitFetcher: @unchecked Sendable {
+    private static let officialCookieUsageURL = URL(
+        string: "https://chatgpt.com/backend-api/wham/usage"
+    )!
+
     private let environment: [String: String]
     private let fileManager: FileManager
     private let session: URLSession
     private let browserCookieImporter: any OpenAIBrowserCookieImporting
+    private let credentialPersistence: (any CodexRefreshedCredentialPersisting)?
+    private let clock: @Sendable () -> Date
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
         session: URLSession = .shared,
-        browserCookieImporter: any OpenAIBrowserCookieImporting = OpenAIBrowserCookieImporter()
+        browserCookieImporter: any OpenAIBrowserCookieImporting = OpenAIBrowserCookieImporter(),
+        credentialPersistence: (any CodexRefreshedCredentialPersisting)? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.environment = environment
         self.fileManager = fileManager
         self.session = session
         self.browserCookieImporter = browserCookieImporter
+        self.credentialPersistence = credentialPersistence
+        self.clock = clock
     }
 
-    func fetchQuota(now: Date = Date()) async throws -> AgentQuotaStatus {
-        try await fetchUsageStatus(now: now).quota
+    func fetchQuota(now: Date? = nil) async throws -> AgentQuotaStatus {
+        let now = now ?? clock()
+        return try await fetchUsageStatus(now: now).quota
     }
 
-    func fetchUsageStatus(now: Date = Date()) async throws -> CodexUsageStatus {
-        try await fetchUsageStatus(now: now, route: .oauthAPI)
+    func fetchUsageStatus(now: Date? = nil) async throws -> CodexUsageStatus {
+        let now = now ?? clock()
+        return try await fetchUsageStatus(now: now, route: .oauthAPI)
     }
 
-    func fetchUsageStatus(now: Date = Date(), route: CodexRateLimitFetchRoute) async throws -> CodexUsageStatus {
+    func fetchUsageStatus(
+        now: Date? = nil,
+        route: CodexRateLimitFetchRoute,
+        expectedAuthFingerprint: String? = nil
+    ) async throws -> CodexUsageStatus {
+        let now = now ?? clock()
+        try Task.checkCancellation()
         switch route {
         case .automatic(let cookieHeader, let importsBrowserCookies):
-            if let cookieHeader = Self.normalizedCookieHeader(cookieHeader) {
+            let credentials = try loadCredentialsForCookieRouting(
+                expectedAuthFingerprint: expectedAuthFingerprint
+            )
+            let targetEmail = credentials?.email
+            let canSafelyUseCookie = credentials == nil || targetEmail != nil
+
+            if canSafelyUseCookie,
+               let cookieHeader = Self.normalizedCookieHeader(cookieHeader) {
                 do {
-                    let response = try await fetchUsage(cookieHeader: cookieHeader, accountID: try? loadCredentials().accountID)
-                    return try Self.usageStatus(from: response, updatedAt: now)
-                } catch {
-                    return try await fetchOAuthUsageStatus(now: now)
-                }
-            }
-            if importsBrowserCookies,
-               let imported = await browserCookieImporter.importCookieHeader()
-            {
-                do {
+                    try await validateCookieHeader(cookieHeader, targetEmail: targetEmail)
                     let response = try await fetchUsage(
-                        cookieHeader: imported.cookieHeader,
-                        accountID: try? loadCredentials().accountID
+                        cookieHeader: cookieHeader,
+                        accountID: credentials?.accountID
                     )
-                    return try Self.usageStatus(from: response, updatedAt: now)
+                    try validateActiveAuthFingerprint(credentials?.authFileFingerprint)
+                    return try Self.usageStatus(
+                        from: response,
+                        updatedAt: now,
+                        source: .manualCookie,
+                        authFingerprint: credentials?.authFileFingerprint
+                    )
                 } catch {
-                    return try await fetchOAuthUsageStatus(now: now)
+                    try Task.checkCancellation()
+                    let cookieError = error
+                    do {
+                        return try await fetchOAuthUsageStatus(
+                            now: now,
+                            expectedAuthFingerprint: expectedAuthFingerprint
+                        )
+                    } catch CodexRateLimitFetchError.missingCredentials {
+                        throw cookieError
+                    }
                 }
             }
-            return try await fetchOAuthUsageStatus(now: now)
+            if canSafelyUseCookie, importsBrowserCookies {
+                if let imported = await browserCookieImporter.importCookieHeader(targetEmail: targetEmail) {
+                    do {
+                        let response = try await fetchUsage(
+                            cookieHeader: imported.cookieHeader,
+                            accountID: credentials?.accountID
+                        )
+                        try validateActiveAuthFingerprint(credentials?.authFileFingerprint)
+                        return try Self.usageStatus(
+                            from: response,
+                            updatedAt: now,
+                            source: .browserCookie,
+                            authFingerprint: credentials?.authFileFingerprint
+                        )
+                    } catch {
+                        try Task.checkCancellation()
+                        let cookieError = error
+                        do {
+                            return try await fetchOAuthUsageStatus(
+                                now: now,
+                                expectedAuthFingerprint: expectedAuthFingerprint
+                            )
+                        } catch CodexRateLimitFetchError.missingCredentials {
+                            throw cookieError
+                        }
+                    }
+                } else {
+                    try Task.checkCancellation()
+                    if credentials == nil {
+                        throw CodexRateLimitFetchError.cookieUnavailable
+                    }
+                }
+            }
+            try Task.checkCancellation()
+            return try await fetchOAuthUsageStatus(
+                now: now,
+                expectedAuthFingerprint: expectedAuthFingerprint
+            )
         case .oauthAPI:
-            return try await fetchOAuthUsageStatus(now: now)
+            return try await fetchOAuthUsageStatus(
+                now: now,
+                expectedAuthFingerprint: expectedAuthFingerprint
+            )
         case .manualCookie(let cookieHeader):
             guard let cookieHeader = Self.normalizedCookieHeader(cookieHeader) else {
                 throw CodexRateLimitFetchError.invalidCookieHeader
             }
-            let response = try await fetchUsage(cookieHeader: cookieHeader, accountID: try? loadCredentials().accountID)
-            return try Self.usageStatus(from: response, updatedAt: now)
+            let credentials = try loadCredentialsForCookieRouting(
+                expectedAuthFingerprint: expectedAuthFingerprint
+            )
+            guard credentials == nil || credentials?.email != nil else {
+                throw CodexRateLimitFetchError.cookieAccountMismatch
+            }
+            try await validateCookieHeader(cookieHeader, targetEmail: credentials?.email)
+            let response = try await fetchUsage(cookieHeader: cookieHeader, accountID: credentials?.accountID)
+            try validateActiveAuthFingerprint(credentials?.authFileFingerprint)
+            return try Self.usageStatus(
+                from: response,
+                updatedAt: now,
+                source: .manualCookie,
+                authFingerprint: credentials?.authFileFingerprint
+            )
         }
     }
 
-    private func fetchOAuthUsageStatus(now: Date) async throws -> CodexUsageStatus {
-        var credentials = try loadCredentials()
-        if credentials.needsRefresh {
+    func fetchRateLimitResetCredits(
+        now: Date? = nil,
+        timeout: TimeInterval = 4,
+        expectedAuthFingerprint: String? = nil
+    ) async throws -> CodexRateLimitResetCreditsSnapshot {
+        let now = now ?? clock()
+        try Task.checkCancellation()
+        var credentials = try loadCredentials(expectedAuthFingerprint: expectedAuthFingerprint)
+        guard credentials.source == .oauth else {
+            throw CodexRateLimitFetchError.oauthCredentialsRequired
+        }
+        if credentials.needsRefresh(at: now) {
             credentials = try await refresh(credentials)
-            try saveIfNeeded(credentials)
+            credentials = try saveIfNeeded(credentials)
+            try Task.checkCancellation()
+        }
+
+        var request = URLRequest(
+            url: rateLimitResetCreditsURL(),
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: timeout
+        )
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("AgentSignalLight", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("codex-1", forHTTPHeaderField: "OpenAI-Beta")
+        request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+        if let accountID = credentials.accountID, !accountID.isEmpty {
+            request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-ID")
+        }
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexRateLimitFetchError.invalidResponse
+        }
+
+        switch httpResponse.statusCode {
+        case 200...299:
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .custom(Self.decodeISO8601Date)
+            guard let payload = try? decoder.decode(CodexRateLimitResetCreditsResponse.self, from: data),
+                  payload.availableCount >= 0
+            else {
+                throw CodexRateLimitFetchError.invalidResponse
+            }
+            try validateActiveAuthFingerprint(credentials.authFileFingerprint)
+            return CodexRateLimitResetCreditsSnapshot(
+                credits: payload.credits.map(\.model),
+                availableCount: payload.availableCount,
+                updatedAt: now
+            )
+        case 401, 403:
+            throw CodexRateLimitFetchError.unauthorized
+        default:
+            throw CodexRateLimitFetchError.serverError(httpResponse.statusCode)
+        }
+    }
+
+    private func fetchOAuthUsageStatus(
+        now: Date,
+        expectedAuthFingerprint: String?
+    ) async throws -> CodexUsageStatus {
+        var credentials = try loadCredentials(expectedAuthFingerprint: expectedAuthFingerprint)
+        if credentials.needsRefresh(at: now) {
+            credentials = try await refresh(credentials)
+            credentials = try saveIfNeeded(credentials)
+            try Task.checkCancellation()
         }
 
         do {
             let response = try await fetchUsage(credentials: credentials)
-            return try Self.usageStatus(from: response, updatedAt: now)
+            try validateActiveAuthFingerprint(credentials.authFileFingerprint)
+            return try Self.usageStatus(
+                from: response,
+                updatedAt: now,
+                source: credentials.usageFetchSource,
+                authFingerprint: credentials.authFileFingerprint
+            )
         } catch CodexRateLimitFetchError.unauthorized where !credentials.refreshToken.isEmpty {
             credentials = try await refresh(credentials)
-            try saveIfNeeded(credentials)
+            credentials = try saveIfNeeded(credentials)
+            try Task.checkCancellation()
             let response = try await fetchUsage(credentials: credentials)
-            return try Self.usageStatus(from: response, updatedAt: now)
+            try validateActiveAuthFingerprint(credentials.authFileFingerprint)
+            return try Self.usageStatus(
+                from: response,
+                updatedAt: now,
+                source: credentials.usageFetchSource,
+                authFingerprint: credentials.authFileFingerprint
+            )
         }
     }
 
     private func fetchUsage(cookieHeader: String, accountID: String?) async throws -> CodexUsageResponse {
-        var request = URLRequest(url: usageURL())
+        // Browser cookies must never follow a user-configured proxy/base URL.
+        // They are scoped to the first-party ChatGPT host only.
+        var request = URLRequest(url: Self.officialCookieUsageURL)
         request.httpMethod = "GET"
         request.timeoutInterval = 30
         request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
@@ -104,6 +267,20 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
             throw CodexRateLimitFetchError.unauthorized
         default:
             throw CodexRateLimitFetchError.serverError(httpResponse.statusCode)
+        }
+    }
+
+    private func validateCookieHeader(_ cookieHeader: String, targetEmail: String?) async throws {
+        guard let targetEmail = OpenAICookieIdentityVerifier.normalizedEmail(targetEmail) else {
+            return
+        }
+        let signedInEmail = await OpenAICookieIdentityVerifier.signedInEmail(
+            cookieHeader: cookieHeader,
+            session: session
+        )
+        try Task.checkCancellation()
+        guard OpenAICookieIdentityVerifier.normalizedEmail(signedInEmail) == targetEmail else {
+            throw CodexRateLimitFetchError.cookieAccountMismatch
         }
     }
 
@@ -149,33 +326,65 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
             "scope": "openid profile email"
         ])
 
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode),
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
+        // OAuth providers may rotate the refresh token as soon as they process
+        // this request. Finish it even if the UI switches accounts and cancels
+        // the surrounding usage task, so the rotated token can still be saved
+        // back to the original account slot.
+        let session = session
+        let refreshTask = Task.detached(priority: .utility) {
+            try await session.data(for: request)
+        }
+        let (data, response) = try await refreshTask.value
+        guard let httpResponse = response as? HTTPURLResponse else {
             throw CodexRateLimitFetchError.refreshFailed
         }
 
+        switch httpResponse.statusCode {
+        case 200...299:
+            break
+        case 400, 401, 403:
+            throw CodexRateLimitFetchError.refreshRejected
+        default:
+            throw CodexRateLimitFetchError.serverError(httpResponse.statusCode)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CodexRateLimitFetchError.refreshFailed
+        }
+
+        let refreshedIDToken = json["id_token"] as? String ?? credentials.idToken
         return CodexCredentials(
             accessToken: json["access_token"] as? String ?? credentials.accessToken,
             refreshToken: json["refresh_token"] as? String ?? credentials.refreshToken,
-            idToken: json["id_token"] as? String ?? credentials.idToken,
+            idToken: refreshedIDToken,
+            email: Self.email(fromIDToken: refreshedIDToken) ?? credentials.email,
             accountID: json["account_id"] as? String ?? credentials.accountID,
             lastRefresh: Date(),
-            source: credentials.source
+            source: credentials.source,
+            authFileFingerprint: credentials.authFileFingerprint,
+            authFileData: credentials.authFileData
         )
     }
 
-    private func loadCredentials() throws -> CodexCredentials {
+    private func loadCredentials(expectedAuthFingerprint: String? = nil) throws -> CodexCredentials {
         let url = authFileURL()
         guard fileManager.fileExists(atPath: url.path) else {
             throw CodexRateLimitFetchError.missingCredentials
         }
 
-        let data = try Data(contentsOf: url)
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
             throw CodexRateLimitFetchError.invalidCredentials
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CodexRateLimitFetchError.invalidCredentials
+        }
+        let authFileFingerprint = Self.fingerprint(data)
+        if let expectedAuthFingerprint,
+           authFileFingerprint != expectedAuthFingerprint {
+            throw CodexRateLimitFetchError.credentialsChanged
         }
 
         if let apiKey = json["OPENAI_API_KEY"] as? String,
@@ -184,9 +393,12 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
                 accessToken: apiKey,
                 refreshToken: "",
                 idToken: nil,
+                email: nil,
                 accountID: nil,
                 lastRefresh: nil,
-                source: .apiKey
+                source: .apiKey,
+                authFileFingerprint: authFileFingerprint,
+                authFileData: data
             )
         }
 
@@ -203,28 +415,107 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
             camelCaseKey: "refreshToken"
         ) ?? ""
 
+        let idToken = Self.stringValue(in: tokens, snakeCaseKey: "id_token", camelCaseKey: "idToken")
         return CodexCredentials(
             accessToken: accessToken,
             refreshToken: refreshToken,
-            idToken: Self.stringValue(in: tokens, snakeCaseKey: "id_token", camelCaseKey: "idToken"),
+            idToken: idToken,
+            email: Self.email(fromIDToken: idToken),
             accountID: Self.stringValue(in: tokens, snakeCaseKey: "account_id", camelCaseKey: "accountId"),
             lastRefresh: Self.parseLastRefresh(from: json["last_refresh"]),
-            source: .oauth
+            source: .oauth,
+            authFileFingerprint: authFileFingerprint,
+            authFileData: data
         )
     }
 
-    private func saveIfNeeded(_ credentials: CodexCredentials) throws {
-        guard credentials.canPersist else { return }
-        try save(credentials)
+    private func loadCredentialsForCookieRouting(
+        expectedAuthFingerprint: String?
+    ) throws -> CodexCredentials? {
+        do {
+            return try loadCredentials(expectedAuthFingerprint: expectedAuthFingerprint)
+        } catch CodexRateLimitFetchError.missingCredentials {
+            if expectedAuthFingerprint != nil {
+                throw CodexRateLimitFetchError.credentialsChanged
+            }
+            return nil
+        }
     }
 
-    private func save(_ credentials: CodexCredentials) throws {
+    func validateActiveAuthFingerprint(_ expectedAuthFingerprint: String?) throws {
+        guard let expectedAuthFingerprint else { return }
         let url = authFileURL()
-        var json: [String: Any] = [:]
-        if let data = try? Data(contentsOf: url),
-           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            json = existing
+        guard let data = try? Data(contentsOf: url),
+              Self.fingerprint(data) == expectedAuthFingerprint
+        else {
+            throw CodexRateLimitFetchError.credentialsChanged
         }
+    }
+
+    private func saveIfNeeded(_ credentials: CodexCredentials) throws -> CodexCredentials {
+        guard credentials.canPersist else { return credentials }
+        let data = try refreshedAuthData(from: credentials)
+        let fingerprint = Self.fingerprint(data)
+        return try CodexActiveAuthFileCoordinator.withLock {
+            let url = authFileURL()
+            let currentData = try? Data(contentsOf: url)
+            let activeCredentialsStillMatch = currentData.map(Self.fingerprint)
+                == credentials.authFileFingerprint
+            var wroteActiveCredentials = false
+
+            CodexActiveAuthFileCoordinator.rememberRefreshedAuthData(
+                data,
+                replacingAuthFingerprint: credentials.authFileFingerprint
+            )
+
+            if activeCredentialsStillMatch {
+                if let latestData = try? Data(contentsOf: url),
+                   Self.fingerprint(latestData) == credentials.authFileFingerprint {
+                    try fileManager.createDirectory(
+                        at: url.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    try data.write(to: url, options: .atomic)
+                    try? fileManager.setAttributes(
+                        [.posixPermissions: NSNumber(value: Int16(0o600))],
+                        ofItemAtPath: url.path
+                    )
+                    wroteActiveCredentials = true
+                }
+            }
+
+            if let credentialPersistence {
+                do {
+                    try credentialPersistence.persistRefreshedAuthData(
+                        data,
+                        replacingAuthFingerprint: credentials.authFileFingerprint
+                    )
+                } catch {
+                    // Keep the pending copy so a later account switch can use
+                    // it without falling back to the invalid old token.
+                    if !wroteActiveCredentials {
+                        throw CodexRateLimitFetchError.credentialsChanged
+                    }
+                }
+            } else if wroteActiveCredentials {
+                CodexActiveAuthFileCoordinator.clearRefreshedAuthData(
+                    replacingAuthFingerprint: credentials.authFileFingerprint
+                )
+            }
+
+            guard wroteActiveCredentials else {
+                throw CodexRateLimitFetchError.credentialsChanged
+            }
+            return credentials.replacingAuthFile(
+                fingerprint: fingerprint,
+                data: data
+            )
+        }
+    }
+
+    private func refreshedAuthData(from credentials: CodexCredentials) throws -> Data {
+        var json = (try JSONSerialization.jsonObject(with: credentials.authFileData) as? [String: Any])
+            ?? [:]
 
         var tokens = (json["tokens"] as? [String: Any]) ?? [:]
         tokens["access_token"] = credentials.accessToken
@@ -238,9 +529,7 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         json["tokens"] = tokens
         json["last_refresh"] = ISO8601DateFormatter().string(from: Date())
 
-        let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+        return try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
     }
 
     private func authFileURL() -> URL {
@@ -260,6 +549,11 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         let path = normalizedBaseURL.contains("/backend-api") ? "/wham/usage" : "/api/codex/usage"
         return URL(string: normalizedBaseURL + path)
             ?? URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    }
+
+    private func rateLimitResetCreditsURL() -> URL {
+        URL(string: normalizedChatGPTBaseURL() + "/wham/rate-limit-reset-credits")
+            ?? URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
     }
 
     private func normalizedChatGPTBaseURL() -> String {
@@ -299,10 +593,15 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
     }
 
     static func quotaStatus(from response: CodexUsageResponse, updatedAt: Date) throws -> AgentQuotaStatus {
-        try usageStatus(from: response, updatedAt: updatedAt).quota
+        try usageStatus(from: response, updatedAt: updatedAt, source: .unknown).quota
     }
 
-    static func usageStatus(from response: CodexUsageResponse, updatedAt: Date) throws -> CodexUsageStatus {
+    static func usageStatus(
+        from response: CodexUsageResponse,
+        updatedAt: Date,
+        source: CodexUsageFetchSource,
+        authFingerprint: String? = nil
+    ) throws -> CodexUsageStatus {
         guard let primaryWindow = response.rateLimit?.primaryWindow,
               let primary = windowStatus(from: primaryWindow)
         else {
@@ -313,7 +612,9 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         let quota = AgentQuotaStatus(
             remainingPercent: primary.remainingPercent,
             usedPercent: primary.usedPercent,
-            limitName: nil,
+            limitID: response.resolvedLimitID,
+            limitName: response.resolvedLimitName,
+            source: source.agentQuotaSource,
             windowMinutes: primary.windowMinutes,
             resetsAt: primary.resetsAt,
             updatedAt: updatedAt,
@@ -323,7 +624,9 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         return CodexUsageStatus(
             quota: quota,
             credits: creditStatus(from: response, updatedAt: updatedAt),
-            planName: response.planType?.rawValue
+            planName: response.planType?.rawValue,
+            source: source,
+            authFingerprint: authFingerprint
         )
     }
 
@@ -365,6 +668,41 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         }
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: value)
+    }
+
+    private static func email(fromIDToken token: String?) -> String? {
+        guard let token else { return nil }
+        let parts = token.split(separator: ".")
+        guard parts.count >= 2 else { return nil }
+        var payload = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let padding = payload.count % 4
+        if padding > 0 {
+            payload += String(repeating: "=", count: 4 - padding)
+        }
+        guard let data = Data(base64Encoded: payload),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+
+        let auth = json["https://api.openai.com/auth"] as? [String: Any]
+        for value in [json["email"], json["preferred_username"], auth?["email"]] {
+            guard let email = value as? String,
+                  let normalized = OpenAICookieIdentityVerifier.normalizedEmail(email)
+            else {
+                continue
+            }
+            return normalized
+        }
+        return nil
+    }
+
+    private static func fingerprint(_ data: Data) -> String {
+        SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private static func stringValue(
@@ -444,6 +782,24 @@ final class CodexRateLimitFetcher: @unchecked Sendable {
         }
         return raw
     }
+
+    private static func decodeISO8601Date(from decoder: Decoder) throws -> Date {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: raw) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: raw) {
+            return date
+        }
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Invalid ISO-8601 date: \(raw)"
+        )
+    }
 }
 
 enum CodexRateLimitFetchRoute: Equatable, Sendable {
@@ -452,10 +808,35 @@ enum CodexRateLimitFetchRoute: Equatable, Sendable {
     case manualCookie(String)
 }
 
+enum CodexUsageFetchSource: String, Codable, Equatable, Sendable {
+    case manualCookie = "manual-cookie"
+    case browserCookie = "browser-cookie"
+    case oauth
+    case apiKey = "api-key"
+    case unknown
+
+    var agentQuotaSource: AgentQuotaSource {
+        switch self {
+        case .manualCookie:
+            return .manualCookie
+        case .browserCookie:
+            return .browserCookie
+        case .oauth:
+            return .oauth
+        case .apiKey:
+            return .apiKey
+        case .unknown:
+            return .unknown
+        }
+    }
+}
+
 struct CodexUsageStatus: Equatable, Sendable {
     let quota: AgentQuotaStatus
     let credits: CodexCreditStatus?
     let planName: String?
+    let source: CodexUsageFetchSource
+    let authFingerprint: String?
 }
 
 struct CodexCreditStatus: Codable, Equatable, Sendable {
@@ -472,9 +853,100 @@ struct CodexCreditStatus: Codable, Equatable, Sendable {
     }
 }
 
+struct CodexRateLimitResetCreditsSnapshot: Codable, Equatable, Sendable {
+    let credits: [CodexRateLimitResetCredit]
+    let availableCount: Int
+    let updatedAt: Date
+
+    func availableCredits(at date: Date) -> [CodexRateLimitResetCredit] {
+        credits
+            .filter { credit in
+                credit.status == .available && (credit.expiresAt.map { $0 > date } ?? true)
+            }
+            .sorted { lhs, rhs in
+                switch (lhs.expiresAt, rhs.expiresAt) {
+                case let (lhsDate?, rhsDate?):
+                    if lhsDate != rhsDate { return lhsDate < rhsDate }
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    break
+                }
+                return lhs.grantedAt < rhs.grantedAt
+            }
+    }
+}
+
+struct CodexRateLimitResetCredit: Codable, Equatable, Sendable {
+    let status: CodexRateLimitResetCreditStatus
+    let grantedAt: Date
+    let expiresAt: Date?
+}
+
+enum CodexRateLimitResetCreditStatus: Codable, Equatable, Sendable {
+    case available
+    case redeeming
+    case redeemed
+    case expired
+    case unknown(String)
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "available": self = .available
+        case "redeeming": self = .redeeming
+        case "redeemed": self = .redeemed
+        case "expired": self = .expired
+        default: self = .unknown(value)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        let value: String = switch self {
+        case .available: "available"
+        case .redeeming: "redeeming"
+        case .redeemed: "redeemed"
+        case .expired: "expired"
+        case let .unknown(value): value
+        }
+        try container.encode(value)
+    }
+}
+
+private struct CodexRateLimitResetCreditsResponse: Decodable {
+    let credits: [CodexRateLimitResetCreditResponse]
+    let availableCount: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case credits
+        case availableCount = "available_count"
+    }
+}
+
+private struct CodexRateLimitResetCreditResponse: Decodable {
+    let status: CodexRateLimitResetCreditStatus
+    let grantedAt: Date
+    let expiresAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case grantedAt = "granted_at"
+        case expiresAt = "expires_at"
+    }
+
+    var model: CodexRateLimitResetCredit {
+        CodexRateLimitResetCredit(status: status, grantedAt: grantedAt, expiresAt: expiresAt)
+    }
+}
+
 struct CodexUsageResponse: Decodable, Sendable {
     let planType: PlanType?
     let rateLimit: RateLimitDetails?
+    let limitID: String?
+    let limitName: String?
     let credits: CreditDetails?
     let individualLimit: SpendControlLimitSnapshot?
     let spendControl: SpendControlDetails?
@@ -482,6 +954,8 @@ struct CodexUsageResponse: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case planType = "plan_type"
         case rateLimit = "rate_limit"
+        case limitID = "limit_id"
+        case limitName = "limit_name"
         case credits
         case individualLimit = "individual_limit"
         case individualLimitCamel = "individualLimit"
@@ -492,10 +966,20 @@ struct CodexUsageResponse: Decodable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         planType = try? container.decodeIfPresent(PlanType.self, forKey: .planType)
         rateLimit = try? container.decodeIfPresent(RateLimitDetails.self, forKey: .rateLimit)
+        limitID = try? container.decodeIfPresent(String.self, forKey: .limitID)
+        limitName = try? container.decodeIfPresent(String.self, forKey: .limitName)
         credits = try? container.decodeIfPresent(CreditDetails.self, forKey: .credits)
         individualLimit = (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimit))
             ?? (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimitCamel))
         spendControl = try? container.decodeIfPresent(SpendControlDetails.self, forKey: .spendControl)
+    }
+
+    var resolvedLimitID: String? {
+        rateLimit?.limitID ?? limitID
+    }
+
+    var resolvedLimitName: String? {
+        rateLimit?.limitName ?? limitName
     }
 
     enum PlanType: Decodable, Equatable, Sendable {
@@ -517,11 +1001,15 @@ struct CodexUsageResponse: Decodable, Sendable {
     struct RateLimitDetails: Decodable, Sendable {
         let primaryWindow: WindowSnapshot?
         let secondaryWindow: WindowSnapshot?
+        let limitID: String?
+        let limitName: String?
         let individualLimit: SpendControlLimitSnapshot?
 
         enum CodingKeys: String, CodingKey {
             case primaryWindow = "primary_window"
             case secondaryWindow = "secondary_window"
+            case limitID = "limit_id"
+            case limitName = "limit_name"
             case individualLimit = "individual_limit"
             case individualLimitCamel = "individualLimit"
         }
@@ -530,6 +1018,8 @@ struct CodexUsageResponse: Decodable, Sendable {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             primaryWindow = try? container.decodeIfPresent(WindowSnapshot.self, forKey: .primaryWindow)
             secondaryWindow = try? container.decodeIfPresent(WindowSnapshot.self, forKey: .secondaryWindow)
+            limitID = try? container.decodeIfPresent(String.self, forKey: .limitID)
+            limitName = try? container.decodeIfPresent(String.self, forKey: .limitName)
             individualLimit = (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimit))
                 ?? (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimitCamel))
         }
@@ -659,18 +1149,44 @@ private struct CodexCredentials {
     let accessToken: String
     let refreshToken: String
     let idToken: String?
+    let email: String?
     let accountID: String?
     let lastRefresh: Date?
     let source: CodexCredentialSource
+    let authFileFingerprint: String
+    let authFileData: Data
 
-    var needsRefresh: Bool {
+    func needsRefresh(at now: Date) -> Bool {
         guard source == .oauth, !refreshToken.isEmpty else { return false }
         guard let lastRefresh else { return true }
-        return Date().timeIntervalSince(lastRefresh) > 8 * 24 * 60 * 60
+        return now.timeIntervalSince(lastRefresh) > 8 * 24 * 60 * 60
     }
 
     var canPersist: Bool {
         source == .oauth
+    }
+
+    var usageFetchSource: CodexUsageFetchSource {
+        switch source {
+        case .apiKey:
+            return .apiKey
+        case .oauth:
+            return .oauth
+        }
+    }
+
+    func replacingAuthFile(fingerprint: String, data: Data) -> CodexCredentials {
+        CodexCredentials(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            idToken: idToken,
+            email: email,
+            accountID: accountID,
+            lastRefresh: lastRefresh,
+            source: source,
+            authFileFingerprint: fingerprint,
+            authFileData: data
+        )
     }
 }
 
@@ -679,13 +1195,49 @@ private enum CodexCredentialSource {
     case oauth
 }
 
-private enum CodexRateLimitFetchError: Error {
+enum CodexRateLimitFetchError: Error, LocalizedError {
     case missingCredentials
     case invalidCredentials
     case invalidCookieHeader
+    case cookieUnavailable
+    case cookieAccountMismatch
     case invalidResponse
     case unauthorized
+    case oauthCredentialsRequired
     case refreshFailed
+    case refreshRejected
+    case credentialsChanged
     case serverError(Int)
     case noRateLimits
+
+    var errorDescription: String? {
+        switch self {
+        case .missingCredentials:
+            return "Codex credentials are unavailable. Sign in to Codex and try again."
+        case .invalidCredentials:
+            return "The saved Codex credentials are invalid. Sign in again and retry."
+        case .invalidCookieHeader:
+            return "The OpenAI Cookie header is empty or invalid."
+        case .cookieUnavailable:
+            return "No usable browser Cookie was found for the selected Codex account."
+        case .cookieAccountMismatch:
+            return "The OpenAI Cookie does not match the selected Codex account."
+        case .invalidResponse:
+            return "Codex returned an invalid usage response."
+        case .unauthorized:
+            return "Codex rejected the saved credentials. Sign in again and retry."
+        case .oauthCredentialsRequired:
+            return "Limit reset credits require Codex OAuth credentials."
+        case .refreshFailed:
+            return "Codex OAuth credentials could not be refreshed right now."
+        case .refreshRejected:
+            return "Codex rejected the OAuth refresh token. Sign in again and retry."
+        case .credentialsChanged:
+            return "The active Codex account changed while usage was refreshing."
+        case let .serverError(statusCode):
+            return "Codex usage request failed with HTTP status \(statusCode)."
+        case .noRateLimits:
+            return "Codex did not return rate-limit data for this account."
+        }
+    }
 }

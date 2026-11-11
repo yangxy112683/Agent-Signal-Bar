@@ -5,15 +5,27 @@ APP_NAME="AgentSignalLight"
 RELEASE_BASENAME="AgentSignalBar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+source "$ROOT_DIR/script/universal_build.sh"
 
 SKIP_PACKAGE=0
 RUN_UI_VERIFY=0
 RUN_LAUNCH_CHECKS=0
 STRICT_DOCTOR=0
+ISOLATED=0
+ISOLATION_ROOT=""
+if [[ -z "${AGENT_SIGNAL_LIGHT_ARCHS+x}" ]]; then
+  EXPECTED_ARCHS="arm64 x86_64"
+else
+  EXPECTED_ARCHS="${AGENT_SIGNAL_LIGHT_ARCHS:-}"
+fi
+EXPECTED_ARCHS="$(agent_signal_normalize_archs "$EXPECTED_ARCHS")"
+APP_VERSION="$(awk -F= '$1 == "VERSION" { print $2; exit }' "$ROOT_DIR/VERSION")"
+MACOS_UNIVERSAL_BASENAME="${RELEASE_BASENAME}-v${APP_VERSION}-macos-universal"
+MACOS_UNIVERSAL_APPCAST="$ROOT_DIR/dist/${RELEASE_BASENAME}-macos-universal-appcast.xml"
 
 usage() {
   cat <<EOF
-usage: $0 [--skip-package] [--ui] [--launch]
+usage: $0 [--skip-package] [--isolated] [--ui] [--launch] [--strict-doctor]
 
 Run the full local release gate for $APP_NAME.
 
@@ -23,6 +35,9 @@ and runs doctor --full. It uses temporary install roots for release validation.
 
 Options:
   --skip-package  Reuse existing dist/ release artifacts instead of rebuilding.
+  --isolated      Use temporary diagnostic home and CLI state; reject options
+                  that restart the running app. Swift tests still require an
+                  independently isolated test environment.
   --ui            Also run the on-screen Debug Window smoke check, then restore
                   the normal menu bar app launch.
   --launch        Also launch temporary zip/DMG-installed app copies during
@@ -68,8 +83,28 @@ verify_required_artifacts() {
   [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME.zip" ]] || die "missing dist/$RELEASE_BASENAME.zip"
   [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME.dmg" ]] || die "missing dist/$RELEASE_BASENAME.dmg"
   [[ -f "$ROOT_DIR/dist/appcast.xml" ]] || die "missing dist/appcast.xml"
+  [[ -f "$ROOT_DIR/dist/${MACOS_UNIVERSAL_BASENAME}.zip" ]] || die "missing dist/${MACOS_UNIVERSAL_BASENAME}.zip"
+  [[ -f "$ROOT_DIR/dist/${MACOS_UNIVERSAL_BASENAME}.dmg" ]] || die "missing dist/${MACOS_UNIVERSAL_BASENAME}.dmg"
+  [[ -f "$MACOS_UNIVERSAL_APPCAST" ]] || die "missing dist/$(basename "$MACOS_UNIVERSAL_APPCAST")"
   [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME-release-manifest.json" ]] || die "missing release manifest"
   [[ -f "$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt" ]] || die "missing SHA256SUMS file"
+}
+
+verify_appcast_migration() {
+  local feed_url
+  feed_url="$(plutil -extract SUFeedURL raw "$ROOT_DIR/dist/$APP_NAME.app/Contents/Info.plist")"
+  [[ "$feed_url" == *"/$(basename "$MACOS_UNIVERSAL_APPCAST")" ]] || die "packaged app SUFeedURL does not point to $(basename "$MACOS_UNIVERSAL_APPCAST"): $feed_url"
+  grep -q "${RELEASE_BASENAME}.dmg" "$ROOT_DIR/dist/appcast.xml" || die "legacy appcast does not point to $RELEASE_BASENAME.dmg"
+  grep -q "${MACOS_UNIVERSAL_BASENAME}.dmg" "$MACOS_UNIVERSAL_APPCAST" || die "new appcast does not point to ${MACOS_UNIVERSAL_BASENAME}.dmg"
+}
+
+verify_release_architectures() {
+  [[ -z "$EXPECTED_ARCHS" ]] && return 0
+
+  agent_signal_verify_binary_archs "$ROOT_DIR/dist/$APP_NAME.app/Contents/MacOS/$APP_NAME" "$EXPECTED_ARCHS" "$APP_NAME app executable"
+  agent_signal_verify_binary_archs "$ROOT_DIR/dist/$APP_NAME.app/Contents/Resources/dist/bin/agent-signal-light" "$EXPECTED_ARCHS" "bundled agent-signal-light CLI"
+  agent_signal_verify_binary_archs "$ROOT_DIR/dist/bin/agent-signal-light" "$EXPECTED_ARCHS" "release agent-signal-light CLI"
+  agent_signal_verify_binary_archs "$ROOT_DIR/dist/bin/agent-signal-icon-preview" "$EXPECTED_ARCHS" "release icon preview CLI"
 }
 
 verify_status_json() {
@@ -109,6 +144,10 @@ cd "$ROOT_DIR"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --isolated)
+      ISOLATED=1
+      shift
+      ;;
     --skip-package)
       SKIP_PACKAGE=1
       shift
@@ -136,10 +175,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$ISOLATED" -eq 1 ]]; then
+  if [[ "$RUN_UI_VERIFY" -eq 1 || "$RUN_LAUNCH_CHECKS" -eq 1 || "$STRICT_DOCTOR" -eq 1 ]]; then
+    die "--isolated cannot be combined with --ui, --launch, or --strict-doctor"
+  fi
+  ISOLATION_ROOT="$(mktemp -d /private/tmp/agent-signal-release-isolated.XXXXXX)"
+  trap 'rm -rf "$ISOLATION_ROOT"' EXIT
+  export AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME="$ISOLATION_ROOT/home"
+  export AGENT_SIGNAL_LIGHT_STATE_DIR="$ISOLATION_ROOT/state"
+  export AGENT_SIGNAL_LIGHT_STATE_FILE="$AGENT_SIGNAL_LIGHT_STATE_DIR/status.json"
+  mkdir -p "$AGENT_SIGNAL_LIGHT_DIAGNOSTIC_HOME" "$AGENT_SIGNAL_LIGHT_STATE_DIR"
+fi
+
 printf "Agent Signal Bar release gate\n"
 printf "root: %s\n" "$ROOT_DIR"
 
 run_step "shell scripts parse" lint_shell_scripts
+run_step "script regression tests" env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest discover -s script -p 'test_*.py'
 
 if [[ "$SKIP_PACKAGE" -eq 0 ]]; then
   run_step "release artifacts package" "$ROOT_DIR/script/package_release.sh"
@@ -148,6 +200,8 @@ else
 fi
 
 run_step "required release artifacts exist" verify_required_artifacts
+run_step "Sparkle migration feeds verify" verify_appcast_migration
+run_step "release executable architectures verify" verify_release_architectures
 run_step "Swift test suite" swift_tool test
 run_step "release checksums verify" shasum -a 256 -c "$ROOT_DIR/dist/$RELEASE_BASENAME-SHA256SUMS.txt"
 run_step "CLI status JSON parses" verify_status_json
