@@ -7,6 +7,7 @@ import SwiftUI
 struct DebugWindowView: View {
     @ObservedObject var model: MenuBarStatusModel
     @ObservedObject var updater: SparkleUpdaterService
+    @ObservedObject private var signalLightBLE: SignalLightBLEController
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -24,14 +25,22 @@ struct DebugWindowView: View {
     @State private var selectedLightDebugTest: LightDebugTest?
     @State private var isUsageAccountDetailsExpanded = false
     @State private var isShowingDiagnosticsExportConfirmation = false
+    @State private var discoveredBLEDevices: [SignalLightBLEDevice] = []
+    @State private var signalLightBLEStatusMessage: String?
     private let activityRecentEventLimit = 50
 
-    init(model: MenuBarStatusModel, updater: SparkleUpdaterService,
-         claudeSupport: ClaudeSupportModel? = nil, usageNavigation: UsageMenuNavigation? = nil) {
+    init(
+        model: MenuBarStatusModel,
+        updater: SparkleUpdaterService,
+        claudeSupport: ClaudeSupportModel? = nil,
+        usageNavigation: UsageMenuNavigation? = nil,
+        signalLightBLEController: SignalLightBLEController
+    ) {
         self.model = model
         self.updater = updater
         _claudeSupport = StateObject(wrappedValue: claudeSupport ?? ClaudeSupportModel())
         self.usageNavigation = usageNavigation ?? UsageMenuNavigation()
+        _signalLightBLE = ObservedObject(wrappedValue: signalLightBLEController)
     }
 
     var body: some View {
@@ -3196,6 +3205,10 @@ struct DebugWindowView: View {
 
             Divider()
 
+            debugHardwareLightSection
+
+            Divider()
+
             debugProbeLogSection
 
             Divider()
@@ -3295,6 +3308,32 @@ struct DebugWindowView: View {
                 .opacity(isLightDebugEnabled ? 1 : 0.48)
             }
         }
+    }
+
+    private var debugHardwareLightSection: some View {
+        settingsSection(model.text("硬件信号灯调试", "Hardware Light Debug")) {
+            VStack(alignment: .leading, spacing: 12) {
+                settingRow(model.text("硬件调试", "Hardware debug")) {
+                    settingsSwitch(hardwareDebugPinnedBinding)
+                }
+
+                HStack(spacing: 8) {
+                    ForEach(SignalLightBLECommand.allCases, id: \.self) { command in
+                        Button(command.rawValue) {
+                            signalLightBLE.pinHardwareDebug(command)
+                        }
+                    }
+                }
+                .disabled(!canApplyHardwareDebugCommand)
+                .opacity(canApplyHardwareDebugCommand ? 1 : 0.48)
+            }
+        }
+    }
+
+    private var canApplyHardwareDebugCommand: Bool {
+        guard model.isSignalLightBLEEnabled else { return false }
+        if case .connected = signalLightBLE.connectionState { return true }
+        return false
     }
 
     private var debugProbeLogSection: some View {
@@ -3440,6 +3479,10 @@ struct DebugWindowView: View {
         settingsSection(model.text("连接", "Connections")) {
             VStack(alignment: .leading, spacing: 14) {
                 automaticConnectionSettings
+
+                Divider()
+
+                bleConnectionSettings
 
                 Divider()
 
@@ -3602,6 +3645,94 @@ struct DebugWindowView: View {
                 ProgressView()
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+
+    private var bleConnectionSettings: some View {
+        connectionItem(
+            title: model.text("硬件信号灯", "Hardware Signal Light"),
+            subtitle: model.text(
+                "连接 coding- 前缀的蓝牙指示灯，镜像悬浮信号灯",
+                "Connect a coding- BLE lamp that follows the floating signal"
+            ),
+            systemImage: "antenna.radiowaves.left.and.right"
+        ) {
+            VStack(alignment: .trailing, spacing: 6) {
+                settingsSwitch(signalLightBLEEnabledBinding)
+                    .help(model.text(
+                        "默认关闭。打开后才会请求蓝牙权限。",
+                        "Off by default. Bluetooth permission is requested only after you turn this on."
+                    ))
+
+                HStack(spacing: 8) {
+                    connectionActionButton(
+                        model.text("扫描", "Scan"),
+                        systemImage: "magnifyingglass",
+                        disabled: !model.isSignalLightBLEEnabled
+                            || signalLightBLE.connectionState == .scanning
+                    ) {
+                        signalLightBLEStatusMessage = nil
+                        Task {
+                            let devices = await signalLightBLE.scanForDevices()
+                            discoveredBLEDevices = devices
+                            if devices.isEmpty {
+                                signalLightBLEStatusMessage = model.text("未发现设备", "No devices found")
+                            }
+                        }
+                    }
+
+                    connectionActionButton(
+                        model.text("断开", "Disconnect"),
+                        systemImage: "xmark.circle",
+                        disabled: {
+                            guard model.isSignalLightBLEEnabled else { return true }
+                            if case .connected = signalLightBLE.connectionState { return false }
+                            return true
+                        }()
+                    ) {
+                        signalLightBLE.disconnect()
+                    }
+                }
+
+                Menu(model.text(
+                    "选择设备 (\(discoveredBLEDevices.count))",
+                    "Select device (\(discoveredBLEDevices.count))"
+                )) {
+                    ForEach(discoveredBLEDevices) { device in
+                        Button(device.name) {
+                            Task {
+                                _ = await signalLightBLE.connect(to: device.id)
+                            }
+                        }
+                    }
+                }
+                .disabled(discoveredBLEDevices.isEmpty)
+
+                switch signalLightBLE.connectionState {
+                case .disabled:
+                    EmptyView()
+                case .idle:
+                    Text(model.text("未连接", "Not connected"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .scanning:
+                    ProgressView()
+                        .controlSize(.small)
+                case .connecting:
+                    ProgressView()
+                        .controlSize(.small)
+                case .connected(let name):
+                    Text(model.text("已连接: \(name ?? "coding-")", "Connected: \(name ?? "coding-")"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let signalLightBLEStatusMessage {
+                    Text(signalLightBLEStatusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -4739,6 +4870,20 @@ struct DebugWindowView: View {
         Binding(
             get: { model.isFloatingSignalEnabled },
             set: { model.setFloatingSignalEnabled($0) }
+        )
+    }
+
+    private var signalLightBLEEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { model.isSignalLightBLEEnabled },
+            set: { model.setSignalLightBLEEnabled($0) }
+        )
+    }
+
+    private var hardwareDebugPinnedBinding: Binding<Bool> {
+        Binding(
+            get: { signalLightBLE.isHardwareDebugPinned },
+            set: { signalLightBLE.setHardwareDebugPinned($0) }
         )
     }
 
