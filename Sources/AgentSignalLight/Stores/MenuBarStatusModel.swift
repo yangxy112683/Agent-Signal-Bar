@@ -421,6 +421,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isNewZealandTrafficLightModeEnabled: Bool
     @Published var isMonitoringPaused = false
     @Published var isFloatingSignalEnabled: Bool
+    @Published var isSignalLightBLEEnabled: Bool
     @Published var floatingSignalScale: FloatingSignalScale
     @Published var floatingSignalVisualScale: CGFloat
     @Published var floatingSignalLayout: TrafficSignalLayout
@@ -856,6 +857,8 @@ final class MenuBarStatusModel: ObservableObject {
         }
         isFloatingSignalEnabled =
             userDefaults.object(forKey: "isFloatingSignalEnabled") as? Bool ?? true
+        isSignalLightBLEEnabled =
+            userDefaults.object(forKey: "isSignalLightBLEEnabled") as? Bool ?? false
         let resolvedFloatingSignalScale = Self.resolvedFloatingSignalScale(
             storedRawValue: storedFloatingSignalScale,
             storedDefaultsVersion: storedFloatingSignalScaleDefaultsVersion
@@ -1498,6 +1501,11 @@ final class MenuBarStatusModel: ObservableObject {
     func setFloatingSignalEnabled(_ enabled: Bool) {
         isFloatingSignalEnabled = enabled
         userDefaults.set(enabled, forKey: "isFloatingSignalEnabled")
+    }
+
+    func setSignalLightBLEEnabled(_ enabled: Bool) {
+        isSignalLightBLEEnabled = enabled
+        userDefaults.set(enabled, forKey: "isSignalLightBLEEnabled")
     }
 
     func setFloatingSignalScale(_ scale: FloatingSignalScale) {
