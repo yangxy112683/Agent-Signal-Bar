@@ -730,6 +730,13 @@ private struct FloatingSignalPanelView: View {
                     : model.text("切换为横向", "Switch to Horizontal"),
                 action: toggleLayout
             )
+            Button(
+                model.isFloatingSignalInfoPanelPinned
+                    ? model.text("取消固定状态面板", "Unpin Status Panel")
+                    : model.text("固定状态面板", "Pin Status Panel"),
+                action: toggleInfoPanelPinned
+            )
+            .disabled(!model.isFloatingSignalInfoBadgeEnabled)
             Divider()
             Button(
                 model.isFloatingSignalSoundEnabled
@@ -874,7 +881,12 @@ private struct FloatingSignalPanelView: View {
                 onClick: {
                     isShowingQuotaPanel = false
                     isShowingTokenPanel = false
-                    isShowingInfoPanel.toggle()
+                    if model.isFloatingSignalInfoPanelPinned {
+                        model.setFloatingSignalInfoPanelPinned(false)
+                        isShowingInfoPanel = false
+                    } else {
+                        isShowingInfoPanel.toggle()
+                    }
                 },
                 onDragChanged: { translation in
                     isShowingInfoPanel = false
@@ -904,9 +916,17 @@ private struct FloatingSignalPanelView: View {
             .frame(width: badgeSize, height: badgeSize)
         }
         .background(
-            FloatingSignalInfoPanelAnchor(isPresented: $isShowingInfoPanel, model: model)
+            FloatingSignalInfoPanelAnchor(
+                isPresented: infoPanelPresentedBinding,
+                isPinned: model.isFloatingSignalInfoPanelPinned,
+                model: model
+            )
         )
-        .help(model.text("点击查看悬浮灯状态，拖动可移动角标", "Click to show floating signal status; drag to move the badge"))
+        .help(
+            model.isFloatingSignalInfoPanelPinned
+                ? model.text("状态面板已固定，点击取消固定；拖动可移动角标", "Status panel pinned; click to unpin, drag to move the badge")
+                : model.text("点击查看悬浮灯状态，拖动可移动角标", "Click to show floating signal status; drag to move the badge")
+        )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(model.text("查看悬浮灯状态", "Show floating signal status"))
     }
@@ -1275,6 +1295,21 @@ private struct FloatingSignalPanelView: View {
 
     private var infoBadgeCount: Int {
         cachedFloatingInfoSessions.count
+    }
+
+    private var infoPanelPresentedBinding: Binding<Bool> {
+        Binding(
+            get: {
+                (isShowingInfoPanel || model.isFloatingSignalInfoPanelPinned) && !isDraggingInfoBadge
+            },
+            set: { isShowingInfoPanel = $0 }
+        )
+    }
+
+    private func toggleInfoPanelPinned() {
+        let pinned = !model.isFloatingSignalInfoPanelPinned
+        model.setFloatingSignalInfoPanelPinned(pinned)
+        isShowingInfoPanel = pinned
     }
 
     private var tokenBadgeText: String {
@@ -1978,6 +2013,7 @@ private enum FloatingSignalCursor {
 
 private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
     @Binding var isPresented: Bool
+    let isPinned: Bool
     @ObservedObject var model: MenuBarStatusModel
 
     func makeCoordinator() -> Coordinator {
@@ -1992,7 +2028,7 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.isPresented = $isPresented
-        context.coordinator.update(isPresented: isPresented, model: model, anchorView: nsView)
+        context.coordinator.update(isPresented: isPresented, isPinned: isPinned, model: model, anchorView: nsView)
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -2006,7 +2042,9 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
         private var hostingController: NSHostingController<FloatingSignalInfoPopoverView>?
         nonisolated(unsafe) private var localMouseMonitor: Any?
         nonisolated(unsafe) private var globalMouseMonitor: Any?
+        nonisolated(unsafe) private var anchorWindowMoveObserver: NSObjectProtocol?
         private weak var anchorView: NSView?
+        private weak var observedAnchorWindow: NSWindow?
 
         init(isPresented: Binding<Bool>) {
             self.isPresented = isPresented
@@ -2014,9 +2052,10 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
 
         deinit {
             removeMouseMonitors()
+            removeAnchorWindowMoveObserver()
         }
 
-        func update(isPresented: Bool, model: MenuBarStatusModel, anchorView: NSView) {
+        func update(isPresented: Bool, isPinned: Bool, model: MenuBarStatusModel, anchorView: NSView) {
             self.anchorView = anchorView
 
             guard isPresented, anchorView.window != nil else {
@@ -2039,7 +2078,12 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
                 panel.contentViewController = hostingController
             }
             position(panel, relativeTo: anchorView)
-            installMouseMonitorIfNeeded()
+            observeAnchorWindowMoves(anchorView.window)
+            if isPinned {
+                removeMouseMonitors()
+            } else {
+                installMouseMonitorIfNeeded()
+            }
             panel.orderFrontRegardless()
         }
 
@@ -2049,6 +2093,31 @@ private struct FloatingSignalInfoPanelAnchor: NSViewRepresentable {
             panel = nil
             hostingController = nil
             removeMouseMonitors()
+            removeAnchorWindowMoveObserver()
+            observedAnchorWindow = nil
+        }
+
+        private func observeAnchorWindowMoves(_ window: NSWindow?) {
+            guard let window, window !== observedAnchorWindow else { return }
+            removeAnchorWindowMoveObserver()
+            observedAnchorWindow = window
+            anchorWindowMoveObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didMoveNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let panel = self.panel, let anchorView = self.anchorView else { return }
+                    self.position(panel, relativeTo: anchorView)
+                }
+            }
+        }
+
+        nonisolated private func removeAnchorWindowMoveObserver() {
+            if let anchorWindowMoveObserver {
+                NotificationCenter.default.removeObserver(anchorWindowMoveObserver)
+            }
+            anchorWindowMoveObserver = nil
         }
 
         func windowWillClose(_ notification: Notification) {
@@ -2907,9 +2976,9 @@ private struct FloatingSignalInfoPopoverView: View {
 
 private func floatingInfoColor(for signal: AgentSignal) -> Color {
     switch signal.displayState {
-    case .ready, .active, .completed:
+    case .ready, .active:
         return Color(red: 0.16, green: 0.78, blue: 0.34)
-    case .needsReview:
+    case .completed, .needsReview:
         return Color(red: 0.97, green: 0.72, blue: 0.16)
     case .permission, .blocked:
         return Color(red: 0.94, green: 0.20, blue: 0.18)

@@ -3065,6 +3065,15 @@ struct DebugWindowView: View {
                         ))
                 }
 
+                settingRow(model.text("固定状态面板", "Pin status panel")) {
+                    settingsSwitch(floatingSignalInfoPanelPinnedBinding)
+                        .disabled(!model.isFloatingSignalInfoBadgeEnabled)
+                        .help(model.text(
+                            "有 Agent 时常驻显示状态面板，点击别处不再收起；完成的 Agent 显示黄点。",
+                            "Keep the status panel open while agents are listed; completed agents show a yellow dot."
+                        ))
+                }
+
                 settingRow(model.text("额度角标", "Quota badge")) {
                     settingsSwitch(floatingSignalQuotaBadgeEnabledBinding)
                         .help(model.text(
@@ -4935,6 +4944,13 @@ struct DebugWindowView: View {
         Binding(
             get: { model.isFloatingSignalInfoBadgeEnabled },
             set: { model.setFloatingSignalInfoBadgeEnabled($0) }
+        )
+    }
+
+    private var floatingSignalInfoPanelPinnedBinding: Binding<Bool> {
+        Binding(
+            get: { model.isFloatingSignalInfoPanelPinned },
+            set: { model.setFloatingSignalInfoPanelPinned($0) }
         )
     }
 

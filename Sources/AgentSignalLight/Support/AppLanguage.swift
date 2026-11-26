@@ -1094,8 +1094,14 @@ extension MenuBarStatusModel {
             return text("授权被拒绝", "Permission Denied")
         case "Notification":
             return text("通知", "Notification")
-        case "Stop":
+        case "Stop", "AgentFinished":
             return text("完成", "Done")
+        case "AgentStarted":
+            return text("开始", "Started")
+        case "Thinking":
+            return text("思考中", "Thinking")
+        case "ToolDone":
+            return text("步骤完成", "Step Done")
         case "StopFailure":
             return text("停止失败", "Stop Failed")
         case "WorktreeCreate":

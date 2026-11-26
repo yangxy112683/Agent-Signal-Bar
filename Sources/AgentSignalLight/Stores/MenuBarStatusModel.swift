@@ -240,6 +240,7 @@ final class MenuBarStatusModel: ObservableObject {
     @Published var isFloatingSignalWaitingSoundEnabled: Bool
     @Published var floatingSignalSoundLevel: FloatingSignalSoundLevel
     @Published var isFloatingSignalInfoBadgeEnabled: Bool
+    @Published var isFloatingSignalInfoPanelPinned: Bool
     @Published var isFloatingSignalQuotaBadgeEnabled: Bool
     @Published var isFloatingSignalTokenBadgeEnabled: Bool
     @Published var floatingSignalInfoBadgeCorner: FloatingSignalInfoBadgeCorner
@@ -726,6 +727,7 @@ final class MenuBarStatusModel: ObservableObject {
         floatingSignalSoundLevel =
             storedFloatingSignalSoundLevel.flatMap(FloatingSignalSoundLevel.init(rawValue:)) ?? .standard
         isFloatingSignalInfoBadgeEnabled = storedFloatingSignalInfoBadgeEnabled ?? true
+        isFloatingSignalInfoPanelPinned = userDefaults.bool(forKey: "isFloatingSignalInfoPanelPinned")
         isFloatingSignalQuotaBadgeEnabled = storedFloatingSignalQuotaBadgeEnabled ?? true
         isFloatingSignalTokenBadgeEnabled = storedFloatingSignalTokenBadgeEnabled ?? true
         if storedFloatingSignalInfoBadgeEnabled == nil {
@@ -1394,6 +1396,12 @@ final class MenuBarStatusModel: ObservableObject {
         guard isFloatingSignalInfoBadgeEnabled != enabled else { return }
         isFloatingSignalInfoBadgeEnabled = enabled
         userDefaults.set(enabled, forKey: "isFloatingSignalInfoBadgeEnabled")
+    }
+
+    func setFloatingSignalInfoPanelPinned(_ pinned: Bool) {
+        guard isFloatingSignalInfoPanelPinned != pinned else { return }
+        isFloatingSignalInfoPanelPinned = pinned
+        userDefaults.set(pinned, forKey: "isFloatingSignalInfoPanelPinned")
     }
 
     func setFloatingSignalQuotaBadgeEnabled(_ enabled: Bool) {
