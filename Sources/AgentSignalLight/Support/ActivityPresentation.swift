@@ -8,29 +8,45 @@ extension MenuBarStatusModel {
 
     func activitySessionRuntimeLabel(for session: SessionStatus) -> String {
         let presenceOnly = ActivityPresentation.isPresenceOnlySession(session)
+        let state = activitySessionStateLabel(for: session.signal.displayState)
 
         switch ActivityPresentation.runtimeKind(for: session) {
         case .desktop:
             return presenceOnly
                 ? text("桌面版已开启", "Desktop app open")
-                : text("桌面版运行中", "Desktop running")
+                : text("桌面版\(state.zh)", "Desktop \(state.en)")
         case .terminal:
             return presenceOnly
                 ? text("终端已检测到", "Terminal detected")
-                : text("终端运行中", "Terminal running")
+                : text("终端\(state.zh)", "Terminal \(state.en)")
         case .ide:
-            if let detail = ActivityPresentation.sourceDetail(for: session) {
-                return presenceOnly
-                    ? text("\(detail) 已检测到", "\(detail) detected")
-                    : text("\(detail) 运行中", "\(detail) running")
-            }
+            let place = ActivityPresentation.sourceDetail(for: session) ?? "IDE"
             return presenceOnly
-                ? text("IDE 已检测到", "IDE detected")
-                : text("IDE 运行中", "IDE running")
+                ? text("\(place) 已检测到", "\(place) detected")
+                : text("\(place) \(state.zh)", "\(place) \(state.en)")
         case .local:
             return presenceOnly
                 ? text("本地已检测到", "Local detected")
-                : text("本地运行中", "Local running")
+                : text("本地\(state.zh)", "Local \(state.en)")
+        }
+    }
+
+    private func activitySessionStateLabel(for displayState: DisplayState) -> (zh: String, en: String) {
+        switch displayState {
+        case .ready, .active:
+            return ("运行中", "running")
+        case .completed:
+            return ("已完成", "done")
+        case .needsReview:
+            return ("待查看", "needs review")
+        case .permission:
+            return ("等待授权", "waiting for permission")
+        case .blocked:
+            return ("已阻塞", "blocked")
+        case .stale:
+            return ("无响应", "stale")
+        case .paused:
+            return ("已暂停", "paused")
         }
     }
 

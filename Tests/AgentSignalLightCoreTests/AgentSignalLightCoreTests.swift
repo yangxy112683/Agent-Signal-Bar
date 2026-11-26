@@ -16160,6 +16160,28 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testActivitySessionTitleReflectsSessionState() {
+        let model = makeMenuBarStatusModel()
+        model.appLanguage = .zhHans
+
+        func title(_ signal: AgentSignal, agent: String, sessionID: String) -> String {
+            model.activitySessionTitle(for: SessionStatus(
+                sessionID: sessionID,
+                signal: signal,
+                updatedAt: Date(),
+                agent: agent,
+                lastEvent: "Stop"
+            ))
+        }
+
+        XCTAssertEqual(title(.working, agent: "codex-cli", sessionID: "codex-cli:a"), "Codex · 终端运行中")
+        XCTAssertEqual(title(.done, agent: "codex-cli", sessionID: "codex-cli:a"), "Codex · 终端已完成")
+        XCTAssertEqual(title(.attention, agent: "codex-vscode", sessionID: "codex-vscode:a"), "Codex · VS Code 待查看")
+        XCTAssertEqual(title(.permissionRequest, agent: "codex-desktop", sessionID: "codex-desktop:a"), "Codex · 桌面版等待授权")
+        XCTAssertEqual(title(.blocked, agent: "local-script", sessionID: "local-script-main"), "\(model.friendlyAgentName("local-script")) · 本地已阻塞")
+    }
+
+    @MainActor
     func testActivityPresenceSubtitleDoesNotExposeInternalEventName() {
         let model = makeMenuBarStatusModel()
         model.appLanguage = .zhHans
