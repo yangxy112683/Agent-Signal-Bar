@@ -468,7 +468,7 @@ else
 fi
 
 TMP_NORMALIZED_EVENT_STATE="$(mktemp -d)/status.json"
-if printf '{"event":"post_tool_use_failure","sessionId":"doctor-normalized-claude"}' \
+if printf '{"event":"post_tool_use_failure","sessionId":"doctor-normalized-claude","transcript_path":"/tmp/doctor-normalized-claude.jsonl"}' \
   | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_NORMALIZED_EVENT_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
   && printf '{"sessionId":"doctor-normalized-codex"}' \
   | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_NORMALIZED_EVENT_STATE" "$ROOT_DIR/scripts/codex-signal-hook" " pre_tool_use " >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
@@ -589,7 +589,7 @@ else
 fi
 
 TMP_CLAUDE_STOP_REASON_STATE="$(mktemp -d)/status.json"
-if printf '{"event":" stop ","sessionId":"doctor-claude-max-tokens","stopReason":" max-tokens "}' \
+if printf '{"event":" stop ","sessionId":"doctor-claude-max-tokens","stopReason":" max-tokens ","transcript_path":"/tmp/doctor-claude-max-tokens.jsonl"}' \
   | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_STOP_REASON_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR" \
   && printf '{"event":"Stop","sessionId":"doctor-claude-stop-error","stopReason":" tool error "}' \
   | AGENT_SIGNAL_LIGHT_STATE_FILE="$TMP_CLAUDE_STOP_REASON_STATE" "$ROOT_DIR/scripts/claude-code-signal-hook" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
