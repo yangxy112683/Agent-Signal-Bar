@@ -29,3 +29,6 @@ __pycache__/
 **/.github/instructions/**
 **/.github/prompts/**
 **/.github/agents/**
+
+# CodeGraph local index
+.codegraph/
