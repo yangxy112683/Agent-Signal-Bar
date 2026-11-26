@@ -425,8 +425,8 @@ struct AgentSignalChecks {
                     "CODEBUDDY_PROJECT_ID": projectID
                 ],
                 agent: "workbuddy(bblock)"
-            ) == "workbuddy:\(projectID)",
-            "WorkBuddy hooks should collapse to project_id session key"
+            ) == "workbuddy:\(projectID):7c573de1-db1c-4ff9-b0d0-3a551b35a077",
+            "WorkBuddy hooks should key each conversation under its project_id"
         )
         try expect(
             GenericHookAdapter.shouldIgnoreHook(

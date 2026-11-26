@@ -154,6 +154,6 @@ printf '{"event":"AgentStarted","agent":"codebuddy","cwd":"/tmp/demo","session_i
     ./scripts/generic-agent-signal-hook --agent codebuddy
 AGENT_SIGNAL_LIGHT_STATE_FILE="$CLI_OVERRIDE_STATE" ./scripts/agent-signal status --json >"$OUTPUT_FILE"
 expect_json "CLI --agent stays a hard override and does not splice WorkBuddy cwd labels" \
-  'sessions["workbuddy:demo"]["agent"] == "codebuddy"'
+  'sessions["workbuddy:demo:cli-override"]["agent"] == "codebuddy"'
 
 echo "local integration verifier: ok"

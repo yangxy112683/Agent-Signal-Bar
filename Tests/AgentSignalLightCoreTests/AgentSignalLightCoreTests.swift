@@ -13109,8 +13109,26 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 environment: environment,
                 agent: "workbuddy(bblock)"
             ),
-            "workbuddy:\(projectID)"
+            "workbuddy:\(projectID):7c573de1-db1c-4ff9-b0d0-3a551b35a077"
         )
+        XCTAssertEqual(
+            GenericHookAdapter.sessionKey(
+                payload: [
+                    "session_id": "conversation-b",
+                    "cwd": "/Users/me/work/esport_bb_lock"
+                ],
+                environment: Self.workbuddyEnvironment,
+                agent: "workbuddy(esport_bb_lock)"
+            ),
+            "workbuddy:esport_bb_lock:conversation-b"
+        )
+    }
+
+    func testGenericHookMapsSubagentEventsToWorkingNotAttention() {
+        XCTAssertEqual(GenericHookAdapter.chooseSignal(eventName: "SubagentStart", payload: [:]), .subagentStart)
+        XCTAssertEqual(GenericHookAdapter.chooseSignal(eventName: "SubagentStop", payload: [:]), .subagentStop)
+        XCTAssertEqual(AgentSignal.subagentStart.displayState, .active)
+        XCTAssertEqual(AgentSignal.subagentStop.displayState, .active)
     }
 
     func testGenericHookShouldIgnoreWorkbuddyCLIHostHooks() {
@@ -13156,7 +13174,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssertEqual(snapshot.aggregate, .done)
     }
 
-    func testWorkBuddyHooksCollapseToSingleSession() throws {
+    func testWorkBuddyHooksCollapsePerConversation() throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
@@ -13165,33 +13183,76 @@ final class AgentSignalLightCoreTests: XCTestCase {
         var environment = Self.workbuddyEnvironment
         environment["CODEBUDDY_PROJECT_ID"] = projectID
         let agent = "workbuddy(bblock)"
-        let sessionID = GenericHookAdapter.sessionKey(
-            payload: ["cwd": cwd],
+        let conversationKey = GenericHookAdapter.sessionKey(
+            payload: ["session_id": "7c573de1-db1c-4ff9-b0d0-3a551b35a077", "cwd": cwd],
             environment: environment,
             agent: agent
         )
 
         _ = try fixture.store.applySessionSignal(
             .notification,
-            sessionID: sessionID,
+            sessionID: conversationKey,
             agent: agent,
             lastEvent: "Notification"
         )
         _ = try fixture.store.applySessionSignal(
             .thinking,
-            sessionID: GenericHookAdapter.sessionKey(
-                payload: ["session_id": "7c573de1-db1c-4ff9-b0d0-3a551b35a077", "cwd": cwd],
-                environment: environment,
-                agent: agent
-            ),
+            sessionID: conversationKey,
             agent: agent,
             lastEvent: "UserPromptSubmit"
         )
 
         let snapshot = fixture.store.readSnapshot()
         XCTAssertEqual(snapshot.sessions.count, 1)
-        XCTAssertEqual(snapshot.sessions.first?.sessionID, "workbuddy:\(projectID)")
+        XCTAssertEqual(
+            snapshot.sessions.first?.sessionID,
+            "workbuddy:\(projectID):7c573de1-db1c-4ff9-b0d0-3a551b35a077"
+        )
         XCTAssertEqual(snapshot.sessions.first?.signal, .thinking)
+    }
+
+    func testCompletedWorkBuddyConversationStaysVisibleWhileSameProjectConversationWorks() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        let cwd = "/Users/me/WorkBuddy/2026-08-28-17-33-15"
+        var environment = Self.workbuddyEnvironment
+        environment["CODEBUDDY_PROJECT_ID"] = "p_4a72e62b48154560a5ce37551dbb4a9b"
+        let agent = "workbuddy(bblock)"
+        func key(_ conversation: String) -> String {
+            GenericHookAdapter.sessionKey(
+                payload: ["session_id": conversation, "cwd": cwd],
+                environment: environment,
+                agent: agent
+            )
+        }
+
+        _ = try fixture.store.applySessionSignal(.thinking, sessionID: key("a"), agent: agent, lastEvent: "UserPromptSubmit")
+        _ = try fixture.store.applySessionSignal(.thinking, sessionID: key("b"), agent: agent, lastEvent: "UserPromptSubmit")
+        _ = try fixture.store.applySessionSignal(.done, sessionID: key("a"), agent: agent, lastEvent: "Stop")
+        for _ in 0..<5 {
+            _ = try fixture.store.applySessionSignal(.working, sessionID: key("b"), agent: agent, lastEvent: "PreToolUse")
+            _ = try fixture.store.applySessionSignal(.toolDone, sessionID: key("b"), agent: agent, lastEvent: "PostToolUse")
+        }
+
+        let report = InterventionDisplay.derive(
+            recorded: fixture.store.readSnapshot(),
+            preferences: InterventionDisplay.Preferences(
+                selectionMode: .manual,
+                scopes: [.codexCLI, .claudeCode, .localScript]
+            ),
+            presenceSessions: [],
+            now: Date(),
+            completedDisplayWindow: 30,
+            transientAlertDisplayWindow: 30,
+            presenceIncluded: false
+        )
+
+        XCTAssertEqual(
+            report.displaySnapshot.aggregate.displayState,
+            .completed,
+            "同一工程空间另一个 WorkBuddy 对话还在跑时，完成提示仍要显示"
+        )
     }
 
     func testClaudeHookMappingCoversAttentionAndStopFailures() {

@@ -323,6 +323,8 @@ public enum ClaudeHookAdapter {
 public enum GenericHookAdapter {
     private static let eventToSignal = normalizedEventMap([
         "SessionStart": .sessionStart,
+        "SubagentStart": .subagentStart,
+        "SubagentStop": .subagentStop,
         "Start": .working,
         "Started": .working,
         "AgentStarted": .working,
@@ -451,11 +453,11 @@ public enum GenericHookAdapter {
     ) -> String {
         if isWorkBuddyIDEHost(environment),
            let projectID = codebuddyProjectID(environment: environment) {
-            return "workbuddy:\(projectID)"
+            return workbuddyConversationKey("workbuddy:\(projectID)", payload: payload)
         }
         if isWorkBuddyIDEHost(environment),
            let projectSessionKey = workbuddyProjectSessionKey(payload: payload) {
-            return projectSessionKey
+            return workbuddyConversationKey(projectSessionKey, payload: payload)
         }
 
         let directKeys = [
@@ -619,6 +621,17 @@ public enum GenericHookAdapter {
             #"^\d{8,14}$"#
         ]
         return patterns.contains { lastComponent.range(of: $0, options: .regularExpression) != nil }
+    }
+
+    /// 完成态按告警去重依赖每个对话一条记录；同工程空间的多个对话合成一条会互相覆盖。
+    private static func workbuddyConversationKey(_ projectKey: String, payload: [String: Any]) -> String {
+        guard let sessionID = firstString(payload, keys: ["session_id"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !sessionID.isEmpty
+        else {
+            return projectKey
+        }
+        return "\(projectKey):\(sessionID)"
     }
 
     private static func workbuddyProjectSessionKey(payload: [String: Any]) -> String? {

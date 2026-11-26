@@ -42,23 +42,26 @@ function workbuddyAgentName(payload, environment):
 
 ```
 if WorkBuddy host and CODEBUDDY_PROJECT_ID:
-  return "workbuddy:" + projectID
+  projectKey = "workbuddy:" + projectID
 else if WorkBuddy host and meaningful cwd:
-  return "workbuddy:" + lowercase(lastPathComponent(cwd))
+  projectKey = "workbuddy:" + lowercase(lastPathComponent(cwd))
 else:
-  existing generic session key rules
+  return existing generic session key rules
+return projectKey + ":" + session_id   # payload 无 session_id 时只返回 projectKey
 ```
 
-同工程空间多 Playground 会话合并为一行。
+每个 WorkBuddy 对话一条记录。展示名仍按工程空间（`workbuddy(bblock)`），灯效去重按展示名归到同一来源。
+
+修订（2026-11-26）：原先同工程空间多个对话合并为一条记录。完成态按告警去重依赖每个对话一条记录；合并后后到的工作中事件会覆盖已完成对话，灯在完成黄闪和绿灯之间来回跳。
 
 ## 分支对照
 
 | 场景 | cwd | project_id | 缓存 | agentName | sessionKey |
 |------|-----|------------|------|-----------|------------|
-| Teams Playground | timestamp | 有 | `bblock` | `workbuddy(bblock)` | `workbuddy:p_4a72…` |
-| Playground 首跑 | timestamp | 有 | 无 | `workbuddy` | `workbuddy:p_4a72…` |
-| 本地目录 | `~/work/foo` | 无 | — | `workbuddy(foo)` | `workbuddy:foo` |
-| 本地目录 + Teams | `~/work/foo` | 有 | `bblock` | `workbuddy(bblock)` | `workbuddy:p_4a72…` |
+| Teams Playground | timestamp | 有 | `bblock` | `workbuddy(bblock)` | `workbuddy:p_4a72…:<session_id>` |
+| Playground 首跑 | timestamp | 有 | 无 | `workbuddy` | `workbuddy:p_4a72…:<session_id>` |
+| 本地目录 | `~/work/foo` | 无 | — | `workbuddy(foo)` | `workbuddy:foo:<session_id>` |
+| 本地目录 + Teams | `~/work/foo` | 有 | `bblock` | `workbuddy(bblock)` | `workbuddy:p_4a72…:<session_id>` |
 
 ## 降级路径（L1 → L3）
 
