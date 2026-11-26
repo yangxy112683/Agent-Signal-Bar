@@ -20,7 +20,8 @@ CODEX_HOOKS_FILE="$DIAGNOSTIC_HOME/.codex/hooks.json"
 CODEX_PROJECT_HOOKS_FILE="$ROOT_DIR/.codex/hooks.json"
 CLAUDE_SETTINGS_FILE="$DIAGNOSTIC_HOME/.claude/settings.json"
 CLAUDE_DESKTOP_LOG="$DIAGNOSTIC_HOME/Library/Logs/Claude/main.log"
-XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+# shellcheck source=lib/developer_dir.sh
+source "$ROOT_DIR/script/lib/developer_dir.sh"
 
 FAILED=0
 WARNED=0
@@ -56,9 +57,7 @@ run_check() {
 
 swift_tool() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
-    swift "$@"
-  elif [[ -d "$XCODE_DEVELOPER_DIR" ]]; then
-    DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" swift "$@"
+    DEVELOPER_DIR="$DEVELOPER_DIR" swift "$@"
   else
     swift "$@"
   fi
@@ -668,6 +667,13 @@ else
   sed -n '1,8p' "$DOCTOR_ERR"
 fi
 
+if /usr/bin/python3 "$ROOT_DIR/script/test_install_hooks.py" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
+  pass "install_hooks migrates traffic-light predecessor Codex commands"
+else
+  fail "install_hooks traffic-light predecessor migration test failed"
+  sed -n '1,20p' "$DOCTOR_ERR"
+fi
+
 if /usr/bin/python3 "$ROOT_DIR/script/test_claude_code_signal_hook.py" >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"; then
   pass "claude-code-signal-hook only reports real Claude Code payloads"
 else
@@ -929,6 +935,11 @@ PY
           },
           {
             "type": "command",
+            "command": "/opt/homebrew/bin/python3 /Users/dawn80s/work/personal/traffic-light-hooks/main.py success $(basename $PWD)",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "echo keep-codex",
             "timeout": 5
           }
@@ -983,6 +994,9 @@ for path, wrapper, stale, keep in checks:
         raise SystemExit(f"unrelated hook was not preserved in {path}")
     if not list(path.parent.glob(path.name + ".bak-*")):
         raise SystemExit(f"backup was not created for {path}")
+codex_text = (home / ".codex/hooks.json").read_text()
+if "traffic-light-hooks" in codex_text:
+    raise SystemExit("traffic-light predecessor was not removed from Codex hooks")
 PY
     then
       pass "bundled hook installer migrates stale wrapper paths"
@@ -1308,8 +1322,165 @@ fi
 
 if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
   pass "$APP_NAME process is running"
+  GUI_STATE_FILE="$HOME/Library/Application Support/Agent Signal Bar/SignalState/status.json"
+  /usr/bin/python3 - "$APP_NAME" "$GUI_STATE_FILE" <<'PY' >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+app_name = sys.argv[1]
+expected = Path(sys.argv[2]).expanduser().resolve()
+keys = (
+    "AGENT_SIGNAL_LIGHT_STATE_FILE",
+    "AGENT_SIGNAL_LIGHT_STATE_DIR",
+    "SIGNAL_LIGHT_STATE_DIR",
+)
+try:
+    pids = subprocess.check_output(["pgrep", "-x", app_name], text=True).split()
+except subprocess.CalledProcessError:
+    print("NO_PID")
+    raise SystemExit(0)
+
+overrides = []
+for pid in pids:
+    try:
+        command = subprocess.check_output(
+            ["ps", "eww", "-p", pid, "-o", "command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        continue
+    env = {}
+    for key in keys:
+        match = re.search(rf"(?:^|\s){re.escape(key)}=(\S+)", command)
+        if match:
+            env[key] = match.group(1)
+    if not env:
+        continue
+    if "AGENT_SIGNAL_LIGHT_STATE_FILE" in env:
+        actual = Path(env["AGENT_SIGNAL_LIGHT_STATE_FILE"]).expanduser().resolve()
+    else:
+        directory = env.get("AGENT_SIGNAL_LIGHT_STATE_DIR") or env.get("SIGNAL_LIGHT_STATE_DIR")
+        actual = Path(directory).expanduser().resolve() / "status.json"
+    if actual != expected:
+        overrides.append(f"pid={pid} state_file={actual} expected={expected}")
+
+if overrides:
+    for line in overrides:
+        print(line)
+    raise SystemExit(1)
+print("DEFAULT")
+PY
+  python_status=$?
+  if [[ "$python_status" -eq 0 ]]; then
+    pass "running $APP_NAME reads the default SignalState file"
+  else
+    fail "running $APP_NAME is bound to AGENT_SIGNAL_LIGHT_STATE_FILE/DIR, not the default SignalState path"
+    sed -n '1,8p' "$DOCTOR_OUT"
+    sed -n '1,8p' "$DOCTOR_ERR"
+  fi
 else
   warn "$APP_NAME is not running"
+fi
+
+HEAD_COMMIT=""
+if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  HEAD_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
+fi
+
+if [[ -n "$HEAD_COMMIT" ]]; then
+  /usr/bin/python3 - "$APP_NAME" "$HEAD_COMMIT" <<'PY' >"$DOCTOR_OUT" 2>"$DOCTOR_ERR"
+import ctypes
+import os
+import plistlib
+import subprocess
+import sys
+from pathlib import Path
+
+app_name = sys.argv[1]
+head = sys.argv[2]
+home = Path.home()
+candidates = []
+
+libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+libproc.proc_pidpath.restype = ctypes.c_int
+buf = ctypes.create_string_buffer(4096)
+try:
+    pids = subprocess.check_output(["pgrep", "-x", app_name], text=True).split()
+except subprocess.CalledProcessError:
+    pids = []
+for pid in pids:
+    n = libproc.proc_pidpath(int(pid), buf, len(buf))
+    if n <= 0:
+        continue
+    exe = Path(buf.value.decode())
+    for parent in [exe, *exe.parents]:
+        if parent.name == f"{app_name}.app":
+            candidates.append(("running", parent))
+            break
+
+for labeled, path in (
+    ("installed", Path("/Applications") / f"{app_name}.app"),
+    ("installed", home / "Applications" / f"{app_name}.app"),
+):
+    if path.is_dir():
+        candidates.append((labeled, path))
+
+seen = set()
+unique = []
+for origin, path in candidates:
+    resolved = path.resolve()
+    if resolved in seen:
+        continue
+    seen.add(resolved)
+    unique.append((origin, resolved))
+
+if not unique:
+    print("NO_APP")
+    raise SystemExit(0)
+
+mismatches = []
+unstamped = []
+for origin, app in unique:
+    plist_path = app / "Contents" / "Info.plist"
+    if not plist_path.is_file():
+        mismatches.append(f"{origin} {app}: missing Info.plist")
+        continue
+    info = plistlib.loads(plist_path.read_bytes())
+    commit = str(info.get("GitCommit") or "").strip()
+    cli = app / "Contents" / "Resources" / "dist" / "bin" / "agent-signal-light"
+    cli_note = f" bundled CLI={cli}" if cli.exists() else ""
+    if not commit:
+        unstamped.append(
+            f"{origin} {app} has no GitCommit (rebuild with ./script/package_app.sh){cli_note}"
+        )
+        continue
+    if commit != head:
+        mismatches.append(
+            f"{origin} {app} GitCommit={commit[:12]} HEAD={head[:12]}{cli_note}"
+        )
+
+if mismatches or unstamped:
+    for line in mismatches + unstamped:
+        print(line)
+    raise SystemExit(1)
+print("MATCH")
+PY
+  python_status=$?
+  if [[ "$python_status" -eq 0 ]]; then
+    if grep -q "^NO_APP$" "$DOCTOR_OUT" 2>/dev/null; then
+      warn "no installed $APP_NAME.app to compare against HEAD"
+    else
+      pass "installed $APP_NAME GitCommit matches HEAD"
+    fi
+  else
+    fail "installed $APP_NAME ≠ HEAD (灯色以已安装二进制为准)"
+    sed -n '1,8p' "$DOCTOR_OUT"
+    sed -n '1,8p' "$DOCTOR_ERR"
+  fi
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then

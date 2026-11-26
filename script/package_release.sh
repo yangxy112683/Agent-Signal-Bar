@@ -13,16 +13,13 @@ APPCAST="$DIST_DIR/appcast.xml"
 MACOS_UNIVERSAL_APPCAST="$DIST_DIR/${RELEASE_BASENAME}-macos-universal-appcast.xml"
 CHECKSUMS="$DIST_DIR/${RELEASE_BASENAME}-SHA256SUMS.txt"
 MANIFEST="$DIST_DIR/${RELEASE_BASENAME}-release-manifest.json"
-XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 source "$ROOT_DIR/script/universal_build.sh"
 
 cd "$ROOT_DIR"
 
 swift_tool() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
-    swift "$@"
-  elif [[ -d "$XCODE_DEVELOPER_DIR" ]]; then
-    DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" swift "$@"
+    DEVELOPER_DIR="$DEVELOPER_DIR" swift "$@"
   else
     swift "$@"
   fi
@@ -35,6 +32,7 @@ read_version_value() {
 
 cleanup_duplicate_artifacts() {
   mkdir -p "$DIST_DIR"
+  touch "$DIST_DIR/.metadata_never_index"
   rm -f \
     "$DIST_DIR/$APP_NAME-local.zip" \
     "$DIST_DIR/$APP_NAME-local.dmg" \

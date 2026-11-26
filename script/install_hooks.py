@@ -361,6 +361,11 @@ def command_points_to_agent_signal_wrapper(command: str, spec: TargetSpec) -> bo
     if not parts:
         return False
 
+    # Predecessor project used `python3 .../traffic-light-hooks/main.py ...`.
+    # argv[0] is python3, so the wrapper-basename gate below would miss it.
+    if any("traffic-light-hooks" in part.lower() for part in parts):
+        return True
+
     executable = Path(parts[0]).expanduser()
     if executable.name != spec.wrapper.name:
         return False

@@ -4,7 +4,6 @@ set -euo pipefail
 APP_NAME="AgentSignalLight"
 RELEASE_BASENAME="AgentSignalBar"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 source "$ROOT_DIR/script/universal_build.sh"
 
 SKIP_PACKAGE=0
@@ -54,9 +53,7 @@ die() {
 
 swift_tool() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
-    swift "$@"
-  elif [[ -d "$XCODE_DEVELOPER_DIR" ]]; then
-    DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" swift "$@"
+    DEVELOPER_DIR="$DEVELOPER_DIR" swift "$@"
   else
     swift "$@"
   fi

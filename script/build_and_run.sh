@@ -7,6 +7,8 @@ BUNDLE_ID="com.agentsignallight.AgentSignalLight"
 APP_BINARY_PID=""
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/developer_dir.sh
+source "$ROOT_DIR/script/lib/developer_dir.sh"
 
 cd "$ROOT_DIR"
 
@@ -29,7 +31,10 @@ APP_BUNDLE="$("$ROOT_DIR/script/package_app.sh")"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 open_app() {
-  /usr/bin/open "$APP_BUNDLE" --args "$@"
+  env -u AGENT_SIGNAL_LIGHT_STATE_FILE \
+    -u AGENT_SIGNAL_LIGHT_STATE_DIR \
+    -u SIGNAL_LIGHT_STATE_DIR \
+    /usr/bin/open "$APP_BUNDLE" --args "$@"
 }
 
 wait_for_app() {
@@ -51,9 +56,7 @@ run_app_binary() {
 verify_debug_window() {
   swift_tool() {
     if [[ -n "${DEVELOPER_DIR:-}" ]]; then
-      swift "$@"
-    elif [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
-      DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer" swift "$@"
+      DEVELOPER_DIR="$DEVELOPER_DIR" swift "$@"
     else
       swift "$@"
     fi

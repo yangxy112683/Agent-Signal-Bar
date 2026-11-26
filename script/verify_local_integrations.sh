@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+source "$ROOT_DIR/script/lib/developer_dir.sh"
 STATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-signal-local-integrations.XXXXXX")"
 STATE_FILE="$STATE_ROOT/status.json"
 OUTPUT_FILE="$STATE_ROOT/output.json"
@@ -23,9 +23,7 @@ die() {
 
 swift_tool() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
-    swift "$@"
-  elif [[ -d "$XCODE_DEVELOPER_DIR" ]]; then
-    DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" swift "$@"
+    DEVELOPER_DIR="$DEVELOPER_DIR" swift "$@"
   else
     swift "$@"
   fi

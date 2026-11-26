@@ -7,16 +7,13 @@ INSTALL_NAME="agent-signal-light"
 LEGACY_INSTALL_NAME="agent-signal"
 INSTALL_PATH="$INSTALL_DIR/$INSTALL_NAME"
 LEGACY_INSTALL_PATH="$INSTALL_DIR/$LEGACY_INSTALL_NAME"
-XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 source "$ROOT_DIR/script/universal_build.sh"
 
 cd "$ROOT_DIR"
 
 swift_tool() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
-    swift "$@"
-  elif [[ -d "$XCODE_DEVELOPER_DIR" ]]; then
-    DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" swift "$@"
+    DEVELOPER_DIR="$DEVELOPER_DIR" swift "$@"
   else
     swift "$@"
   fi

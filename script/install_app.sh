@@ -327,7 +327,12 @@ if [[ "$ENABLE_LOGIN_ITEM" -eq 1 ]]; then
 fi
 
 if [[ "$OPEN_AFTER_INSTALL" -eq 1 ]]; then
-  /usr/bin/open "$INSTALLED_APP"
+  # GUI must not inherit CLI/test state-file overrides from a persistent
+  # agent/dev shell. Cursor hooks write the default SignalState path.
+  env -u AGENT_SIGNAL_LIGHT_STATE_FILE \
+    -u AGENT_SIGNAL_LIGHT_STATE_DIR \
+    -u SIGNAL_LIGHT_STATE_DIR \
+    /usr/bin/open "$INSTALLED_APP"
 fi
 
 echo "Installed app: $INSTALLED_APP"

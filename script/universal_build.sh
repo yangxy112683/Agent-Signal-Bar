@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 
+_AGENT_SIGNAL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/developer_dir.sh
+source "$_AGENT_SIGNAL_SCRIPT_DIR/lib/developer_dir.sh"
+unset _AGENT_SIGNAL_SCRIPT_DIR
+
 agent_signal_swift() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
-    swift "$@"
-  elif [[ -n "${XCODE_DEVELOPER_DIR:-}" && -d "$XCODE_DEVELOPER_DIR" ]]; then
-    DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" swift "$@"
+    DEVELOPER_DIR="$DEVELOPER_DIR" swift "$@"
   else
     swift "$@"
   fi

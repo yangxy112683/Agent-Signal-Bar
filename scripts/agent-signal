@@ -26,6 +26,11 @@ if [[ -x "$DEBUG_BIN" ]]; then
   exec "$DEBUG_BIN" "$@"
 fi
 
+APP_BIN="/Applications/AgentSignalLight.app/Contents/Resources/dist/bin/agent-signal"
+if [[ -x "$APP_BIN" ]]; then
+  exec "$APP_BIN" "$@"
+fi
+
 cat >&2 <<EOF
 agent-signal binary is not installed.
 

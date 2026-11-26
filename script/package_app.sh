@@ -6,7 +6,6 @@ APP_NAME="AgentSignalLight"
 APP_DISPLAY_NAME="Agent Signal Bar"
 BUNDLE_ID="com.agentsignallight.AgentSignalLight"
 MIN_SYSTEM_VERSION="14.0"
-XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 SIGN_IDENTITY="${AGENT_SIGNAL_LIGHT_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
 
 while [[ $# -gt 0 ]]; do
@@ -78,9 +77,7 @@ PACKAGE_ARCHS="$(agent_signal_normalize_archs "$PACKAGE_ARCHS")"
 
 swift_tool() {
   if [[ -n "${DEVELOPER_DIR:-}" ]]; then
-    swift "$@"
-  elif [[ -d "$XCODE_DEVELOPER_DIR" ]]; then
-    DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" swift "$@"
+    DEVELOPER_DIR="$DEVELOPER_DIR" swift "$@"
   else
     swift "$@"
   fi
@@ -312,6 +309,12 @@ else
   echo "warning: SweetCookieKit LICENSE not found in .build/checkouts" >&2
 fi
 cp "$VERSION_FILE" "$VERSION_RESOURCE"
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  {
+    printf "GIT_COMMIT=%s\n" "$(git rev-parse HEAD)"
+    printf "GIT_DESCRIBE=%s\n" "$(git describe --always --dirty)"
+  } >>"$VERSION_RESOURCE"
+fi
 chmod +x "$APP_BINARY"
 chmod +x "$APP_RESOURCES/dist/bin/agent-signal-light" \
   "$APP_RESOURCES/dist/bin/agent-signal" \
@@ -395,12 +398,36 @@ try:
 except Exception:
     developer_id_count = 0
 
+git_commit = ""
+git_describe = ""
+try:
+    git_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
+    git_describe = subprocess.check_output(
+        ["git", "describe", "--always", "--dirty"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
+except Exception:
+    pass
+
+if git_commit:
+    info["GitCommit"] = git_commit
+if git_describe:
+    info["GitDescribe"] = git_describe
+Path(sys.argv[1]).write_bytes(plistlib.dumps(info))
+
 data = {
     "schema_version": 1,
     "app_name": app_name,
     "bundle_identifier": info.get("CFBundleIdentifier"),
     "version": info.get("CFBundleShortVersionString"),
     "build": info.get("CFBundleVersion"),
+    "git_commit": git_commit or None,
+    "git_describe": git_describe or None,
     "generated_at": datetime.now(timezone.utc).isoformat(),
     "minimum_system_version": info.get("LSMinimumSystemVersion"),
     "signing": {
@@ -432,6 +459,8 @@ fi
 clear_extended_attributes "$STAGED_APP_BUNDLE"
 
 mkdir -p "$DIST_DIR"
+# Keep local build artifacts out of Spotlight so Cmd+Space only finds the installed app.
+touch "$DIST_DIR/.metadata_never_index"
 ditto --norsrc --noextattr "$STAGED_APP_BUNDLE" "$APP_BUNDLE"
 rm -rf "$STAGING_DIR"
 trap - EXIT
