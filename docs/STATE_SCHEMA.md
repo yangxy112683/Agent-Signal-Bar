@@ -103,9 +103,11 @@ Attention-class sessions (`needs_review` / `permission` / `blocked`) use their o
 
 ## CLI Status Output
 
-`agent-signal status --json` prints a machine-readable snapshot. Commands that update state, such as `agent-signal working --session job --json`, can also use the same output format.
+`agent-signal status --json` prints a machine-readable snapshot of **recorded** state (the store aggregate after TTL pruning). Commands that update state, such as `agent-signal working --session job --json`, can also use the same output format.
 
-`display_state` is the v2 menu-bar state: `ready`, `active`, `completed`, `needs_review`, `permission`, `blocked`, `stale`, or `paused`. `lamp_state` is kept for compatibility and currently has the same value.
+This is not the lamp. The floating light and menu bar apply Light Agent scopes, recent-event fallback sessions, and display windows on top of the recorded snapshot. Use `agent-signal display --json` for that derived view.
+
+`display_state` in `status --json` is the recorded aggregate's v2 state: `ready`, `active`, `completed`, `needs_review`, `permission`, `blocked`, `stale`, or `paused`. `lamp_state` is kept for compatibility and currently has the same value.
 
 ```json
 {
@@ -136,6 +138,36 @@ Attention-class sessions (`needs_review` / `permission` / `blocked`) use their o
       "signal": "working",
       "event": "PreToolUse",
       "updated_at": "2026-05-28T11:45:00+08:00"
+    }
+  ]
+}
+```
+
+## CLI Display Output
+
+`agent-signal display --json` prints the same derivation as `MenuBarStatusModel.displaySnapshot`: Light Agent scopes, recent-event fallback sessions, display-window TTLs, and the final lamp `display_state`.
+
+It reads Light Agent preferences from `UserDefaults` suite `com.agentsignallight.AgentSignalLight`. Override with `--scopes codex-cli,claude-code,local-script` and `--selection-mode manual|following`. Desktop presence is omitted (`presence_included: false`); pause overlay is also omitted (it is in-memory in the app).
+
+`recorded_display_state` is the store aggregate. `display_state` is the lamp. `exclusions` lists attention-class / completed events and stored sessions that did not become display sessions, with reasons such as `attention_window_expired`.
+
+```json
+{
+  "schema_version": 1,
+  "recorded_display_state": "active",
+  "display_state": "active",
+  "selection_mode": "manual",
+  "scopes": ["codex-cli", "claude-code", "local-script"],
+  "display_scopes": ["codex-cli", "claude-code", "local-script"],
+  "presence_included": false,
+  "fallback_sessions": [],
+  "exclusions": [
+    {
+      "session_id": "claude-ghost",
+      "agent": "claude-code",
+      "event": "InstructionsLoaded",
+      "signal": "attention",
+      "reason": "attention_window_expired"
     }
   ]
 }

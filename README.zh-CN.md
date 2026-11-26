@@ -126,7 +126,7 @@ Agent Signal Bar 把本地 AI Agent 活动转换成一套简单的红黄绿灯�
 | 思考中 `thinking` | 绿灯快闪 | Agent 正在理解和推理任务 |
 | 工作中 `working` | 绿灯慢闪 | 正在编辑、运行工具或测试 |
 | 步骤完成 `tool_done` | 绿灯慢闪 | 一个步骤已经结束，工作流可能继续 |
-| 已完成 `done` | 绿灯常亮 | 任务完成，稍后回到空闲状态 |
+| 已完成 `done` | 黄灯闪 | 任务完成，去看结果；稍后回到空闲状态 |
 | 需要查看 `attention` / `notification` | 黄灯闪烁 | 有空时检查一下 |
 | 等待授权 `permission` / `permission_request` | 红灯闪烁 | 现在需要你的批准 |
 | 阻塞或失败 `blocked` / `failure` / `error` | 红灯快速闪烁 | 需要立即处理 |
@@ -188,9 +188,11 @@ Agent Signal Bar 是本地优先应用，但不应被理解为完全离线：
 
 ```bash
 ./script/build_and_run.sh --verify
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+swift test
 ./script/doctor.sh
 ```
+
+`script/*.sh` 会优先选用 `/Applications` 或 `~/Applications` 下的 Xcode 26（不要把 `DEVELOPER_DIR` 钉在仍是 Swift 5.10 的 `/Applications/Xcode.app`）。Hook 映射改动：先 `./script/install_cli.sh` 再对 `claude-hook` 冒烟；只有 UI 变了才整包 `install_app.sh --rebuild`。看灯色用 `./scripts/agent-signal display --json`。
 
 发布打包与 Sparkle feed 细节见 [GitHub 发布管理](docs/GITHUB_RELEASES.md)和[发布检查清单](docs/RELEASE_CHECKLIST.md)。
 

@@ -1,4 +1,3 @@
-import AgentSignalLightCore
 import Foundation
 import os.log
 
@@ -47,11 +46,20 @@ public final class CoreBluetoothSignalLightCommander: NSObject {
     /// 这会触发一次 didDisconnectPeripheral。该回调只做状态清理，
     /// 不再通知上层启动重连（否则会和调用方正在跑的重连流程互相干扰）。
     private var isReconnecting = false
+    /// 等 cancel 完成后再 connect，避免断连回调清掉刚赋上的 peripheral。
+    private var cancelWaitContinuation: CheckedContinuation<Void, Never>?
+    /// 使过期的连接超时 Task 失效，避免 abort 下一次连接。
+    private var connectAttemptID = 0
+    /// 使过期的写入超时 Task 失效，避免重复 resume continuation。
+    private var writeAttemptID = 0
+    /// 带响应写入若一直等不到 ACK，会卡住后续颜色。超时后按成功继续，不重连。
+    private let writeTimeout: TimeInterval
 
-    public init(scanDuration: TimeInterval = 5.0) {
+    public init(scanDuration: TimeInterval = 5.0, writeTimeout: TimeInterval = 0.5) {
         // 用 main queue 让 CoreBluetooth 的 delegate 回调直接在主线程执行，
         // 这样所有可变状态都可以安全地隔离在 MainActor 上，无需 Task 跳转。
         self.scanDuration = scanDuration
+        self.writeTimeout = writeTimeout
         central = CBCentralManager(delegate: nil, queue: .main)
         super.init()
         central.delegate = self
@@ -89,6 +97,15 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
                 withServices: nil,
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
             )
+            // 灯已在系统层连接时不会广播；不设超时会让上层重连永远卡在扫描。
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(self.scanDuration * 1_000_000_000))
+                guard self.connectedPeripheral == nil else { return }
+                if self.central.isScanning {
+                    self.central.stopScan()
+                }
+                self.resumeScanIfPending(false, reason: "扫描超时（设备未广播）")
+            }
         }
     }
 
@@ -167,9 +184,15 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
             return false
         }
         peripheral.delegate = self
-        // 清掉残留连接状态，避免撞上 "already connected" 而拿不到 GATT 通道。
-        isReconnecting = true
-        central.cancelPeripheralConnection(peripheral)
+        // 系统仍握着链路、本进程没有 GATT 时必须先 cancel。
+        // 等断连完成再 connect，否则 didDisconnect 会把刚赋上的 peripheral 清掉。
+        if peripheral.state != .disconnected {
+            isReconnecting = true
+            central.cancelPeripheralConnection(peripheral)
+            await waitForCancelToSettle()
+        }
+        connectAttemptID += 1
+        let attemptID = connectAttemptID
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             scanContinuation = continuation
             connectedPeripheral = peripheral
@@ -178,6 +201,7 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
             // continuation 若永不 resume 会让上层重连循环永久静默。
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
+                guard self.connectAttemptID == attemptID else { return }
                 self.resumeScanIfPending(
                     false,
                     reason: "连接超时（\(logPrefix)）"
@@ -193,9 +217,19 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency SignalLightBLEComma
             logger.log("BLE 未连接，丢弃命令 \(command.rawValue)")
             return false
         }
+        logger.log("BLE 写入 \(command.rawValue)")
+        writeAttemptID += 1
+        let attemptID = writeAttemptID
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             writeContinuation = continuation
             peripheral.writeValue(command.payload, for: characteristic, type: .withResponse)
+            Task { @MainActor in
+                let nanoseconds = UInt64(max(0, self.writeTimeout) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                guard self.writeAttemptID == attemptID else { return }
+                self.logger.log("BLE 写入超时 \(command.rawValue)，继续下一条")
+                self.resumeWrite(true)
+            }
         }
     }
 
@@ -260,7 +294,8 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        // 连接已建立，主动重连的抑制窗口到此结束。
+        // 连接已建立：必须写回 peripheral。cancel 的 didDisconnect 可能已把引用清掉。
+        connectedPeripheral = peripheral
         isReconnecting = false
         peripheral.discoverServices([uartServiceUUID])
     }
@@ -274,27 +309,34 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBCentralManagerDel
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         logger.log("BLE 已断开：\(error?.localizedDescription ?? "normal")")
-        // 身份校验：旧连接迟到的断连回调不得清空新连接已就绪的特征。
-        // 若不校验，重连刚拿到的 rxCharacteristic 会被这条 stale 回调抹掉，
-        // 使 commander 停在「connectedPeripheral 非空、rxCharacteristic 为 nil」的
-        // 僵尸态：isConnected 为 false，重连守卫却因 connectedPeripheral 非空而假成功，
-        // 所有命令被静默丢弃，只有给硬件断电重启才能恢复。
-        guard peripheral === connectedPeripheral else {
+        let action = SignalLightBLEReconnectPolicy.disconnectAction(
+            disconnectedID: peripheral.identifier.uuidString,
+            currentID: connectedPeripheral?.identifier.uuidString,
+            isReconnecting: isReconnecting
+        )
+        switch action {
+        case .ignoreStale:
             logger.log("BLE 忽略过期断连回调：\(peripheral.identifier.uuidString)")
             return
-        }
-        connectedPeripheral = nil
-        rxCharacteristic = nil
-        // 主动重连触发的断连：调用方本就在重连流程中，不再通知上层。
-        if isReconnecting {
-            isReconnecting = false
+        case .finishCancel:
+            if connectedPeripheral?.identifier == peripheral.identifier {
+                connectedPeripheral = nil
+                rxCharacteristic = nil
+            }
+            resumeCancelWaitIfPending()
             return
-        }
-        // 通知上层 controller 启动重连流程（Issue #3）。
-        // 用 Task 跳出 delegate 调用栈，避免回调中再次触发 CoreBluetooth 操作导致重入。
-        if let onDisconnectHandler {
-            Task { @MainActor in
-                await onDisconnectHandler()
+        case .notifyReconnect:
+            if connectedPeripheral == nil || connectedPeripheral?.identifier == peripheral.identifier {
+                connectedPeripheral = nil
+                rxCharacteristic = nil
+            }
+            isReconnecting = false
+            // 通知上层 controller 启动重连流程（Issue #3）。
+            // 用 Task 跳出 delegate 调用栈，避免回调中再次触发 CoreBluetooth 操作导致重入。
+            if let onDisconnectHandler {
+                Task { @MainActor in
+                    await onDisconnectHandler()
+                }
             }
         }
     }
@@ -332,8 +374,12 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBPeripheralDelegat
             return
         }
         rxCharacteristic = rx
+        if connectedPeripheral == nil {
+            connectedPeripheral = peripheral
+        }
         // 连接 + 特征就绪：记录设备 ID 供上层持久化（Issue #4）。
         lastConnectedDeviceIDValue = peripheral.identifier.uuidString
+        connectAttemptID += 1
         resumeScan(true)
     }
 
@@ -349,7 +395,28 @@ extension CoreBluetoothSignalLightCommander: @preconcurrency CBPeripheralDelegat
 
 extension CoreBluetoothSignalLightCommander {
     @MainActor
+    private func waitForCancelToSettle() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            cancelWaitContinuation = continuation
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                self.resumeCancelWaitIfPending()
+            }
+        }
+    }
+
+    @MainActor
+    private func resumeCancelWaitIfPending() {
+        guard let continuation = cancelWaitContinuation else { return }
+        cancelWaitContinuation = nil
+        continuation.resume()
+    }
+
+    @MainActor
     private func resumeScan(_ success: Bool) {
+        if success {
+            connectAttemptID += 1
+        }
         if let continuation = scanContinuation {
             scanContinuation = nil
             continuation.resume(returning: success)
@@ -361,6 +428,9 @@ extension CoreBluetoothSignalLightCommander {
     private func resumeScanIfPending(_ success: Bool, reason: String) {
         guard scanContinuation != nil else { return }
         logger.log("BLE \(reason)，按失败处理")
+        if central.isScanning {
+            central.stopScan()
+        }
         connectedPeripheral = nil
         rxCharacteristic = nil
         isReconnecting = false
@@ -369,6 +439,7 @@ extension CoreBluetoothSignalLightCommander {
 
     @MainActor
     private func resumeWrite(_ success: Bool) {
+        writeAttemptID += 1
         if let continuation = writeContinuation {
             writeContinuation = nil
             continuation.resume(returning: success)

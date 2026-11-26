@@ -22,10 +22,10 @@ public enum DisplayState: String, Codable, CaseIterable, Sendable {
             return 70
         case .stale:
             return 60
+        case .completed:
+            return 55
         case .active:
             return 50
-        case .completed:
-            return 40
         case .ready:
             return 0
         }
@@ -43,22 +43,6 @@ public enum DisplayState: String, Codable, CaseIterable, Sendable {
             return "确认状态"
         case .paused:
             return "监控已暂停"
-        }
-    }
-
-    /// 映射到蓝牙信号灯硬件命令（Nordic UART Service 文本指令）。
-    /// 硬件命令集合只有 4 种，比 `DisplayState` 的 8 种更粗：
-    /// `permission` 与 `blocked` 在硬件上合并为 `BLINK_RED`，属于刻意接受的精度损失。
-    public var bleCommand: SignalLightBLECommand {
-        switch self {
-        case .ready, .active, .completed:
-            return .green
-        case .needsReview, .stale:
-            return .blinkYellow
-        case .permission, .blocked:
-            return .blinkRed
-        case .paused:
-            return .off
         }
     }
 }

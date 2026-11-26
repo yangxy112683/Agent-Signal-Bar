@@ -194,7 +194,7 @@ public enum ClaudeHookAdapter {
         "Elicitation": .attention,
         "ElicitationResult": .working,
         "FileChanged": .attention,
-        "InstructionsLoaded": .attention,
+        "InstructionsLoaded": .sessionStart,
         "SessionStart": .sessionStart,
         "TaskCreated": .subagentStart,
         "TaskCompleted": .subagentStop,

@@ -7,6 +7,8 @@ struct ParsedArguments {
     var agent: String?
     var event: String?
     var printsJSON = false
+    var scopes: String?
+    var selectionMode: String?
 }
 
 @main
@@ -37,6 +39,10 @@ struct AgentSignalCLI {
                 let parsed = try parse(Array(arguments.dropFirst()))
                 try requireNoPositionals(parsed)
                 printStatus(store.readSnapshot(), asJSON: parsed.printsJSON)
+            case "display":
+                let parsed = try parse(Array(arguments.dropFirst()))
+                try requireNoPositionals(parsed)
+                try printDisplay(store: store, parsed: parsed)
             case "reset", "clear-all":
                 let parsed = try parse(Array(arguments.dropFirst()))
                 try requireNoPositionals(parsed)
@@ -267,6 +273,12 @@ private func parse(_ arguments: [String]) throws -> ParsedArguments {
         case "--json", "-j":
             parsed.printsJSON = true
             index += 1
+        case "--scopes":
+            parsed.scopes = try optionValue(arguments, after: index, option: value)
+            index += 2
+        case "--selection-mode":
+            parsed.selectionMode = try optionValue(arguments, after: index, option: value)
+            index += 2
         default:
             if value.hasPrefix("-") {
                 throw CLIError.message("Unknown option: \(value)")
@@ -348,6 +360,7 @@ private func printUsage() {
         Usage:
           \(command) list
           \(command) status [--json]
+          \(command) display [--json] [--scopes <a,b>] [--selection-mode manual|following]
           \(command) <signal> [--session <id>] [--agent <name>] [--event <event>] [--json]
           \(command) set <signal> [--json]
           \(command) session <signal> --session <id> [--json]
@@ -362,6 +375,7 @@ private func printUsage() {
           \(command) working --session codex-main --agent codex --event PreToolUse
           echo '{"event":"AgentStarted","agent":"local-script","session_id":"local-script-main"}' | \(command) agent-hook
           \(command) status --json
+          \(command) display --json
           \(command) permission --session codex-main --event PermissionRequest
 
         Signals:
@@ -428,6 +442,118 @@ private func printStatusJSON(_ snapshot: SignalSnapshot) {
     }
 }
 
+private func printDisplay(store: SignalStateStore, parsed: ParsedArguments) throws {
+    let recorded = store.readSnapshot()
+    var preferences = InterventionDisplay.Preferences.fromAppDefaults()
+    if let rawScopes = parsed.scopes {
+        let scopes = Set(
+            rawScopes
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .compactMap(SignalLightAgentScope.init(rawValue:))
+                .flatMap(\.expandedSelection)
+        )
+        preferences.scopes = scopes
+        if parsed.selectionMode == nil {
+            preferences.selectionMode = .manual
+        }
+    }
+    if let rawMode = parsed.selectionMode {
+        guard let mode = SignalLightAgentSelectionMode(rawValue: rawMode) else {
+            throw CLIError.message("Unknown selection mode: \(rawMode)")
+        }
+        preferences.selectionMode = mode
+    }
+
+    let report = InterventionDisplay.derive(
+        recorded: recorded,
+        preferences: preferences,
+        presenceSessions: [],
+        now: Date(),
+        completedDisplayWindow: store.completedTTLSeconds,
+        transientAlertDisplayWindow: store.attentionTTLSeconds,
+        presenceIncluded: false
+    )
+
+    if parsed.printsJSON {
+        printDisplayJSON(report, recorded: recorded)
+        return
+    }
+
+    printDisplayText(report, recorded: recorded)
+}
+
+private func printDisplayText(_ report: InterventionDisplay.Report, recorded: SignalSnapshot) {
+    let snapshot = report.displaySnapshot
+    let scopeList = report.displayScopes
+        .sorted { $0.sortOrder < $1.sortOrder }
+        .map(\.rawValue)
+        .joined(separator: ", ")
+    let selectedList = report.preferences.scopes
+        .sorted { $0.sortOrder < $1.sortOrder }
+        .map(\.rawValue)
+        .joined(separator: ", ")
+
+    print("display_state: \(snapshot.aggregate.displayState.rawValue)")
+    print("recorded_display_state: \(recorded.aggregate.displayState.rawValue)")
+    print("aggregate: \(snapshot.aggregate.rawValue) (\(snapshot.aggregate.displayName))")
+    print("selection_mode: \(report.preferences.selectionMode.rawValue)")
+    print("scopes: [\(selectedList)]")
+    print("display_scopes: [\(scopeList)]")
+    print("presence_included: \(report.presenceIncluded)")
+    print("completed_display_window: \(Int(report.completedDisplayWindow))")
+    print("transient_alert_display_window: \(Int(report.transientAlertDisplayWindow))")
+    print("state_file: \(snapshot.stateFileURL.path)")
+
+    if snapshot.sessions.isEmpty {
+        print("sessions: none")
+    } else {
+        print("sessions:")
+        for session in snapshot.sessions {
+            let agent = session.agent.map { " agent=\($0)" } ?? ""
+            let event = session.lastEvent.map { " event=\($0)" } ?? ""
+            print("- \(session.sessionID): \(session.signal.rawValue)\(agent)\(event)")
+        }
+    }
+
+    if report.fallbackSessions.isEmpty {
+        print("fallback_sessions: none")
+    } else {
+        print("fallback_sessions:")
+        for session in report.fallbackSessions {
+            let agent = session.agent.map { " agent=\($0)" } ?? ""
+            let event = session.lastEvent.map { " event=\($0)" } ?? ""
+            print("- \(session.sessionID): \(session.signal.rawValue)\(agent)\(event)")
+        }
+    }
+
+    if report.exclusions.isEmpty {
+        print("exclusions: none")
+    } else {
+        print("exclusions:")
+        for exclusion in report.exclusions {
+            let agent = exclusion.agent.map { " agent=\($0)" } ?? ""
+            let event = exclusion.event.map { " event=\($0)" } ?? ""
+            print("- \(exclusion.sessionID): \(exclusion.signal.rawValue)\(agent)\(event) reason=\(exclusion.reason)")
+        }
+    }
+}
+
+private func printDisplayJSON(_ report: InterventionDisplay.Report, recorded: SignalSnapshot) {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = SignalStateStore.beijingTimeEncodingStrategy
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+    do {
+        let data = try encoder.encode(DisplayOutput(report: report, recorded: recorded))
+        if let output = String(data: data, encoding: .utf8) {
+            print(output)
+        }
+    } catch {
+        writeError("\(commandName()): \(error.localizedDescription)")
+    }
+}
+
 private func writeError(_ message: String) {
     let line = message.hasSuffix("\n") ? message : "\(message)\n"
     if let data = line.data(using: .utf8) {
@@ -477,6 +603,103 @@ private struct StatusOutput: Encodable {
         case updatedAt = "updated_at"
         case sessions
         case recentEvents = "recent_events"
+    }
+}
+
+private struct DisplayOutput: Encodable {
+    let schemaVersion: Int
+    let recordedDisplayState: DisplayState
+    let displayState: DisplayState
+    let lampState: LampState
+    let aggregate: AgentSignal
+    let priority: Int
+    let displayName: String
+    let action: String
+    let selectionMode: String
+    let scopes: [String]
+    let displayScopes: [String]
+    let presenceIncluded: Bool
+    let completedDisplayWindow: TimeInterval
+    let transientAlertDisplayWindow: TimeInterval
+    let stateFile: String
+    let updatedAt: Date?
+    let sessions: [SessionOutput]
+    let fallbackSessions: [SessionOutput]
+    let exclusions: [ExclusionOutput]
+    let recentEvents: [RecentEventOutput]
+
+    init(report: InterventionDisplay.Report, recorded: SignalSnapshot) {
+        let snapshot = report.displaySnapshot
+        schemaVersion = 1
+        recordedDisplayState = recorded.aggregate.displayState
+        displayState = snapshot.aggregate.displayState
+        lampState = snapshot.aggregate.lampState
+        aggregate = snapshot.aggregate
+        priority = snapshot.aggregate.priority
+        displayName = snapshot.aggregate.displayName
+        action = snapshot.aggregate.humanAction
+        selectionMode = report.preferences.selectionMode.rawValue
+        scopes = report.preferences.scopes.sorted { $0.sortOrder < $1.sortOrder }.map(\.rawValue)
+        displayScopes = report.displayScopes.sorted { $0.sortOrder < $1.sortOrder }.map(\.rawValue)
+        presenceIncluded = report.presenceIncluded
+        completedDisplayWindow = report.completedDisplayWindow
+        transientAlertDisplayWindow = report.transientAlertDisplayWindow
+        stateFile = snapshot.stateFileURL.path
+        updatedAt = snapshot.updatedAt
+        sessions = snapshot.sessions.map(SessionOutput.init)
+        fallbackSessions = report.fallbackSessions.map(SessionOutput.init)
+        exclusions = report.exclusions.map(ExclusionOutput.init)
+        recentEvents = snapshot.recentEvents.map(RecentEventOutput.init)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case recordedDisplayState = "recorded_display_state"
+        case displayState = "display_state"
+        case lampState = "lamp_state"
+        case aggregate
+        case priority
+        case displayName = "display_name"
+        case action
+        case selectionMode = "selection_mode"
+        case scopes
+        case displayScopes = "display_scopes"
+        case presenceIncluded = "presence_included"
+        case completedDisplayWindow = "completed_display_window"
+        case transientAlertDisplayWindow = "transient_alert_display_window"
+        case stateFile = "state_file"
+        case updatedAt = "updated_at"
+        case sessions
+        case fallbackSessions = "fallback_sessions"
+        case exclusions
+        case recentEvents = "recent_events"
+    }
+}
+
+private struct ExclusionOutput: Encodable {
+    let sessionID: String
+    let agent: String?
+    let event: String?
+    let signal: AgentSignal
+    let updatedAt: Date
+    let reason: String
+
+    init(exclusion: InterventionDisplay.Exclusion) {
+        sessionID = exclusion.sessionID
+        agent = exclusion.agent
+        event = exclusion.event
+        signal = exclusion.signal
+        updatedAt = exclusion.updatedAt
+        reason = exclusion.reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case agent
+        case event
+        case signal
+        case updatedAt = "updated_at"
+        case reason
     }
 }
 

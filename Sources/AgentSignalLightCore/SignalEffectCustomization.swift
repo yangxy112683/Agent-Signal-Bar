@@ -53,7 +53,7 @@ public struct SignalEffectCustomization: Equatable, Sendable {
         activeEffect: ActiveSignalEffect = .greenSlowFlash,
         activeSpeed: SignalEffectSpeed = .standard,
         alertSpeed: SignalEffectSpeed = .standard,
-        completedEffect: CompletedSignalEffect = .greenSteady,
+        completedEffect: CompletedSignalEffect = .yellowPulse,
         needsReviewEffect: AlertSignalEffect = .slowFlash,
         permissionEffect: AlertSignalEffect = .slowFlash,
         blockedEffect: AlertSignalEffect = .fastFlash

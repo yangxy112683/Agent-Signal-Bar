@@ -25,6 +25,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
 - Sparkle `appcast.xml` and `AgentSignalBar-macos-universal-appcast.xml` exist and are included in release checksums
 - release app, bundled CLI, release CLI, and icon preview CLI include `arm64 x86_64` slices for Apple Silicon and Intel Mac
 - `./scripts/agent-signal status --json` parses
+- `./scripts/agent-signal display --json` parses and `display_state` is the lamp, not the recorded aggregate
 - release zip extracts, contains the expected app/scripts/docs/previews, and installs without rebuilding
 - release DMG verifies, mounts, copies to a temporary Applications directory, and preserves code signing
 - bundled CLI wrappers preserve red priority
@@ -67,7 +68,7 @@ The all-in-one release gate replaces the old manual command chain. It packages r
   - `空闲`
   - `工作中` green active only, with no red or yellow light
   - `需要查看`
-  - `已完成` green completed, not yellow; after the completed TTL it should return to `空闲`
+  - `已完成` yellow completed on software and hardware; after the completed TTL it should return to `空闲`
   - `请求授权`
   - `阻塞`
   - `关闭灯` gray paused, not all black/off

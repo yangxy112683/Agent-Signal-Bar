@@ -11,7 +11,7 @@ Codex hook 事件建议映射：
 | `PermissionRequest` | `permission_request` |
 | `Stop` | `done` |
 
-普通 `Stop` 表示成功完成，会进入短暂的绿色 completed。Codex 当前公开 hook 事件不包含 `SessionEnd`，所以 Codex 侧完成态主要依赖 `Stop`；内部 CLI 和 Claude Code adapter 仍支持 `session_end`。若当前 session 已经是 `permission`、`blocked` 或 `attention`，这个完成事件只会写入最近事件，不会覆盖仍需处理的提示。如果 hook payload 中包含 `error`、`failure`、`exception`、非零 `exit_status` 等结构化失败字段，会映射为 `blocked`。
+普通 `Stop` 表示成功完成，会进入短暂的黄色 completed。Codex 当前公开 hook 事件不包含 `SessionEnd`，所以 Codex 侧完成态主要依赖 `Stop`；内部 CLI 和 Claude Code adapter 仍支持 `session_end`。若当前 session 已经是 `permission`、`blocked` 或 `attention`，这个完成事件只会写入最近事件，不会覆盖仍需处理的提示。如果 hook payload 中包含 `error`、`failure`、`exception`、非零 `exit_status` 等结构化失败字段，会映射为 `blocked`。
 
 事件名会做容错归一化，`PreToolUse`、`pre_tool_use`、`pre-tool-use` 和 `pre tool use` 都会映射到同一个 signal。
 常见 payload 字段名也会容错归一化，例如 `session_id` / `sessionId`、`hook_event_name` / `hookEventName`、`exit_status` / `exitStatus`。

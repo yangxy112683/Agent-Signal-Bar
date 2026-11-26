@@ -9,7 +9,7 @@ Claude Code hook 事件建议映射：
 | `Elicitation` | `attention` |
 | `ElicitationResult` | `working` |
 | `FileChanged` | `attention` |
-| `InstructionsLoaded` | `attention` |
+| `InstructionsLoaded` | `session_start` |
 | `SessionStart` | `session_start` |
 | `TaskCreated` | `subagent_start` |
 | `TaskCompleted` | `subagent_stop` |
@@ -33,7 +33,7 @@ Claude Code hook 事件建议映射：
 | `WorktreeRemove` | `attention` |
 | `SessionEnd` | `session_end` |
 
-普通 `Stop` 表示成功完成，会进入短暂的绿色 completed。紧随其后的 `SessionEnd` 会保留 completed 和需要处理的提示，只清理普通 active session。若当前 session 已经是 `permission`、`blocked` 或 `attention`，这个完成事件只会写入最近事件，不会覆盖仍需处理的提示。如果 hook payload 中包含 `error`、`failure`、`exception`、非零 `exit_status` 等结构化失败字段，即使事件名不是 `PostToolUseFailure`，也会映射为 `blocked`。
+普通 `Stop` 表示成功完成，会进入短暂的黄色 completed。紧随其后的 `SessionEnd` 会保留 completed 和需要处理的提示，只清理普通 active session。若当前 session 已经是 `permission`、`blocked` 或 `attention`，这个完成事件只会写入最近事件，不会覆盖仍需处理的提示。如果 hook payload 中包含 `error`、`failure`、`exception`、非零 `exit_status` 等结构化失败字段，即使事件名不是 `PostToolUseFailure`，也会映射为 `blocked`。
 
 事件名会做容错归一化，`PostToolUseFailure`、`post_tool_use_failure`、`post-tool-use-failure` 和 `post tool use failure` 都会映射到同一个 signal。
 常见 payload 字段名也会容错归一化，例如 `session_id` / `sessionId`、`hook_event_name` / `hookEventName`、`exit_status` / `exitStatus`、`stop_reason` / `stopReason`。
@@ -59,11 +59,15 @@ Agent Signal Bar 的 `thinking` / `working` / `done` 状态来自 Claude Code ho
 
 ## Recommended Install
 
-先安装 release 版 CLI，避免 hook 第一次触发时临时编译：
+先安装 CLI，避免 hook 第一次触发时临时编译。映射改动（`HookAdapters.swift` / `claude-hook`）也走这条路径冒烟，不必整包重装 App：
 
 ```bash
 ./script/install_cli.sh
+echo '{"hook_event_name":"InstructionsLoaded","session_id":"smoke"}' | ./scripts/agent-signal claude-hook
+./scripts/agent-signal display --json
 ```
+
+只有菜单栏 / 悬浮灯 UI 变了才需要 `./script/install_app.sh --rebuild`。看灯色用 `display`，不要用 `status --json`。
 
 预览并合并到现有 `~/.claude/settings.json`：
 

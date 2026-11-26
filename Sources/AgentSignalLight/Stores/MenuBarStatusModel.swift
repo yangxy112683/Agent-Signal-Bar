@@ -20,205 +20,6 @@ final class SignalAnimationClock: ObservableObject {
     }
 }
 
-enum SignalLightAgentScopeGroup: Int, CaseIterable, Hashable {
-    case codex
-    case claude
-    case other
-}
-
-enum SignalLightAgentScope: String, CaseIterable, Hashable {
-    case codex
-    case claude
-    case codexDesktop = "codex-desktop"
-    case codexCLI = "codex-cli"
-    case codexVSCode = "codex-vscode"
-    case codexXcode = "codex-xcode"
-    case codexIDEA = "codex-idea"
-    case claudeCode = "claude-code"
-    case claudeDesktop = "claude-desktop"
-    case localScript = "local-script"
-
-    static let selectableCases: [SignalLightAgentScope] = [
-        .codexDesktop,
-        .codexCLI,
-        .codexVSCode,
-        .codexXcode,
-        .codexIDEA,
-        .claudeCode,
-        .localScript
-    ]
-
-    // NOTE: fork-specific — upstream (v1.5.0+) removed `.localScript` from
-    // `visibleCases` to stop custom/generic hooks (e.g. codebuddy CLI) from
-    // driving the signal light. We rely on that behavior, so it is
-    // intentionally kept here. See `testManualLocalScriptSelectionDrivesVisibleSignalLight`.
-    static let visibleCases: [SignalLightAgentScope] = [
-        .codexDesktop,
-        .codexCLI,
-        .codexVSCode,
-        .codexXcode,
-        .codexIDEA,
-        .claudeCode,
-        .localScript
-    ]
-
-    static let allCases: [SignalLightAgentScope] = selectableCases
-
-    static let defaultSelectedCases: Set<SignalLightAgentScope> = [
-        .codexDesktop,
-        .codexCLI,
-        .codexVSCode,
-        .codexXcode,
-        .codexIDEA
-    ]
-
-    static let codexCases: Set<SignalLightAgentScope> = [
-        .codexDesktop,
-        .codexCLI,
-        .codexVSCode,
-        .codexXcode,
-        .codexIDEA
-    ]
-
-    static let claudeCases: Set<SignalLightAgentScope> = [
-        .claudeCode
-    ]
-
-    var group: SignalLightAgentScopeGroup {
-        switch self {
-        case .codex, .codexDesktop, .codexCLI, .codexVSCode, .codexXcode, .codexIDEA:
-            return .codex
-        case .claude, .claudeCode, .claudeDesktop:
-            return .claude
-        case .localScript:
-            return .other
-        }
-    }
-
-    var sortOrder: Int {
-        switch self {
-        case .codexDesktop:
-            return 0
-        case .codexCLI:
-            return 1
-        case .codexVSCode:
-            return 2
-        case .codexXcode:
-            return 3
-        case .codexIDEA:
-            return 4
-        case .claudeCode:
-            return 5
-        case .claudeDesktop:
-            return 6
-        case .localScript:
-            return 7
-        case .codex:
-            return 100
-        case .claude:
-            return 101
-        }
-    }
-
-    var expandedSelection: Set<SignalLightAgentScope> {
-        switch self {
-        case .codex:
-            return Self.codexCases
-        case .claude:
-            return Self.claudeCases
-        default:
-            return Self.selectableCases.contains(self) ? [self] : []
-        }
-    }
-
-    func matches(session: SessionStatus) -> Bool {
-        matches(
-            sourceKey: ActivityPresentation.activitySourceKey(for: session),
-            agent: session.agent,
-            sessionID: session.sessionID
-        )
-    }
-
-    func matches(event: RecentSignalEvent) -> Bool {
-        matches(
-            sourceKey: ActivityPresentation.activitySourceKey(for: event),
-            agent: event.agent,
-            sessionID: event.sessionID
-        )
-    }
-
-    private func matches(sourceKey: String, agent: String?, sessionID: String) -> Bool {
-        let normalizedAgent = Self.normalizedAgentName(agent)
-        let normalizedSessionID = sessionID.lowercased()
-
-        switch self {
-        case .codex:
-            return sourceKey.hasPrefix("codex:")
-        case .claude:
-            return sourceKey.hasPrefix("claude:")
-        case .codexDesktop:
-            return sourceKey == "codex:desktop"
-                || normalizedAgent == "codex-desktop"
-                || normalizedSessionID.hasPrefix("codex-desktop:")
-        case .codexCLI:
-            return sourceKey == "codex:terminal"
-                || normalizedAgent == "codex-cli"
-                || normalizedAgent == "codex-terminal"
-                || normalizedSessionID.hasPrefix("codex-cli:")
-        case .codexVSCode:
-            return sourceKey == "codex:ide:vs-code"
-                || normalizedAgent == "codex-vscode"
-                || normalizedAgent == "vscode-codex"
-                || normalizedSessionID.hasPrefix("codex-vscode:")
-        case .codexXcode:
-            return sourceKey == "codex:ide:xcode"
-                || normalizedAgent == "codex-xcode"
-                || normalizedAgent == "xcode-codex"
-                || normalizedSessionID.hasPrefix("codex-xcode:")
-        case .codexIDEA:
-            return sourceKey == "codex:ide:idea"
-                || sourceKey == "codex:ide:jetbrains"
-                || normalizedAgent == "codex-idea"
-                || normalizedAgent == "codex-intellij"
-                || normalizedAgent == "codex-jetbrains"
-                || normalizedSessionID.hasPrefix("codex-idea:")
-        case .claudeCode:
-            return sourceKey == "claude:terminal"
-                || sourceKey == "claude:desktop"
-                || normalizedAgent == "claude-code"
-                || normalizedAgent == "claude-cli"
-                || normalizedAgent == "claude-desktop"
-                || normalizedSessionID.hasPrefix("claude-code:")
-                || normalizedSessionID.hasPrefix("claude-cli:")
-                || normalizedSessionID.hasPrefix("claude-desktop:")
-        case .claudeDesktop:
-            return sourceKey == "claude:desktop"
-                || normalizedAgent == "claude-desktop"
-                || normalizedSessionID.hasPrefix("claude-desktop:")
-        case .localScript:
-            // NOTE: fork-specific — `.localScript` now drives the visible
-            // signal light (see `visibleCases` above), so this match must
-            // exclude `GenericHookAdapter.agentName`'s fallback sentinel
-            // ("agent", returned when a generic hook payload omits an
-            // explicit agent field). Otherwise unlabeled generic-hook noise
-            // would be treated as a real active agent and drive the light.
-            return !sourceKey.hasPrefix("codex:")
-                && !sourceKey.hasPrefix("claude:")
-                && !normalizedAgent.isEmpty
-                && normalizedAgent != "agent"
-        }
-    }
-
-    private static func normalizedAgentName(_ agent: String?) -> String {
-        guard let agent else { return "" }
-        return agent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: " ", with: "-")
-    }
-}
-
 enum SettingsGlassEffect: String, CaseIterable, Hashable {
     case reduced
     case standard
@@ -235,11 +36,6 @@ enum SettingsGlassEffect: String, CaseIterable, Hashable {
 enum StatusMenuMode: String, CaseIterable, Hashable {
     case simple
     case detailed
-}
-
-enum SignalLightAgentSelectionMode: String, Hashable {
-    case following
-    case manual
 }
 
 enum StatusLightOverrideTarget: String, CaseIterable, Hashable {
@@ -541,7 +337,6 @@ final class MenuBarStatusModel: ObservableObject {
     private var desktopAppTimer: Timer?
     private var automaticUpdateCheckTimer: Timer?
     private var watcher: StateFileWatcher?
-    private static let recentEventDeduplicationWindow: TimeInterval = 4
     /// completed 类 session 的展示窗口（「灯效时段」），与记录态剪枝共用同一
     /// 可配置时长：运行时从 store 读取（环境变量 AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS）。
     let completedDisplayWindow: TimeInterval
@@ -549,9 +344,6 @@ final class MenuBarStatusModel: ObservableObject {
     /// （「灯效时段」），与记录态剪枝共用同一可配置时长：运行时从 store 读取
     /// （环境变量 AGENT_SIGNAL_LIGHT_ATTENTION_TTL_SECONDS）。
     let transientAlertDisplayWindow: TimeInterval
-    private static let recentActivityFallbackWindow: TimeInterval = 5 * 60
-    private static let desktopPresenceSuppressionWindow: TimeInterval = 5 * 60
-    private static let passiveActiveDisplayWindow: TimeInterval = 45
     private var statusLightSequence: [StatusLightOverrideFrame] = []
     private var statusLightSequenceIndex = 0
     private var animationFrameSkipCounter = 0
@@ -593,7 +385,7 @@ final class MenuBarStatusModel: ObservableObject {
     private static let defaultStatusBarStyle: TrafficSignalStyle = .macOS
     private static let defaultMacOSHorizontalUsesTrafficLightSize = true
     private static let defaultTrafficLightVerticalUsesMacOSSize = false
-    private static let effectDefaultsVersion = 2
+    private static let effectDefaultsVersion = 3
     private static let floatingSignalScaleDefaultsVersion = 3
     private static let preferenceDefaultsVersion = 1
     private static let automaticUpdateCheckInterval: TimeInterval = 24 * 60 * 60
@@ -609,7 +401,6 @@ final class MenuBarStatusModel: ObservableObject {
     private static let cachedLatestAgentTokenUsageKey = "cachedLatestAgentTokenUsage"
     private static let manualOpenAICookieKey = "manualOpenAICookieHeader"
     private static let legacyManualOpenAICookieUserDefaultsKey = "codexManualOpenAICookieHeader"
-    private static let activeDisplayWindow: TimeInterval = 5 * 60
     private static let debugLogFileName = "AgentSignalLight.log"
 
     private struct LaunchAtLoginUpdateResult: Sendable {
@@ -801,7 +592,9 @@ final class MenuBarStatusModel: ObservableObject {
         let shouldApplyPreferenceDefaults =
             userDefaults.integer(forKey: "settingsPreferenceDefaultsVersion")
                 < Self.preferenceDefaultsVersion
-        let shouldApplyEffectDefaults = userDefaults.integer(forKey: "signalEffectDefaultsVersion") < Self.effectDefaultsVersion
+        let storedEffectDefaultsVersion = userDefaults.integer(forKey: "signalEffectDefaultsVersion")
+        let shouldApplyEffectDefaults = storedEffectDefaultsVersion < 2
+        let shouldApplyCompletedYellowDefault = storedEffectDefaultsVersion < Self.effectDefaultsVersion
         let resolvedDisplayLayout =
             storedLayout.flatMap(TrafficSignalLayout.init(rawValue:)) ?? Self.defaultDisplayLayout
         displayLayout = resolvedDisplayLayout
@@ -822,9 +615,9 @@ final class MenuBarStatusModel: ObservableObject {
         activeSignalEffect = resolvedActiveSignalEffect
         activeEffectSpeed = storedActiveEffectSpeed.flatMap(SignalEffectSpeed.init(rawValue:)) ?? .standard
         alertEffectSpeed = storedAlertEffectSpeed.flatMap(SignalEffectSpeed.init(rawValue:)) ?? .standard
-        let resolvedCompletedSignalEffect: CompletedSignalEffect = shouldApplyEffectDefaults
-            ? .greenSteady
-            : storedCompletedSignalEffect.flatMap(CompletedSignalEffect.init(rawValue:)) ?? .greenSteady
+        let resolvedCompletedSignalEffect: CompletedSignalEffect = shouldApplyCompletedYellowDefault
+            ? .yellowPulse
+            : storedCompletedSignalEffect.flatMap(CompletedSignalEffect.init(rawValue:)) ?? .yellowPulse
         completedSignalEffect = resolvedCompletedSignalEffect
         let resolvedNeedsReviewSignalEffect = Self.resolvedAlertSignalEffect(
             rawValue: storedNeedsReviewSignalEffect,
@@ -847,6 +640,8 @@ final class MenuBarStatusModel: ObservableObject {
         if shouldApplyEffectDefaults {
             userDefaults.set(resolvedThinkingSignalEffect.rawValue, forKey: "thinkingSignalEffect")
             userDefaults.set(resolvedActiveSignalEffect.rawValue, forKey: "activeSignalEffect")
+        }
+        if shouldApplyCompletedYellowDefault {
             userDefaults.set(resolvedCompletedSignalEffect.rawValue, forKey: "completedSignalEffect")
             userDefaults.set(Self.effectDefaultsVersion, forKey: "signalEffectDefaultsVersion")
         }
@@ -2149,13 +1944,12 @@ final class MenuBarStatusModel: ObservableObject {
 
     func setLightDebugModeEnabled(
         _ enabled: Bool,
-        targets: Set<StatusLightOverrideTarget> = Set(StatusLightOverrideTarget.allCases)
+        targets _: Set<StatusLightOverrideTarget> = Set(StatusLightOverrideTarget.allCases)
     ) {
         let shouldLogStateChange = isLightDebugModeEnabled != enabled
-        let effectiveTargets = targets.isEmpty ? Set(StatusLightOverrideTarget.allCases) : targets
         isLightDebugModeEnabled = enabled
         if enabled {
-            setDebugLight(signal: .idle, targets: effectiveTargets)
+            // 打开调试时不要先写成 idle 绿灯。点选之前，软件灯和硬件灯继续跟介入态。
             if shouldLogStateChange {
                 appendDebugLog("debug light mode enabled")
             }
@@ -2297,43 +2091,27 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     var displaySnapshot: SignalSnapshot {
-        let displaySessions = combinedDisplaySessions()
-        let displayScopes = signalLightAgentScopesForDisplay(from: displaySessions)
-        let scopedDisplaySessions = displaySessions.filter { Self.session($0, matches: displayScopes) }
-        let deduplicatedSessions = deduplicatedDisplaySessions(scopedDisplaySessions)
-        let scopedRecentEvents = snapshot.recentEvents
-            .filter { !Self.isSignalTestEvent($0.event) }
-            .filter { Self.event($0, matches: displayScopes) }
-        let deduplicatedRecentEvents = deduplicatedRecentEvents(scopedRecentEvents)
-        let displayUpdatedAt = deduplicatedSessions.map(\.updatedAt).max()
-
-        return SignalSnapshot(
-            aggregate: aggregateForSignalLightScopes(
-                sessions: deduplicatedSessions,
-                fallback: snapshot.aggregate,
-                scopes: displayScopes
-            ),
-            sessions: deduplicatedSessions,
-            recentEvents: deduplicatedRecentEvents,
-            stateFileURL: snapshot.stateFileURL,
-            updatedAt: displayUpdatedAt
-        )
+        interventionReport.displaySnapshot
     }
 
     var activitySnapshot: SignalSnapshot {
-        let displaySessions = combinedDisplaySessions()
-        let deduplicatedSessions = deduplicatedDisplaySessions(displaySessions)
-        let visibleRecentEvents = snapshot.recentEvents
-            .filter { !Self.isSignalTestEvent($0.event) }
-        let deduplicatedRecentEvents = deduplicatedRecentEvents(visibleRecentEvents)
-        let displayUpdatedAt = deduplicatedSessions.map(\.updatedAt).max()
+        interventionReport.activitySnapshot
+    }
 
-        return SignalSnapshot(
-            aggregate: aggregateForSessions(deduplicatedSessions, fallback: snapshot.aggregate),
-            sessions: deduplicatedSessions,
-            recentEvents: deduplicatedRecentEvents,
-            stateFileURL: snapshot.stateFileURL,
-            updatedAt: displayUpdatedAt ?? snapshot.updatedAt
+    private var interventionReport: InterventionDisplay.Report {
+        InterventionDisplay.derive(
+            recorded: snapshot,
+            preferences: InterventionDisplay.Preferences(
+                selectionMode: signalLightAgentSelectionMode,
+                scopes: signalLightAgentScopes,
+                isCodexDesktopMonitoringEnabled: isCodexDesktopMonitoringEnabled,
+                isClaudeDesktopMonitoringEnabled: isClaudeDesktopMonitoringEnabled
+            ),
+            presenceSessions: desktopAppSessions,
+            now: Date(),
+            completedDisplayWindow: completedDisplayWindow,
+            transientAlertDisplayWindow: transientAlertDisplayWindow,
+            presenceIncluded: true
         )
     }
 
@@ -2922,6 +2700,11 @@ final class MenuBarStatusModel: ObservableObject {
         statusLightOverride = firstFrame
     }
 
+    /// 仅测试用：推进灯光调试预览序列，复现「24 帧播完回 idle」这条路径。
+    func advanceStatusLightSequenceForTesting() -> Bool {
+        advanceStatusLightSequenceIfNeeded()
+    }
+
     private func advanceStatusLightSequenceIfNeeded() -> Bool {
         guard !statusLightSequence.isEmpty else { return false }
 
@@ -2930,15 +2713,16 @@ final class MenuBarStatusModel: ObservableObject {
             statusLightSequenceIndex = nextIndex
             statusLightOverride = statusLightSequence[nextIndex]
         } else {
-            let previousTargets = statusLightOverride?.targets ?? Set(StatusLightOverrideTarget.allCases)
+            let lastFrame = statusLightOverride
+            let previousTargets = lastFrame?.targets ?? Set(StatusLightOverrideTarget.allCases)
             statusLightSequence = []
             statusLightSequenceIndex = 0
             if isLightDebugModeEnabled {
                 statusLightOverride = StatusLightOverrideFrame(
-                    signal: .idle,
-                    tick: 0,
-                    allLightsOn: false,
-                    effectCustomization: signalEffectCustomization,
+                    signal: lastFrame?.signal ?? .idle,
+                    tick: lastFrame?.tick ?? 0,
+                    allLightsOn: lastFrame?.allLightsOn ?? false,
+                    effectCustomization: lastFrame?.effectCustomization ?? signalEffectCustomization,
                     targets: previousTargets,
                     usesLiveTick: true
                 )
@@ -4496,224 +4280,7 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     private func combinedDisplaySessions() -> [SessionStatus] {
-        let now = Date()
-        let visibleRecentEvents = snapshot.recentEvents.filter { !Self.isSignalTestEvent($0.event) }
-        let completionCutoffsBySourceKey = Self.latestCompletionCutoffsBySourceKey(visibleRecentEvents)
-        let resolvingCutoffsBySourceKey = Self.latestResolvingCutoffsBySourceKey(visibleRecentEvents)
-        var sessions = snapshot.sessions.filter { session in
-            Self.shouldIncludeStoredSessionInDisplay(
-                session,
-                now: now,
-                completedDisplayWindow: completedDisplayWindow,
-                transientAlertDisplayWindow: transientAlertDisplayWindow
-            )
-                && !Self.isSupersededByCompletedRecentEvent(
-                    session,
-                    completionCutoffsBySourceKey: completionCutoffsBySourceKey
-                )
-                && !Self.isSupersededByResolvingRecentEvent(
-                    session,
-                    resolvingCutoffsBySourceKey: resolvingCutoffsBySourceKey
-                )
-        }
-        sessions.append(
-            contentsOf: recentActivityFallbackSessions(
-                from: visibleRecentEvents,
-                existingSessions: sessions,
-                completionCutoffsBySourceKey: completionCutoffsBySourceKey,
-                resolvingCutoffsBySourceKey: resolvingCutoffsBySourceKey,
-                now: now
-            )
-        )
-
-        let liveAgentKeys = Set(
-            sessions.compactMap { session -> String? in
-                guard Self.shouldSuppressDesktopPresence(
-                    for: session,
-                    now: now,
-                    transientAlertDisplayWindow: transientAlertDisplayWindow
-                ) else { return nil }
-                return ActivityPresentation.activitySourceKey(for: session)
-            }
-        )
-
-        for desktopSession in desktopAppSessions {
-            let sourceKey = ActivityPresentation.activitySourceKey(for: desktopSession)
-            guard !liveAgentKeys.contains(sourceKey) else { continue }
-            sessions.append(desktopSession)
-        }
-
-        return sessions.sorted(by: Self.displaySessionSortPrecedes)
-    }
-
-    private func recentActivityFallbackSessions(
-        from recentEvents: [RecentSignalEvent],
-        existingSessions: [SessionStatus],
-        completionCutoffsBySourceKey: [String: Date],
-        resolvingCutoffsBySourceKey: [String: Date],
-        now: Date
-    ) -> [SessionStatus] {
-        let latestExistingSessionBySourceKey = Dictionary(
-            grouping: existingSessions,
-            by: ActivityPresentation.activitySourceKey(for:)
-        ).compactMapValues { sessions in
-            sessions.max(by: { lhs, rhs in lhs.updatedAt < rhs.updatedAt })
-        }
-        var handledSourceKeys: Set<String> = []
-        var fallbackSessions: [SessionStatus] = []
-
-        for event in recentEvents.sorted(by: { $0.updatedAt > $1.updatedAt }) {
-            let sourceKey = ActivityPresentation.activitySourceKey(for: event)
-            guard !handledSourceKeys.contains(sourceKey)
-            else {
-                continue
-            }
-
-            if let existingSession = latestExistingSessionBySourceKey[sourceKey],
-               existingSession.updatedAt >= event.updatedAt,
-               !Self.isPresenceSession(existingSession) {
-                continue
-            }
-
-            if Self.isSupersededByCompletedRecentEvent(
-                event,
-                completionCutoffsBySourceKey: completionCutoffsBySourceKey
-            ) {
-                continue
-            }
-
-            if Self.isSupersededByResolvingRecentEvent(
-                event,
-                resolvingCutoffsBySourceKey: resolvingCutoffsBySourceKey
-            ) {
-                continue
-            }
-
-            guard Self.shouldUseRecentEventAsFallbackSession(
-                event,
-                now: now,
-                completedDisplayWindow: completedDisplayWindow,
-                transientAlertDisplayWindow: transientAlertDisplayWindow
-            ) else { continue }
-
-            handledSourceKeys.insert(sourceKey)
-            fallbackSessions.append(
-                SessionStatus(
-                    sessionID: "recent-activity:\(sourceKey)",
-                    signal: event.signal,
-                    updatedAt: event.updatedAt,
-                    agent: event.agent,
-                    lastEvent: event.event
-                )
-            )
-        }
-
-        return fallbackSessions
-    }
-
-    private func deduplicatedDisplaySessions(_ sessions: [SessionStatus]) -> [SessionStatus] {
-        var sessionsBySourceKey: [String: SessionStatus] = [:]
-
-        for session in sessions {
-            let sourceKey = ActivityPresentation.activitySourceKey(for: session)
-            guard let current = sessionsBySourceKey[sourceKey] else {
-                sessionsBySourceKey[sourceKey] = session
-                continue
-            }
-
-            if Self.shouldPreferDisplaySession(session, over: current) {
-                sessionsBySourceKey[sourceKey] = session
-            }
-        }
-
-        return sessionsBySourceKey.values.sorted(by: Self.displaySessionSortPrecedes)
-    }
-
-    private static func displaySessionSortPrecedes(_ lhs: SessionStatus, _ rhs: SessionStatus) -> Bool {
-        if lhs.signal.displayState.priority != rhs.signal.displayState.priority {
-            return lhs.signal.displayState.priority > rhs.signal.displayState.priority
-        }
-
-        if lhs.updatedAt != rhs.updatedAt {
-            return lhs.updatedAt > rhs.updatedAt
-        }
-
-        return ActivityPresentation.activitySourceKey(for: lhs)
-            < ActivityPresentation.activitySourceKey(for: rhs)
-    }
-
-    private static func shouldPreferDisplaySession(_ candidate: SessionStatus, over current: SessionStatus) -> Bool {
-        let candidateIsDesktopPresence = isPresenceSession(candidate)
-        let currentIsDesktopPresence = isPresenceSession(current)
-        if candidateIsDesktopPresence != currentIsDesktopPresence {
-            if candidateIsDesktopPresence {
-                return shouldPresenceOverrideStaleActivity(candidate, nonPresence: current)
-            }
-            if currentIsDesktopPresence {
-                return !shouldPresenceOverrideStaleActivity(current, nonPresence: candidate)
-            }
-        }
-
-        if shouldResolvingDisplaySessionOverride(candidate, current: current) {
-            return true
-        }
-        if shouldResolvingDisplaySessionOverride(current, current: candidate) {
-            return false
-        }
-
-        let candidateIsAlert = isPersistentAlert(candidate.signal.displayState)
-        let currentIsAlert = isPersistentAlert(current.signal.displayState)
-        if candidateIsAlert || currentIsAlert {
-            let candidatePriority = deduplicationPriority(for: candidate.signal)
-            let currentPriority = deduplicationPriority(for: current.signal)
-            if candidatePriority != currentPriority {
-                return candidatePriority > currentPriority
-            }
-        }
-
-        if candidate.updatedAt != current.updatedAt {
-            return candidate.updatedAt > current.updatedAt
-        }
-
-        return deduplicationPriority(for: candidate.signal) > deduplicationPriority(for: current.signal)
-    }
-
-    private static func shouldResolvingDisplaySessionOverride(
-        _ candidate: SessionStatus,
-        current: SessionStatus
-    ) -> Bool {
-        isResolvingSignal(candidate.signal)
-            && shouldResolvingEventSupersedeSessionDisplayState(current.signal.displayState)
-            && candidate.updatedAt >= current.updatedAt
-    }
-
-    private static func shouldPresenceOverrideStaleActivity(
-        _ presence: SessionStatus,
-        nonPresence: SessionStatus
-    ) -> Bool {
-        guard nonPresence.signal.displayState == .active else {
-            return false
-        }
-
-        return presence.updatedAt.timeIntervalSince(nonPresence.updatedAt) > activeDisplayWindow(for: nonPresence)
-    }
-
-    private static func deduplicationPriority(for signal: AgentSignal) -> Int {
-        switch signal.displayState {
-        case .blocked, .permission, .needsReview, .stale, .paused:
-            return signal.displayState.priority
-        case .active, .completed, .ready:
-            return signal.displayState.priority
-        }
-    }
-
-    private static func isPersistentAlert(_ displayState: DisplayState) -> Bool {
-        switch displayState {
-        case .needsReview, .permission, .blocked, .stale, .paused:
-            return true
-        case .ready, .active, .completed:
-            return false
-        }
+        interventionReport.combinedSessions
     }
 
     static func shouldUseRecentEventAsFallbackSession(
@@ -4722,250 +4289,16 @@ final class MenuBarStatusModel: ObservableObject {
         completedDisplayWindow: TimeInterval = 30,
         transientAlertDisplayWindow: TimeInterval = 30
     ) -> Bool {
-        if isManualIdleControlEvent(event) {
-            return false
-        }
-
-        let age = now.timeIntervalSince(event.updatedAt)
-        switch event.signal.displayState {
-        case .active:
-            return age <= recentActivityFallbackWindow(for: event)
-        case .completed:
-            return age <= completedDisplayWindow
-        case .needsReview, .permission, .blocked, .stale:
-            return age <= transientAlertDisplayWindow
-        case .ready, .paused:
-            return false
-        }
-    }
-
-    private static func recentActivityFallbackWindow(for event: RecentSignalEvent) -> TimeInterval {
-        isPassiveActiveEvent(event) ? passiveActiveDisplayWindow : recentActivityFallbackWindow
+        InterventionDisplay.shouldUseRecentEventAsFallbackSession(
+            event,
+            now: now,
+            completedDisplayWindow: completedDisplayWindow,
+            transientAlertDisplayWindow: transientAlertDisplayWindow
+        )
     }
 
     nonisolated static func isManualIdleControlEvent(_ event: RecentSignalEvent) -> Bool {
-        event.sessionID == "manual"
-            && (event.agent ?? "manual") == "manual"
-            && event.signal.displayState == .ready
-    }
-
-    private static func isPassiveActiveEvent(_ event: RecentSignalEvent) -> Bool {
-        guard event.signal.displayState == .active else { return false }
-
-        switch event.event {
-        case "DesktopActivityHeartbeat", "DesktopThinking", "DesktopMessage":
-            return true
-        default:
-            return false
-        }
-    }
-
-    private static func latestCompletionCutoffsBySourceKey(_ events: [RecentSignalEvent]) -> [String: Date] {
-        var cutoffs: [String: Date] = [:]
-
-        for event in events where event.signal.displayState == .completed {
-            let sourceKey = ActivityPresentation.activitySourceKey(for: event)
-            if let existing = cutoffs[sourceKey], existing >= event.updatedAt {
-                continue
-            }
-            cutoffs[sourceKey] = event.updatedAt
-        }
-
-        return cutoffs
-    }
-
-    private static func latestResolvingCutoffsBySourceKey(_ events: [RecentSignalEvent]) -> [String: Date] {
-        var cutoffs: [String: Date] = [:]
-
-        for event in events where isResolvingSignal(event.signal) {
-            let sourceKey = ActivityPresentation.activitySourceKey(for: event)
-            if let existing = cutoffs[sourceKey], existing >= event.updatedAt {
-                continue
-            }
-            cutoffs[sourceKey] = event.updatedAt
-        }
-
-        return cutoffs
-    }
-
-    private static func isSupersededByCompletedRecentEvent(
-        _ session: SessionStatus,
-        completionCutoffsBySourceKey: [String: Date]
-    ) -> Bool {
-        guard !isPresenceSession(session),
-              shouldCompletedEventSupersedeDisplayState(session.signal.displayState)
-        else {
-            return false
-        }
-
-        let sourceKey = ActivityPresentation.activitySourceKey(for: session)
-        guard let completedAt = completionCutoffsBySourceKey[sourceKey] else {
-            return false
-        }
-
-        return completedAt >= session.updatedAt
-    }
-
-    private static func isSupersededByCompletedRecentEvent(
-        _ event: RecentSignalEvent,
-        completionCutoffsBySourceKey: [String: Date]
-    ) -> Bool {
-        guard event.signal.displayState == .active else {
-            return false
-        }
-
-        let sourceKey = ActivityPresentation.activitySourceKey(for: event)
-        guard let completedAt = completionCutoffsBySourceKey[sourceKey] else {
-            return false
-        }
-
-        return completedAt >= event.updatedAt
-    }
-
-    private static func isSupersededByResolvingRecentEvent(
-        _ session: SessionStatus,
-        resolvingCutoffsBySourceKey: [String: Date]
-    ) -> Bool {
-        guard !isPresenceSession(session),
-              shouldResolvingEventSupersedeSessionDisplayState(session.signal.displayState)
-        else {
-            return false
-        }
-
-        let sourceKey = ActivityPresentation.activitySourceKey(for: session)
-        guard let resolvedAt = resolvingCutoffsBySourceKey[sourceKey] else {
-            return false
-        }
-
-        return resolvedAt >= session.updatedAt
-    }
-
-    private static func isSupersededByResolvingRecentEvent(
-        _ event: RecentSignalEvent,
-        resolvingCutoffsBySourceKey: [String: Date]
-    ) -> Bool {
-        guard shouldResolvingEventSupersedeDisplayState(event.signal.displayState) else {
-            return false
-        }
-
-        let sourceKey = ActivityPresentation.activitySourceKey(for: event)
-        guard let resolvedAt = resolvingCutoffsBySourceKey[sourceKey] else {
-            return false
-        }
-
-        return resolvedAt > event.updatedAt
-    }
-
-    private static func shouldResolvingEventSupersedeDisplayState(_ displayState: DisplayState) -> Bool {
-        switch displayState {
-        case .needsReview, .permission:
-            return true
-        case .ready, .active, .completed, .blocked, .stale, .paused:
-            return false
-        }
-    }
-
-    private static func shouldResolvingEventSupersedeSessionDisplayState(_ displayState: DisplayState) -> Bool {
-        switch displayState {
-        case .needsReview, .permission:
-            return true
-        case .ready, .active, .completed, .blocked, .stale, .paused:
-            return false
-        }
-    }
-
-    private static func shouldCompletedEventSupersedeDisplayState(_ displayState: DisplayState) -> Bool {
-        switch displayState {
-        case .active, .needsReview, .permission:
-            return true
-        case .ready, .completed, .blocked, .stale, .paused:
-            return false
-        }
-    }
-
-    private static func isResolvingDisplayState(_ displayState: DisplayState) -> Bool {
-        switch displayState {
-        case .active, .completed:
-            return true
-        case .ready, .needsReview, .permission, .blocked, .stale, .paused:
-            return false
-        }
-    }
-
-    private static func isResolvingSignal(_ signal: AgentSignal) -> Bool {
-        switch signal {
-        case .thinking, .working, .toolDone, .subagentStart, .subagentStop, .done:
-            return true
-        case .idle, .attention, .notification, .permission,
-             .permissionRequest, .blocked, .failure, .error, .exception, .maxTokens,
-             .stale, .sessionStart, .sessionEnd, .turnEnd, .off, .pause, .paused:
-            return false
-        }
-    }
-
-    private func deduplicatedRecentEvents(_ events: [RecentSignalEvent]) -> [RecentSignalEvent] {
-        var acceptedAtByKey: [String: Date] = [:]
-        var result: [RecentSignalEvent] = []
-
-        for event in events {
-            let key = Self.recentEventDeduplicationKey(for: event)
-            if let acceptedAt = acceptedAtByKey[key],
-               abs(acceptedAt.timeIntervalSince(event.updatedAt)) <= Self.recentEventDeduplicationWindow {
-                continue
-            }
-
-            acceptedAtByKey[key] = event.updatedAt
-            result.append(event)
-        }
-
-        return result
-    }
-
-    private static func recentEventDeduplicationKey(for event: RecentSignalEvent) -> String {
-        let sourceKey = ActivityPresentation.activitySourceKey(for: event)
-        let semanticEvent = normalizedEventDeduplicationKey(event.event, signal: event.signal)
-        return "\(sourceKey)|\(semanticEvent)"
-    }
-
-    private static func normalizedEventDeduplicationKey(_ event: String?, signal: AgentSignal) -> String {
-        guard let event,
-              !event.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            return signal.normalizedAggregateSignal.rawValue
-        }
-
-        let normalized = event
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: " ", with: "-")
-
-        if normalized.hasPrefix("desktoptoolcall:") {
-            return "tool-call:\(String(normalized.dropFirst("desktoptoolcall:".count)))"
-        }
-
-        if normalized.hasPrefix("pretooluse:") {
-            return "tool-call:\(String(normalized.dropFirst("pretooluse:".count)))"
-        }
-
-        if normalized.hasPrefix("posttooluse:") || normalized.hasPrefix("posttoolusefailure:") {
-            return normalized.hasPrefix("posttoolusefailure:") ? "tool-failed" : "tool-done"
-        }
-
-        switch normalized {
-        case "desktopthinking", "desktoptaskstarted", "userpromptsubmit":
-            return "thinking"
-        case "desktopmessage", "pretooluse", "tooluse", "tool-use":
-            return "tool-call"
-        case "desktoptooldone", "posttooluse", "posttoolbatch", "function-call-output":
-            return "tool-done"
-        case "desktoptaskcomplete", "desktopturnaborted", "stop", "taskcompleted":
-            return "done"
-        case "permissionrequest", "permission-request":
-            return "permission"
-        default:
-            return "\(signal.normalizedAggregateSignal.rawValue):\(normalized)"
-        }
+        ActivityPresentation.isManualIdleControlEvent(event)
     }
 
     var activeSignalLightAgentScopes: Set<SignalLightAgentScope> {
@@ -4978,7 +4311,7 @@ final class MenuBarStatusModel: ObservableObject {
     }
 
     var displaySignalLightAgentScopes: Set<SignalLightAgentScope> {
-        signalLightAgentScopesForDisplay(from: combinedDisplaySessions())
+        interventionReport.displayScopes
     }
 
     var signalLightAgentMenuTitle: String {
@@ -5033,27 +4366,7 @@ final class MenuBarStatusModel: ObservableObject {
         storedScopes: [String]?,
         legacyScope: String?
     ) -> Set<SignalLightAgentScope> {
-        let selectableScopes = Set(SignalLightAgentScope.selectableCases)
-        let resolvedStoredScopes = Set(
-            (storedScopes ?? [])
-                .compactMap(SignalLightAgentScope.init(rawValue:))
-                .flatMap(\.expandedSelection)
-        )
-        .intersection(selectableScopes)
-
-        if !resolvedStoredScopes.isEmpty {
-            return resolvedStoredScopes
-        }
-
-        if let legacyScope,
-           let legacySelection = SignalLightAgentScope(rawValue: legacyScope) {
-            let resolvedLegacyScopes = legacySelection.expandedSelection.intersection(selectableScopes)
-            if !resolvedLegacyScopes.isEmpty {
-                return resolvedLegacyScopes
-            }
-        }
-
-        return SignalLightAgentScope.defaultSelectedCases
+        InterventionDisplay.resolvedScopes(storedScopes: storedScopes, legacyScope: legacyScope)
     }
 
     private static func resolvedSignalLightAgentSelectionMode(
@@ -5061,142 +4374,11 @@ final class MenuBarStatusModel: ObservableObject {
         storedScopes: [String]?,
         legacyScope: String?
     ) -> SignalLightAgentSelectionMode {
-        if let storedMode,
-           let mode = SignalLightAgentSelectionMode(rawValue: storedMode) {
-            return mode
-        }
-
-        if storedScopes != nil || legacyScope != nil {
-            return .manual
-        }
-
-        return .following
-    }
-
-    private func signalLightAgentScopesForDisplay(from displaySessions: [SessionStatus]) -> Set<SignalLightAgentScope> {
-        switch signalLightAgentSelectionMode {
-        case .manual:
-            return signalLightAgentScopes.intersection(Set(SignalLightAgentScope.visibleCases))
-        case .following:
-            guard let scope = followedSignalLightAgentScope(in: displaySessions) else {
-                return []
-            }
-            return [scope]
-        }
-    }
-
-    private func followedSignalLightAgentScope(in displaySessions: [SessionStatus]) -> SignalLightAgentScope? {
-        struct Candidate {
-            let scope: SignalLightAgentScope
-            let priority: Int
-            let updatedAt: Date
-        }
-
-        let candidates = SignalLightAgentScope.visibleCases.compactMap { scope -> Candidate? in
-            let matchingSessions = displaySessions.filter {
-                scope.matches(session: $0) && Self.isFollowCandidateSession($0)
-            }
-
-            guard let bestSession = matchingSessions.max(by: { lhs, rhs in
-                if lhs.signal.displayState.priority != rhs.signal.displayState.priority {
-                    return lhs.signal.displayState.priority < rhs.signal.displayState.priority
-                }
-                return lhs.updatedAt < rhs.updatedAt
-            }) else {
-                return nil
-            }
-
-            return Candidate(
-                scope: scope,
-                priority: bestSession.signal.displayState.priority,
-                updatedAt: bestSession.updatedAt
-            )
-        }
-
-        return candidates.max { lhs, rhs in
-            if lhs.priority != rhs.priority {
-                return lhs.priority < rhs.priority
-            }
-            if lhs.updatedAt != rhs.updatedAt {
-                return lhs.updatedAt < rhs.updatedAt
-            }
-            return lhs.scope.sortOrder > rhs.scope.sortOrder
-        }?.scope
-    }
-
-    private static func isFollowCandidateSession(_ session: SessionStatus) -> Bool {
-        if isSignalTestEvent(session.lastEvent) {
-            return false
-        }
-
-        if ActivityPresentation.isPresenceOnlySession(session) {
-            return false
-        }
-
-        switch session.signal.displayState {
-        case .paused:
-            return false
-        case .ready, .active, .completed, .needsReview, .permission, .blocked, .stale:
-            return true
-        }
-    }
-
-    private func aggregateForSignalLightScopes(
-        sessions: [SessionStatus],
-        fallback: AgentSignal,
-        scopes: Set<SignalLightAgentScope>
-    ) -> AgentSignal {
-        let selectedSignals = sessions.compactMap { session -> AgentSignal? in
-            guard Self.session(session, matches: scopes) else { return nil }
-            return session.signal
-        }
-
-        if let aggregate = selectedSignals
-            .max(by: { lhs, rhs in lhs.displayState.priority < rhs.displayState.priority })?
-            .normalizedAggregateSignal {
-            return aggregate
-        }
-
-        return fallbackForEmptySignalLightSessions(fallback, scopes: scopes)
-    }
-
-    private func aggregateForSessions(
-        _ sessions: [SessionStatus],
-        fallback: AgentSignal
-    ) -> AgentSignal {
-        if let aggregate = sessions
-            .map(\.signal)
-            .max(by: { lhs, rhs in lhs.displayState.priority < rhs.displayState.priority })?
-            .normalizedAggregateSignal {
-            return aggregate
-        }
-
-        return fallbackForEmptyDisplaySessions(fallback)
-    }
-
-    private func fallbackForEmptyDisplaySessions(_ fallback: AgentSignal) -> AgentSignal {
-        switch fallback.displayState {
-        case .paused, .blocked:
-            return fallback.normalizedAggregateSignal
-        case .ready, .active, .completed, .needsReview, .permission, .stale:
-            return .idle
-        }
-    }
-
-    private func fallbackForEmptySignalLightSessions(
-        _ fallback: AgentSignal,
-        scopes: Set<SignalLightAgentScope>
-    ) -> AgentSignal {
-        if signalLightAgentSelectionMode == .manual, !scopes.isEmpty {
-            switch fallback.displayState {
-            case .paused:
-                return fallback.normalizedAggregateSignal
-            case .ready, .active, .completed, .needsReview, .permission, .blocked, .stale:
-                return .idle
-            }
-        }
-
-        return fallbackForEmptyDisplaySessions(fallback)
+        InterventionDisplay.resolvedSelectionMode(
+            storedMode: storedMode,
+            storedScopes: storedScopes,
+            legacyScope: legacyScope
+        )
     }
 
     private func sessionMatchesSignalLightScopes(_ session: SessionStatus) -> Bool {
@@ -6415,79 +5597,6 @@ final class MenuBarStatusModel: ObservableObject {
             }
             return ($0.updatedAt ?? .distantPast) < ($1.updatedAt ?? .distantPast)
         }
-    }
-
-    private static func shouldIncludeStoredSessionInDisplay(
-        _ session: SessionStatus,
-        now: Date,
-        completedDisplayWindow: TimeInterval = 30,
-        transientAlertDisplayWindow: TimeInterval = 30
-    ) -> Bool {
-        if isSignalTestEvent(session.lastEvent) {
-            return false
-        }
-
-        if isPresenceSession(session) {
-            return false
-        }
-
-        switch session.signal.displayState {
-        case .active:
-            return now.timeIntervalSince(session.updatedAt) <= activeDisplayWindow(for: session)
-        case .completed:
-            return now.timeIntervalSince(session.updatedAt) <= completedDisplayWindow
-        case .needsReview, .permission, .blocked, .stale:
-            return now.timeIntervalSince(session.updatedAt) <= transientAlertDisplayWindow
-        case .ready, .paused:
-            return false
-        }
-    }
-
-    private static func shouldSuppressDesktopPresence(
-        for session: SessionStatus,
-        now: Date,
-        transientAlertDisplayWindow: TimeInterval = 30
-    ) -> Bool {
-        if isSignalTestEvent(session.lastEvent) {
-            return false
-        }
-
-        switch session.signal.displayState {
-        case .active:
-            return now.timeIntervalSince(session.updatedAt) <= activeDisplayWindow(for: session)
-        case .needsReview, .permission:
-            return now.timeIntervalSince(session.updatedAt) <= transientAlertDisplayWindow
-        case .blocked, .stale:
-            return true
-        case .ready, .completed, .paused:
-            return false
-        }
-    }
-
-    private static func isPresenceSession(_ session: SessionStatus) -> Bool {
-        session.sessionID.hasPrefix("desktop-app:")
-            || session.sessionID.hasPrefix("platform-presence:")
-            || session.lastEvent == "DesktopAppRunning"
-            || session.lastEvent?.hasPrefix("PlatformPresence:") == true
-    }
-
-    private static func activeDisplayWindow(for session: SessionStatus) -> TimeInterval {
-        isPassiveActiveSession(session) ? passiveActiveDisplayWindow : activeDisplayWindow
-    }
-
-    private static func isPassiveActiveSession(_ session: SessionStatus) -> Bool {
-        guard session.signal.displayState == .active else { return false }
-
-        switch session.lastEvent {
-        case "DesktopActivityHeartbeat", "DesktopThinking", "DesktopMessage":
-            return true
-        default:
-            return false
-        }
-    }
-
-    private static func isSignalTestEvent(_ event: String?) -> Bool {
-        event == "SignalTest" || event == "SignalTestOff"
     }
 
     private static func normalizedAgentKey(_ agent: String?, fallback: String) -> String {

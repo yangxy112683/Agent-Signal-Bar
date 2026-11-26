@@ -11780,7 +11780,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
                     "completed": SessionRecord(signal: .done, updatedAt: now),
                     "active": SessionRecord(signal: .working, updatedAt: now)
                 ]
-            ).aggregateSignal() == .working
+            ).aggregateSignal() == .done
         )
         XCTAssert(
             SignalStateDocument(
@@ -11905,7 +11905,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             lastEvent: "ManualTestDone"
         )
 
-        XCTAssertEqual(snapshot.aggregate, .thinking)
+        XCTAssertEqual(snapshot.aggregate, .done)
         XCTAssertEqual(snapshot.sessions.first { $0.sessionID == "codex-xcode:needs-review" }?.signal, .done)
         XCTAssertEqual(snapshot.sessions.first { $0.sessionID == "codex-desktop:active" }?.signal, .thinking)
         XCTAssertFalse(snapshot.sessions.contains { $0.signal.displayState == .needsReview })
@@ -12579,6 +12579,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     func testClaudeHookMappingCoversAttentionAndStopFailures() {
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "UserPromptExpansion", payload: [:]) == .thinking)
+        XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "InstructionsLoaded", payload: [:]) == .sessionStart)
+        XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "InstructionsLoaded", payload: [:]).displayState == .ready)
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "Notification", payload: [:]).displayState == .needsReview)
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "Stop", payload: [:]) == .done)
         XCTAssert(ClaudeHookAdapter.chooseSignal(eventName: "StopFailure", payload: [:]) == .blocked)
@@ -12686,9 +12688,9 @@ final class AgentSignalLightCoreTests: XCTestCase {
         XCTAssert(SignalLampAnimation.intensity(.green, signal: .thinking, tick: 1) == 0)
         XCTAssert(SignalLampAnimation.intensity(.green, signal: .working, tick: 0) == 1)
         XCTAssert(SignalLampAnimation.intensity(.green, signal: .working, tick: 3) == 0)
-        XCTAssert(SignalLampAnimation.intensity(.green, signal: .done, tick: 0) == 1)
-        XCTAssert(SignalLampAnimation.intensity(.green, signal: .done, tick: 3) == 1)
-        XCTAssert(SignalLampAnimation.intensity(.yellow, signal: .done, tick: 0) == 0)
+        XCTAssert(SignalLampAnimation.intensity(.yellow, signal: .done, tick: 0) == 1)
+        XCTAssert(SignalLampAnimation.intensity(.yellow, signal: .done, tick: 2) == 0)
+        XCTAssert(SignalLampAnimation.intensity(.green, signal: .done, tick: 0) == 0)
         XCTAssert(SignalLampAnimation.intensity(.red, signal: .done, tick: 0) == 0)
     }
 
@@ -12871,8 +12873,8 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     func testSharedLampAnimationUsesV2BlinkCadences() {
-        XCTAssert(SignalLampAnimation.isLit(.green, signal: .done, tick: 0))
-        XCTAssert(!SignalLampAnimation.isLit(.yellow, signal: .done, tick: 0))
+        XCTAssert(SignalLampAnimation.isLit(.yellow, signal: .done, tick: 0))
+        XCTAssert(!SignalLampAnimation.isLit(.green, signal: .done, tick: 0))
         XCTAssert(!SignalLampAnimation.isLit(.red, signal: .done, tick: 0))
 
         XCTAssert(SignalLampAnimation.isLit(.yellow, signal: .attention, tick: 0))
@@ -13831,7 +13833,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
         XCTAssertEqual(model.signalLightAgentSelectionMode, .manual)
         XCTAssertEqual(model.displaySignalLightAgentScopes, [.codexDesktop, .codexCLI])
-        XCTAssertEqual(model.displaySnapshot.aggregate, .working)
+        XCTAssertEqual(model.displaySnapshot.aggregate, .done)
         XCTAssertEqual(
             Set(model.displaySnapshot.sessions.map(\.sessionID)),
             ["codex-desktop:thread", "codex-cli:thread"]
@@ -14422,6 +14424,284 @@ final class AgentSignalLightCoreTests: XCTestCase {
             "Only the genuinely active session should count toward the info badge, not long-expired ghost sessions."
         )
         XCTAssertEqual(visibleSessions.first?.sessionID, "codebuddy:current-thread")
+    }
+
+    @MainActor
+    func testGhostClaudeInstructionsLoadedDoesNotDriveNeedsReviewLight() throws {
+        // Live repro 2026-11-19: installed v1.6.2 kept a 12h-old
+        // claude-code InstructionsLoaded attention event in recent-events
+        // after the session was pruned. Event-history fallback treated
+        // needs_review as immortal, so the floating light stayed yellow
+        // with no claude process. Light Agent was manual
+        // [codex-cli, claude-code, local-script]; local-script also matches
+        // cursor, so the ghost Claude alert outranked the live cursor session.
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let twelveHoursAgo = now.addingTimeInterval(-12 * 60 * 60)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "8bea7b00-26d2-484f-8233-addfcdd93aa2": SessionRecord(
+                        agent: "cursor",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "667783F5-8A16-4E42-AF13-4AD11D9EF589",
+                        sessionID: "6e7c522e-7bbe-4f79-ba39-21358c35589f",
+                        agent: "claude-code",
+                        signal: .attention,
+                        event: "InstructionsLoaded",
+                        updatedAt: twelveHoursAgo
+                    ),
+                    SignalEventRecord(
+                        id: "current-cursor",
+                        sessionID: "8bea7b00-26d2-484f-8233-addfcdd93aa2",
+                        agent: "cursor",
+                        signal: .working,
+                        event: "PreToolUse",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.codexCLI, .claudeCode, .localScript])
+
+        XCTAssertNotEqual(
+            model.displaySnapshot.aggregate.displayState,
+            .needsReview,
+            "A pruned Claude InstructionsLoaded event must not keep the light yellow after the attention display window."
+        )
+        XCTAssertFalse(
+            model.displaySnapshot.sessions.contains { session in
+                (session.agent ?? "").localizedCaseInsensitiveContains("claude")
+            },
+            "Display sessions must not resurrect the ghost Claude session from recent-events history."
+        )
+        XCTAssertFalse(
+            ActivityPresentation.visibleRunningSessions(from: model.activitySnapshot).contains { session in
+                (session.agent ?? "").localizedCaseInsensitiveContains("claude")
+            },
+            "The info badge must not count the ghost Claude session as running."
+        )
+
+        model.setSignalLightAgentScopes([.claudeCode])
+        XCTAssertEqual(
+            model.displaySnapshot.aggregate,
+            .idle,
+            "With only Claude selected and no live Claude session, the light must fall back to idle, not needs_review."
+        )
+        XCTAssertEqual(model.displaySnapshot.sessions, [])
+    }
+
+    func testCompletedClaudeSessionStaysVisibleWhileOtherSessionsWork() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "claude-code:finished": SessionRecord(
+                        agent: "claude-code",
+                        signal: .done,
+                        lastEvent: "Stop",
+                        updatedAt: now.addingTimeInterval(-10)
+                    ),
+                    "claude-code:running": SessionRecord(
+                        agent: "claude-code",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now.addingTimeInterval(-2)
+                    ),
+                    "codex-cli:running-a": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now.addingTimeInterval(-1)
+                    ),
+                    "codex-cli:running-b": SessionRecord(
+                        agent: "codex-cli",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let report = InterventionDisplay.derive(
+            recorded: fixture.store.readSnapshot(),
+            preferences: InterventionDisplay.Preferences(
+                selectionMode: .manual,
+                scopes: [.codexCLI, .claudeCode, .localScript]
+            ),
+            presenceSessions: [],
+            now: now,
+            completedDisplayWindow: 30,
+            transientAlertDisplayWindow: 30,
+            presenceIncluded: false
+        )
+
+        XCTAssertEqual(
+            report.displaySnapshot.aggregate.displayState,
+            .completed,
+            "另一个 Claude 会话更新得更晚、Codex 都在跑时，完成提示仍要显示"
+        )
+        XCTAssertEqual(
+            SignalLampAnimation.hardwareCommand(signal: report.displaySnapshot.aggregate, tick: 0),
+            .blinkYellow
+        )
+    }
+
+    func testInterventionDisplayDropsGhostClaudeInstructionsLoaded() throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        let twelveHoursAgo = now.addingTimeInterval(-12 * 60 * 60)
+
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "8bea7b00-26d2-484f-8233-addfcdd93aa2": SessionRecord(
+                        agent: "cursor",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ],
+                events: [
+                    SignalEventRecord(
+                        id: "667783F5-8A16-4E42-AF13-4AD11D9EF589",
+                        sessionID: "6e7c522e-7bbe-4f79-ba39-21358c35589f",
+                        agent: "claude-code",
+                        signal: .attention,
+                        event: "InstructionsLoaded",
+                        updatedAt: twelveHoursAgo
+                    ),
+                    SignalEventRecord(
+                        id: "current-cursor",
+                        sessionID: "8bea7b00-26d2-484f-8233-addfcdd93aa2",
+                        agent: "cursor",
+                        signal: .working,
+                        event: "PreToolUse",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let recorded = fixture.store.readSnapshot()
+        let mixed = InterventionDisplay.derive(
+            recorded: recorded,
+            preferences: InterventionDisplay.Preferences(
+                selectionMode: .manual,
+                scopes: [.codexCLI, .claudeCode, .localScript]
+            ),
+            presenceSessions: [],
+            now: now,
+            completedDisplayWindow: fixture.store.completedTTLSeconds,
+            transientAlertDisplayWindow: fixture.store.attentionTTLSeconds,
+            presenceIncluded: false
+        )
+
+        XCTAssertNotEqual(mixed.displaySnapshot.aggregate.displayState, .needsReview)
+        XCTAssertFalse(
+            mixed.displaySnapshot.sessions.contains { session in
+                (session.agent ?? "").localizedCaseInsensitiveContains("claude")
+            }
+        )
+        XCTAssertTrue(
+            mixed.exclusions.contains { exclusion in
+                exclusion.reason == "attention_window_expired"
+                    && (exclusion.agent ?? "").localizedCaseInsensitiveContains("claude")
+            },
+            "CLI display dump must name the expired Claude event so lamp vs status is diagnosable."
+        )
+
+        let claudeOnly = InterventionDisplay.derive(
+            recorded: recorded,
+            preferences: InterventionDisplay.Preferences(
+                selectionMode: .manual,
+                scopes: [.claudeCode]
+            ),
+            presenceSessions: [],
+            now: now,
+            completedDisplayWindow: fixture.store.completedTTLSeconds,
+            transientAlertDisplayWindow: fixture.store.attentionTTLSeconds,
+            presenceIncluded: false
+        )
+        XCTAssertEqual(claudeOnly.displaySnapshot.aggregate, .idle)
+        XCTAssertEqual(claudeOnly.displaySnapshot.sessions, [])
+    }
+
+    @MainActor
+    func testInterventionDisplayMatchesMenuBarDisplaySnapshot() throws {
+        let savedDefaults = clearSignalLightSelectionDefaults()
+        defer { restoreSignalLightSelectionDefaults(savedDefaults) }
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let now = Date()
+        try writeDocument(
+            SignalStateDocument(
+                aggregate: .working,
+                updatedAt: now,
+                sessions: [
+                    "cursor-main": SessionRecord(
+                        agent: "cursor",
+                        signal: .working,
+                        lastEvent: "PreToolUse",
+                        updatedAt: now
+                    )
+                ]
+            ),
+            in: fixture.store
+        )
+
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        model.setSignalLightAgentScopes([.codexCLI, .claudeCode, .localScript])
+
+        let report = InterventionDisplay.derive(
+            recorded: model.snapshot,
+            preferences: InterventionDisplay.Preferences(
+                selectionMode: model.signalLightAgentSelectionMode,
+                scopes: model.signalLightAgentScopes,
+                isCodexDesktopMonitoringEnabled: model.isCodexDesktopMonitoringEnabled,
+                isClaudeDesktopMonitoringEnabled: model.isClaudeDesktopMonitoringEnabled
+            ),
+            presenceSessions: model.desktopAppSessions,
+            now: Date(),
+            completedDisplayWindow: model.completedDisplayWindow,
+            transientAlertDisplayWindow: model.transientAlertDisplayWindow,
+            presenceIncluded: true
+        )
+
+        XCTAssertEqual(report.displaySnapshot.aggregate, model.displaySnapshot.aggregate)
+        XCTAssertEqual(
+            report.displaySnapshot.sessions.map(\.sessionID),
+            model.displaySnapshot.sessions.map(\.sessionID)
+        )
+        XCTAssertEqual(report.displayScopes, model.displaySignalLightAgentScopes)
     }
 
     /// Closing Ghostty / zellij does not fire CodeBuddy `SessionEnd`. The last
@@ -17094,23 +17374,45 @@ final class AgentSignalLightCoreTests: XCTestCase {
 
     // MARK: - Signal Light BLE
 
-    func testDisplayStateBLEMappingIsExhaustiveAndMatchesADR0002() {
-        // 验证 ADR-0002 / CONTEXT.md 中的 DisplayState → BLE Command 映射表
-        // 在硬件命令集合只有 4 种的约束下是完整且符合预期的。
-        XCTAssertEqual(DisplayState.ready.bleCommand, .green)
-        XCTAssertEqual(DisplayState.active.bleCommand, .green)
-        XCTAssertEqual(DisplayState.completed.bleCommand, .green)
-        XCTAssertEqual(DisplayState.needsReview.bleCommand, .blinkYellow)
-        XCTAssertEqual(DisplayState.stale.bleCommand, .blinkYellow)
-        XCTAssertEqual(DisplayState.permission.bleCommand, .blinkRed)
-        XCTAssertEqual(DisplayState.blocked.bleCommand, .blinkRed)
-        XCTAssertEqual(DisplayState.paused.bleCommand, .off)
+    func testHardwareCommandMatchesSoftwareLampEffects() {
+        XCTAssertEqual(SignalLampAnimation.hardwareCommand(signal: .idle, tick: 0), .green)
+        XCTAssertEqual(SignalLampAnimation.hardwareCommand(signal: .off, tick: 0), .off)
+        XCTAssertEqual(SignalLampAnimation.hardwareCommand(signal: .done, tick: 0), .blinkYellow)
+        XCTAssertEqual(SignalLampAnimation.hardwareCommand(signal: .attention, tick: 0), .blinkYellow)
+        XCTAssertEqual(SignalLampAnimation.hardwareCommand(signal: .stale, tick: 0), .blinkYellow)
+        XCTAssertEqual(SignalLampAnimation.hardwareCommand(signal: .permission, tick: 0), .blinkRed)
+        XCTAssertEqual(SignalLampAnimation.hardwareCommand(signal: .blocked, tick: 0), .blinkRed)
 
-        // 验证所有 DisplayState case 都有对应映射（编译期已保证 exhaustiveness，
-        // 这里再确认 bleCommand 对每个 case 都不崩溃）。
-        for state in DisplayState.allCases {
-            _ = state.bleCommand
-        }
+        let greenFlash = SignalEffectCustomization(activeEffect: .greenSlowFlash)
+        XCTAssertEqual(
+            SignalLampAnimation.hardwareCommand(signal: .working, tick: 0, customization: greenFlash),
+            .green
+        )
+        XCTAssertEqual(
+            SignalLampAnimation.hardwareCommand(signal: .working, tick: 3, customization: greenFlash),
+            .green,
+            "绿灯闪烁的灭相在硬件上仍是常亮"
+        )
+
+        let yellowDone = SignalEffectCustomization(completedEffect: .yellowSteady)
+        XCTAssertEqual(
+            SignalLampAnimation.hardwareCommand(signal: .done, tick: 0, customization: yellowDone),
+            .blinkYellow
+        )
+
+        let cycle = SignalEffectCustomization(activeEffect: .trafficCycle)
+        XCTAssertEqual(
+            SignalLampAnimation.hardwareCommand(signal: .working, tick: 0, customization: cycle),
+            .blinkRed
+        )
+        XCTAssertEqual(
+            SignalLampAnimation.hardwareCommand(signal: .working, tick: 4, customization: cycle),
+            .blinkYellow
+        )
+        XCTAssertEqual(
+            SignalLampAnimation.hardwareCommand(signal: .working, tick: 8, customization: cycle),
+            .green
+        )
     }
 
     func testSignalLightBLECommandPayloadIsUppercaseASCIITerminatedWithNewline() {
@@ -17190,6 +17492,30 @@ final class AgentSignalLightCoreTests: XCTestCase {
                 "重连策略在 attempt \(attempt) 不应返回 0 或负数（无限重试）"
             )
         }
+    }
+
+    func testDisconnectWithNoCurrentPeripheralNotifiesReconnect() {
+        XCTAssertEqual(
+            SignalLightBLEReconnectPolicy.disconnectAction(
+                disconnectedID: "46156A84-904B-6122-31B4-747D4ACAD774",
+                currentID: nil,
+                isReconnecting: false
+            ),
+            .notifyReconnect,
+            "App 已经没有握着外设时，断连回调必须通知重连，不能当成过期事件丢掉"
+        )
+    }
+
+    func testDisconnectDuringCancelDoesNotNotifyReconnect() {
+        XCTAssertEqual(
+            SignalLightBLEReconnectPolicy.disconnectAction(
+                disconnectedID: "46156A84-904B-6122-31B4-747D4ACAD774",
+                currentID: nil,
+                isReconnecting: true
+            ),
+            .finishCancel,
+            "主动 cancel 后的断连由 connect 接着走，不要再通知上层开一条重连"
+        )
     }
 
     @MainActor
@@ -17448,11 +17774,14 @@ final class AgentSignalLightCoreTests: XCTestCase {
     // MARK: - Signal Light BLE Command Deduplication (Issue #6)
 
     @MainActor
-    func testDedupSkipsWriteWhenDisplayStateMapsToSameBLECommand() async throws {
-        // 验证：active ↔ completed 都映射到 GREEN，切换时不应触发额外写入
+    func testCompletedDefaultWritesBlinkYellowInsteadOfReusingGreen() async throws {
+        // 验证：working → GREEN，done → BLINK_YELLOW，完成态必须改写硬件
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let now = Date()
+
+        UserDefaults.standard.removeObject(forKey: "completedSignalEffect")
+        UserDefaults.standard.set(2, forKey: "signalEffectDefaultsVersion")
 
         // 初始：aggregate = working（→ active → GREEN）
         try writeDocument(
@@ -17473,6 +17802,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
 
         let model = makeMenuBarStatusModel(store: fixture.store)
+        XCTAssertEqual(model.completedSignalEffect, .yellowPulse)
         // 清空保存的设备 ID，避免启动重连干扰
         UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey)
         defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
@@ -17491,7 +17821,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
             "初始 working 状态应写入 GREEN 命令至少一次"
         )
 
-        // 切换到 done（→ completed → GREEN，命令相同）
+        // 切换到 done（→ completed → BLINK_YELLOW）
         try writeDocument(
             SignalStateDocument(
                 aggregate: .done,
@@ -17508,14 +17838,17 @@ final class AgentSignalLightCoreTests: XCTestCase {
             ),
             in: fixture.store
         )
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        let deadline = Date().addingTimeInterval(2)
+        while model.snapshot.aggregate.displayState != .completed && Date() < deadline {
+            model.reload()
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
 
-        // GREEN 命令次数不应增加（去重生效）
-        let greenCommandCountAfter = commander.sentCommands.filter { $0 == .green }.count
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate.displayState, .completed)
         XCTAssertEqual(
-            greenCommandCountAfter,
-            greenCommandCount,
-            "active ↔ completed 都映射到 GREEN，命令相同时不应触发额外写入"
+            commander.sentCommands.last,
+            .blinkYellow,
+            "默认完成灯效是黄灯闪，硬件应写入 BLINK_YELLOW"
         )
     }
 
@@ -17730,221 +18063,6 @@ final class AgentSignalLightCoreTests: XCTestCase {
         )
     }
 
-    // MARK: - Hardware Signal Light Debug
-
-    @MainActor
-    func testHardwareDebugCommandSendsImmediately() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        model.setSignalLightBLEEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        controller.setHardwareDebugCommand(.blinkYellow)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        XCTAssertEqual(commander.sentCommands.last, .blinkYellow, "点击硬件调试按钮应立即发送 BLINK_YELLOW")
-        XCTAssertTrue(controller.isHardwareDebugModeEnabled, "发送命令后应进入硬件调试模式")
-        XCTAssertEqual(controller.hardwareDebugCommand, .blinkYellow, "控制器应记录当前调试命令")
-    }
-
-    @MainActor
-    func testHardwareDebugModeEnabledLocksCurrentAggregate() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        model.setSignalLightBLEEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        // 当前 aggregate 为 idle -> ready -> GREEN
-        controller.setHardwareDebugModeEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        XCTAssertTrue(controller.isHardwareDebugModeEnabled)
-        XCTAssertEqual(controller.hardwareDebugCommand, .green, "启用硬件调试时未指定命令应锁定为当前聚合命令 GREEN")
-        XCTAssertEqual(commander.sentCommands.last, .green, "应发送 GREEN 作为锁定命令")
-    }
-
-    @MainActor
-    func testHardwareDebugModeDisabledResumesAggregate() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        model.setSignalLightBLEEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        controller.setHardwareDebugCommand(.blinkRed)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        controller.setHardwareDebugModeEnabled(false)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        XCTAssertFalse(controller.isHardwareDebugModeEnabled)
-        XCTAssertNil(controller.hardwareDebugCommand, "退出调试模式后应清空调试命令")
-        XCTAssertEqual(commander.sentCommands.last, .green, "退出调试模式后应恢复发送聚合命令 GREEN")
-    }
-
-    @MainActor
-    func testHardwareDebugModeOverridesSnapshotChanges() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        model.setSignalLightBLEEnabled(true)
-        try? await Task.sleep(nanoseconds: 300_000_000)
-
-        // 初始状态为 working -> active -> GREEN
-        _ = try fixture.store.applySessionSignal(.working, sessionID: "test", agent: "test", lastEvent: "PreToolUse")
-        model.reload()
-        try? await Task.sleep(nanoseconds: 300_000_000)
-
-        // 进入调试模式，手动锁定为 BLINK_YELLOW
-        controller.setHardwareDebugCommand(.blinkYellow)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        // 改变聚合状态为 blocked -> BLINK_RED
-        _ = try fixture.store.applySessionSignal(.blocked, sessionID: "test", agent: "test", lastEvent: "Error")
-        model.reload()
-        try? await Task.sleep(nanoseconds: 300_000_000)
-
-        // 调试模式下不应发送新的聚合命令
-        XCTAssertFalse(commander.sentCommands.contains(.blinkRed), "调试模式下 snapshot 变化不应发送 BLINK_RED 聚合命令")
-        XCTAssertEqual(controller.hardwareDebugCommand, .blinkYellow, "调试命令应保持为 BLINK_YELLOW")
-    }
-
-    @MainActor
-    func testHardwareDebugCommandIgnoredWhenBLEDisabled() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        // 明确保持蓝牙开关关闭
-        model.setSignalLightBLEEnabled(false)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        controller.setHardwareDebugCommand(.blinkYellow)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        XCTAssertTrue(commander.sentCommands.isEmpty, "蓝牙开关关闭时不应发送硬件调试命令")
-        XCTAssertFalse(controller.isHardwareDebugModeEnabled, "蓝牙关闭时也不应进入硬件调试模式")
-    }
-
-    @MainActor
-    func testHardwareDebugCommandSendsOnEveryClick() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        model.setSignalLightBLEEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        // 忽略启用蓝牙时 snapshot 订阅发送的初始 GREEN
-        commander.resetSentCommands()
-
-        controller.setHardwareDebugCommand(.blinkYellow)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        controller.setHardwareDebugCommand(.blinkYellow)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        XCTAssertEqual(commander.sentCommands, [.blinkYellow, .blinkYellow], "连续两次点击相同按钮应发送两条命令，不被去重吸收")
-    }
-
-    @MainActor
-    func testHardwareDebugCommandSendFailureTriggersReconnect() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        model.setSignalLightBLEEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        // 忽略启用蓝牙时 snapshot 订阅发送的初始 GREEN
-        commander.resetSentCommands()
-
-        // 先模拟连接成功
-        commander.setConnected(true)
-        // 让后续 send 失败
-        commander.setSendResult(false)
-
-        controller.setHardwareDebugCommand(.blinkRed)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        XCTAssertTrue(commander.sentCommands.contains(.blinkRed), "应尝试发送 BLINK_RED")
-        XCTAssertTrue(commander.scanAndConnectCallCount > 0 || commander.reconnectCallCount > 0, "发送失败后应启动重连流程")
-    }
-
-    @MainActor
-    func testHardwareDebugModeEnabledIsIdempotent() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        model.setSignalLightBLEEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        // 忽略启用蓝牙时 snapshot 订阅发送的初始 GREEN
-        commander.resetSentCommands()
-
-        controller.setHardwareDebugModeEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        controller.setHardwareDebugModeEnabled(true)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        XCTAssertTrue(controller.isHardwareDebugModeEnabled)
-        XCTAssertEqual(controller.hardwareDebugCommand, .green, "调试命令应保持为当前聚合命令 GREEN")
-        XCTAssertEqual(commander.sentCommands.filter { $0 == .green }.count, 1, "重复启用调试模式不应重复发送 GREEN")
-    }
-
-    @MainActor
-    func testHardwareDebugModeDisabledResumesSnapshotDriving() async throws {
-        let fixture = try makeTemporaryStore()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let model = makeMenuBarStatusModel(store: fixture.store)
-        let commander = FakeSignalLightCommander()
-        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
-        controller.activate()
-        model.setSignalLightBLEEnabled(true)
-        try? await Task.sleep(nanoseconds: 300_000_000)
-
-        // 初始为 working -> active -> GREEN
-        _ = try fixture.store.applySessionSignal(.working, sessionID: "test", agent: "test", lastEvent: "PreToolUse")
-        model.reload()
-        try? await Task.sleep(nanoseconds: 300_000_000)
-
-        // 进入调试模式并手动指定 BLINK_YELLOW
-        controller.setHardwareDebugCommand(.blinkYellow)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        // 退出调试模式
-        controller.setHardwareDebugModeEnabled(false)
-        try? await Task.sleep(nanoseconds: 200_000_000)
-
-        // 改变聚合状态为 blocked -> BLINK_RED
-        _ = try fixture.store.applySessionSignal(.blocked, sessionID: "test", agent: "test", lastEvent: "Error")
-        model.reload()
-        try? await Task.sleep(nanoseconds: 300_000_000)
-
-        XCTAssertFalse(controller.isHardwareDebugModeEnabled, "退出后应关闭调试模式")
-        XCTAssertNil(controller.hardwareDebugCommand, "退出后调试命令应为 nil")
-        XCTAssertTrue(commander.sentCommands.contains(.blinkRed), "退出调试模式后 snapshot 变化应发送 BLINK_RED 聚合命令")
-    }
-
     // MARK: - Hardware and Floating Light Consistency
 
     /// Regression: 软件灯效（悬浮窗/状态栏）已恢复绿灯，但硬件仍停留在 BLINK_YELLOW。
@@ -18073,6 +18191,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
         let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
         controller.activate()
         model.setSignalLightBLEEnabled(true)
+        model.setCompletedSignalEffect(.greenSteady)
         try? await Task.sleep(nanoseconds: 300_000_000)
         commander.resetSentCommands()
 
@@ -18129,7 +18248,7 @@ final class AgentSignalLightCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testHardwareDebugModeDecouplesFromFloatingLight() async throws {
+    func testCompletedYellowSteadyDrivesHardwareBlinkYellow() async throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let model = makeMenuBarStatusModel(store: fixture.store)
@@ -18141,28 +18260,25 @@ final class AgentSignalLightCoreTests: XCTestCase {
         commander.resetSentCommands()
         controller.resetBLECommandDedupStateForTesting()
 
-        // 悬浮窗为 green
-        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:test-decouple", agent: "codex-desktop", lastEvent: "TestDecouple")
+        let previousCompletedEffect = UserDefaults.standard.object(forKey: "completedSignalEffect")
+        defer {
+            if let previousCompletedEffect {
+                UserDefaults.standard.set(previousCompletedEffect, forKey: "completedSignalEffect")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "completedSignalEffect")
+            }
+        }
+        model.setCompletedSignalEffect(.yellowSteady)
+        _ = try fixture.store.applySessionSignal(.done, sessionID: "codex-desktop:yellow-done", agent: "codex-desktop", lastEvent: "AgentFinished")
         model.reload()
         try? await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate.displayState, .active)
 
-        // 硬件调试模式覆盖为 blinkRed
-        controller.setHardwareDebugCommand(.blinkRed)
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate.displayState, .active, "悬浮窗状态不应被硬件调试模式改变")
-        XCTAssertEqual(commander.sentCommands.last, .blinkRed, "硬件调试模式下应发送 blinkRed")
-        XCTAssertTrue(controller.isHardwareDebugModeEnabled, "应处于硬件调试模式")
-
-        // 退出硬件调试模式后恢复跟随悬浮窗
-        controller.setHardwareDebugModeEnabled(false)
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertEqual(commander.sentCommands.last, .green, "退出硬件调试模式后应恢复为 green")
-        XCTAssertFalse(controller.isHardwareDebugModeEnabled, "应退出硬件调试模式")
+        XCTAssertEqual(model.floatingSignalLightSnapshot.aggregate.displayState, .completed)
+        XCTAssertEqual(commander.sentCommands.last, .blinkYellow, "软件黄灯常亮应对硬件发 BLINK_YELLOW")
     }
 
     @MainActor
-    func testSoftwareDebugModeDoesNotAffectHardware() async throws {
+    func testSoftwareLightDebugDrivesHardware() async throws {
         let fixture = try makeTemporaryStore()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let model = makeMenuBarStatusModel(store: fixture.store)
@@ -18174,19 +18290,193 @@ final class AgentSignalLightCoreTests: XCTestCase {
         commander.resetSentCommands()
         controller.resetBLECommandDedupStateForTesting()
 
-        // 建立硬件为 green 的基准状态
         _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:test-sw", agent: "codex-desktop", lastEvent: "TestSW")
         model.reload()
         try? await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(commander.sentCommands.last, .green, "基准状态应为 green")
         commander.resetSentCommands()
 
-        // 软件调试模式只影响悬浮窗/状态栏，不应改变硬件命令
         model.setLightDebugModeEnabled(true)
+        model.previewDebugLight(
+            signal: .attention,
+            effectCustomization: SignalEffectCustomization(needsReviewEffect: .slowFlash)
+        )
         try? await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertTrue(model.isLightDebugModeEnabled, "应处于软件调试模式")
-        XCTAssertNil(commander.sentCommands.last, "软件调试模式不应触发新的硬件命令")
+        XCTAssertEqual(commander.sentCommands.last, .blinkYellow, "灯光调试黄灯应对硬件发 BLINK_YELLOW")
     }
+
+    @MainActor
+    func testSettingsLightDebugForcesHardwareWriteWhenMappedCommandIsUnchanged() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:debug-green", agent: "codex-desktop", lastEvent: "TestSW")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(commander.sentCommands.last, .green)
+        let greenWritesBeforeDebug = commander.sentCommands.filter { $0 == .green }.count
+
+        model.setLightDebugModeEnabled(true)
+        model.previewDebugLight(
+            signal: .working,
+            effectCustomization: SignalEffectCustomization(
+                thinkingEffect: .greenSteady,
+                activeEffect: .greenSteady
+            )
+        )
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        let greenWritesAfterDebug = commander.sentCommands.filter { $0 == .green }.count
+        XCTAssertGreaterThan(
+            greenWritesAfterDebug,
+            greenWritesBeforeDebug,
+            "设置页灯光调试点绿灯时，即使映射仍是 GREEN 也要再写一次硬件"
+        )
+    }
+
+    @MainActor
+    func testSettingsLightDebugDrivesHardwareWhenOnlyStatusBarIsTargeted() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:debug-status-bar", agent: "codex-desktop", lastEvent: "TestSW")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(commander.sentCommands.last, .green)
+
+        model.setLightDebugModeEnabled(true, targets: [.statusBar])
+        model.previewDebugLight(
+            signal: .attention,
+            effectCustomization: SignalEffectCustomization(needsReviewEffect: .slowFlash),
+            targets: [.statusBar]
+        )
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(
+            commander.sentCommands.last,
+            .blinkYellow,
+            "灯光调试只勾状态栏时，硬件也要跟调试色"
+        )
+    }
+
+    @MainActor
+    func testLightDebugYellowBlinkIsSentAfterDroppedWriteRecovers() async throws {
+        UserDefaults.standard.set("test-device-id", forKey: SignalLightBLEController.lastDeviceIDKey)
+        defer { UserDefaults.standard.removeObject(forKey: SignalLightBLEController.lastDeviceIDKey) }
+
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = DropWhenDisconnectedHangingScanCommander()
+        commander.hangScanUntilCancelled = true
+        commander.enqueueReconnectResults([false, true])
+        let controller = SignalLightBLEController(
+            model: model,
+            commander: commander,
+            clock: FakeSignalLightBLEClock(),
+            scanAndConnectTimeout: 0.15
+        )
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+
+        model.setLightDebugModeEnabled(true)
+        model.previewDebugLight(
+            signal: .attention,
+            effectCustomization: SignalEffectCustomization(needsReviewEffect: .slowFlash)
+        )
+
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        model.setSignalLightBLEEnabled(false)
+
+        XCTAssertEqual(
+            commander.sentCommands.last,
+            .blinkYellow,
+            "灯光调试点黄灯后，即使当时写失败，重连恢复也必须发出 BLINK_YELLOW"
+        )
+    }
+
+    @MainActor
+    func testLightDebugPreviewDoesNotRevertHardwareToIdleAfterSequenceEnds() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        commander.resetSentCommands()
+        controller.resetBLECommandDedupStateForTesting()
+
+        model.setLightDebugModeEnabled(true)
+        model.previewDebugLight(
+            signal: .attention,
+            effectCustomization: SignalEffectCustomization(needsReviewEffect: .slowFlash)
+        )
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(commander.sentCommands.last, .blinkYellow, "点黄灯后硬件应先收到 BLINK_YELLOW")
+
+        for _ in 0..<24 {
+            _ = model.advanceStatusLightSequenceForTesting()
+        }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(
+            model.statusLightOverride?.signal,
+            .attention,
+            "灯光调试点黄灯后，预览播完仍应停在黄灯，不能回到 idle"
+        )
+        XCTAssertEqual(
+            commander.sentCommands.last,
+            .blinkYellow,
+            "预览 24 帧结束后硬件不能被写成 GREEN"
+        )
+    }
+
+    @MainActor
+    func testLightDebugYellowSendsOffBeforeChangingFromGreen() async throws {
+        let fixture = try makeTemporaryStore()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let model = makeMenuBarStatusModel(store: fixture.store)
+        let commander = FakeSignalLightCommander()
+        let controller = SignalLightBLEController(model: model, commander: commander, clock: FakeSignalLightBLEClock())
+        controller.activate()
+        model.setSignalLightBLEEnabled(true)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        _ = try fixture.store.applySessionSignal(.working, sessionID: "codex-desktop:debug-off-bridge", agent: "codex-desktop", lastEvent: "TestSW")
+        model.reload()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(commander.sentCommands.last, .green)
+        commander.resetSentCommands()
+
+        model.setLightDebugModeEnabled(true)
+        model.setDebugLight(
+            signal: .attention,
+            effectCustomization: SignalEffectCustomization(needsReviewEffect: .slowFlash)
+        )
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(
+            Array(commander.sentCommands.suffix(2)),
+            [.off, .blinkYellow],
+            "绿灯切黄灯时必须先写 OFF，再写 BLINK_YELLOW"
+        )
+    }
+
 }
 
 @MainActor
@@ -18636,6 +18926,26 @@ private struct FakeOpenAIBrowserCookieImporter: OpenAIBrowserCookieImporting {
 
 /// 用于测试 `SignalLightBLEController` 的伪 commander，记录所有调用。
 /// 不接触真实 CoreBluetooth（参考 `FakeOpenAIBrowserCookieImporter` 模式）。
+private final class DropWhenDisconnectedHangingScanCommander: FakeSignalLightCommander, @unchecked Sendable {
+    var hangScanUntilCancelled = false
+
+    override func send(_ command: SignalLightBLECommand) async -> Bool {
+        let connected = await isConnected
+        guard connected else { return false }
+        return await super.send(command)
+    }
+
+    override func scanAndConnect() async -> Bool {
+        if hangScanUntilCancelled {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            return false
+        }
+        return await super.scanAndConnect()
+    }
+}
+
 private class FakeSignalLightCommander: SignalLightBLECommanding, @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var _scanAndConnectCallCount = 0

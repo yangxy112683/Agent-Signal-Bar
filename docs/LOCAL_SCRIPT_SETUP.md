@@ -83,7 +83,7 @@ like this:
   --event AgentFinished
 ```
 
-`done` is a green completed state and automatically returns to idle after the completed TTL.
+`done` is a yellow completed state and automatically returns to idle after the completed TTL.
 
 If the workflow can run one command around a job, use the wrapper instead:
 

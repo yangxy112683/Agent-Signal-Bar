@@ -29,7 +29,7 @@ _Avoid_: 过滤器、Agent 范围选项
 _Avoid_: 桌面会话、进程探测
 
 **告警（Alert）**:
-`permission` 与 `blocked`（红灯，需马上处理）以及 `needs_review`（黄灯，有空看一眼）。红灯/黄灯即表示用户需要介入，任何正常工作情况都不得覆盖告警。
+`permission` 与 `blocked`（红灯，需马上处理）以及 `needs_review`（黄灯，有空看一眼）。红灯/黄灯即表示用户需要介入，任何正常工作情况都不得覆盖告警。`completed`（任务完成，黄灯闪）在灯效时段内按告警去重，优先级高于 `active`，不会被其他正在跑的会话盖住。
 _Avoid_: 警告、红黄状态
 
 **灯效时段（Display Window）**:

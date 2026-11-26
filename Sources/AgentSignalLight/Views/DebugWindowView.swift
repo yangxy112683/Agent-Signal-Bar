@@ -21,8 +21,6 @@ struct DebugWindowView: View {
     @State private var debugProbeLogText: String = ""
     @State private var isStatusBarLightDebugTargetEnabled = true
     @State private var isFloatingLightDebugTargetEnabled = true
-    @State private var isHardwareLightDebugEnabled = false
-    @State private var selectedHardwareDebugCommand: SignalLightBLECommand?
     @State private var selectedLightDebugTest: LightDebugTest?
     @State private var isUsageAccountDetailsExpanded = false
     @State private var isShowingDiagnosticsExportConfirmation = false
@@ -3206,10 +3204,6 @@ struct DebugWindowView: View {
 
             Divider()
 
-            debugHardwareLightSection
-
-            Divider()
-
             debugProbeLogSection
 
             Divider()
@@ -3270,8 +3264,8 @@ struct DebugWindowView: View {
                 }
 
                 Text(model.text(
-                    "临时触发状态栏和悬浮信号灯，方便检查红、黄、绿灯效。",
-                    "Temporarily trigger the status bar and floating signal to inspect red, yellow, and green light effects."
+                    "临时触发状态栏、悬浮信号灯和已连接的硬件灯，方便检查红、黄、绿灯效。硬件没有绿灯闪烁时改为常亮。",
+                    "Temporarily trigger the status bar, floating signal, and connected hardware lamp. Green flash on hardware becomes steady green."
                 ))
                 .font(settingsDetailFont)
                 .foregroundStyle(.secondary)
@@ -3309,94 +3303,6 @@ struct DebugWindowView: View {
                 .opacity(isLightDebugEnabled ? 1 : 0.48)
             }
         }
-    }
-
-    private var debugHardwareLightSection: some View {
-        settingsSection(model.text("硬件信号灯调试", "Hardware Light Debug")) {
-            VStack(alignment: .leading, spacing: 12) {
-                settingRow(model.text("启用硬件调试", "Enable hardware debug")) {
-                    settingsSwitch(hardwareLightDebugEnabledBinding)
-                }
-
-                Text(model.text(
-                    "手动向已连接的蓝牙硬件发送原始命令，临时覆盖聚合状态。",
-                    "Manually send raw commands to the connected BLE hardware, temporarily overriding the aggregate state."
-                ))
-                .font(settingsDetailFont)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    hardwareDebugCommandButton(.green, title: model.text("绿灯", "Green"), color: .green)
-                    hardwareDebugCommandButton(.blinkYellow, title: model.text("黄闪", "Yellow Blink"), color: .yellow)
-                    hardwareDebugCommandButton(.blinkRed, title: model.text("红闪", "Red Blink"), color: .red)
-                    hardwareDebugCommandButton(.off, title: model.text("熄灭", "Off"), color: .primary)
-                }
-                .disabled(!canApplyHardwareDebugCommand)
-                .opacity(isHardwareLightDebugEnabled ? 1 : 0.48)
-
-                hardwareDebugStatusText
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var hardwareDebugStatusText: some View {
-        if !model.isSignalLightBLEEnabled {
-            Text(model.text(
-                "请先在「连接」中启用蓝牙信号灯。",
-                "Enable Bluetooth Signal Light in Connections first."
-            ))
-            .font(settingsDetailFont)
-            .foregroundStyle(.secondary)
-        } else if case .connected(let deviceName) = bleController.connectionState {
-            Text(model.text(
-                "已连接：\(deviceName ?? "蓝牙信号灯")",
-                "Connected: \(deviceName ?? "Bluetooth signal light")"
-            ))
-            .font(settingsDetailFont)
-            .foregroundStyle(.secondary)
-        } else {
-            Text(model.text(
-                "未连接蓝牙信号灯，按钮不可用。",
-                "Not connected to a Bluetooth signal light; buttons are disabled."
-            ))
-            .font(settingsDetailFont)
-            .foregroundStyle(.secondary)
-        }
-    }
-
-    private func hardwareDebugCommandButton(
-        _ command: SignalLightBLECommand,
-        title: String,
-        color: Color
-    ) -> some View {
-        let isSelected = selectedHardwareDebugCommand == command
-
-        return Button {
-            selectedHardwareDebugCommand = command
-            isHardwareLightDebugEnabled = true
-            bleController.setHardwareDebugCommand(command)
-        } label: {
-            Text(title)
-                .lineLimit(1)
-                .allowsTightening(true)
-                .minimumScaleFactor(0.72)
-                .font(settingsControlFont)
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .padding(.horizontal, 10)
-                .frame(width: diagnosticActionButtonWidth, height: dropdownControlHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(isSelected ? color : (model.isSettingsGlassEnabled ? glassControlTint : solidControlFill))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(isSelected ? color.opacity(0.7) : solidControlStroke, lineWidth: 0.5)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        }
-        .buttonStyle(.plain)
     }
 
     private var debugProbeLogSection: some View {
@@ -4296,7 +4202,7 @@ struct DebugWindowView: View {
             var customization = model.signalEffectCustomization
             customization.thinkingEffect = effect
             customization.activeEffect = effect
-            model.previewDebugLight(
+            model.setDebugLight(
                 signal: .working,
                 effectCustomization: customization,
                 targets: selectedLightDebugTargets
@@ -4313,7 +4219,7 @@ struct DebugWindowView: View {
             case .ready, .active, .completed, .stale, .paused:
                 break
             }
-            model.previewDebugLight(
+            model.setDebugLight(
                 signal: signal,
                 effectCustomization: customization,
                 targets: selectedLightDebugTargets
@@ -4321,7 +4227,7 @@ struct DebugWindowView: View {
         case .completedEffect(let effect):
             var customization = model.signalEffectCustomization
             customization.completedEffect = effect
-            model.previewDebugLight(
+            model.setDebugLight(
                 signal: .done,
                 effectCustomization: customization,
                 targets: selectedLightDebugTargets
@@ -5167,10 +5073,9 @@ struct DebugWindowView: View {
             get: { model.isLightDebugModeEnabled },
             set: { enabled in
                 if enabled {
+                    model.setLightDebugModeEnabled(true, targets: selectedLightDebugTargets)
                     if let selectedLightDebugTest {
                         applyLightDebugTest(selectedLightDebugTest)
-                    } else {
-                        model.setLightDebugModeEnabled(true, targets: selectedLightDebugTargets)
                     }
                 } else {
                     selectedLightDebugTest = nil
@@ -5178,28 +5083,6 @@ struct DebugWindowView: View {
                 }
             }
         )
-    }
-
-    private var hardwareLightDebugEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { isHardwareLightDebugEnabled },
-            set: { enabled in
-                isHardwareLightDebugEnabled = enabled
-                if enabled {
-                    selectedHardwareDebugCommand = model.snapshot.aggregate.displayState.bleCommand
-                    bleController.setHardwareDebugModeEnabled(true)
-                } else {
-                    selectedHardwareDebugCommand = nil
-                    bleController.setHardwareDebugModeEnabled(false)
-                }
-            }
-        )
-    }
-
-    private var canApplyHardwareDebugCommand: Bool {
-        guard isHardwareLightDebugEnabled, model.isSignalLightBLEEnabled else { return false }
-        if case .connected = bleController.connectionState { return true }
-        return false
     }
 
     private var statusBarLightDebugTargetBinding: Binding<Bool> {

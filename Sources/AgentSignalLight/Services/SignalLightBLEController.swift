@@ -16,8 +16,8 @@ public enum SignalLightBLEConnectionState: Sendable, Equatable {
 // MARK: - Controller
 
 /// 蓝牙信号灯 Service：与 `StatusBarController` / `FloatingSignalWindowController` 平级，
-/// 镜像 `MenuBarStatusModel.floatingSignalLightSnapshot.aggregate`（见 ADR-0001），
-/// 映射成 `SignalLightBLECommand` 写入硬件。不引入 TCP daemon（见 ADR-0002）。
+/// 镜像悬浮软件灯（`floatingSignalLightSnapshot`、灯效、tick），
+/// 经 `SignalLampAnimation.hardwareCommand` 写成 `SignalLightBLECommand`。不引入 TCP daemon（见 ADR-0002）。
 ///
 /// `isSignalLightBLEEnabled` 开关默认关闭；关闭时完全不初始化 `CBCentralManager`，
 /// 避免无硬件用户被蓝牙权限弹窗打扰。
@@ -40,23 +40,25 @@ final class SignalLightBLEController: ObservableObject {
     private var needsBLESync = false
     private var forceNextBLESync = false
     private var bleSyncTask: Task<Void, Never>?
+    /// 灯光调试帧的色相身份。signal / 灯效 / 全亮变化时强制重写硬件，tick 推进不强制。
+    private var lastDebugBLEIdentity: DebugBLEIdentity?
+
+    private struct DebugBLEIdentity: Equatable {
+        var signal: AgentSignal
+        var allLightsOn: Bool
+        var customization: SignalEffectCustomization
+    }
 
     // 扫描状态保护：记录进入 .scanning 的时间，避免异常情况下 UI 永远卡在 scanning。
     private var scanningStartTime: Date?
     private let scanningStateTimeout: TimeInterval
+    private let scanAndConnectTimeout: TimeInterval
 
     // 重连状态机
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttemptCount = 0
     /// 标记用户主动断开（开关关闭或点断开按钮），阻止重连流程。
     private var isUserInitiatedDisconnect = false
-
-    // MARK: - 硬件信号灯调试状态
-
-    /// 是否启用硬件信号灯调试模式（手动覆盖聚合状态）。
-    @Published private(set) var isHardwareDebugModeEnabled = false
-    /// 当前手动指定的硬件命令；nil 表示未指定。
-    @Published private(set) var hardwareDebugCommand: SignalLightBLECommand? = nil
 
     /// 当前连接状态（供 DebugWindowView 三态按钮展示）。
     @Published private(set) var connectionState: SignalLightBLEConnectionState = .disabled
@@ -65,12 +67,14 @@ final class SignalLightBLEController: ObservableObject {
         model: MenuBarStatusModel,
         commander: SignalLightBLECommanding,
         clock: SignalLightBLEClock = SystemSignalLightBLEClock(),
-        scanningStateTimeout: TimeInterval = 10.0
+        scanningStateTimeout: TimeInterval = 10.0,
+        scanAndConnectTimeout: TimeInterval = 10.0
     ) {
         self.model = model
         self.commander = commander
         self.clock = clock
         self.scanningStateTimeout = scanningStateTimeout
+        self.scanAndConnectTimeout = scanAndConnectTimeout
         // 把 commander 的断连回调接到自己的重连入口。
         // 用 Task 跳出 delegate 调用栈，避免回调中再次触发 CoreBluetooth 操作导致重入。
         commander.setOnDisconnect { [weak self] in
@@ -129,7 +133,27 @@ final class SignalLightBLEController: ObservableObject {
         model.$signalLightAgentScopes.sink { _ in sync() }.store(in: &cancellables)
         model.$signalLightAgentSelectionMode.sink { _ in sync() }.store(in: &cancellables)
         model.$isMonitoringPaused.sink { _ in sync() }.store(in: &cancellables)
-        model.$statusLightOverride.sink { _ in sync() }.store(in: &cancellables)
+        model.$statusLightOverride.sink { [weak self] override in
+            guard let self else { return }
+            let identity = override.map {
+                DebugBLEIdentity(
+                    signal: $0.signal,
+                    allLightsOn: $0.allLightsOn,
+                    customization: $0.effectCustomization
+                )
+            }
+            let force = identity != self.lastDebugBLEIdentity
+            self.lastDebugBLEIdentity = identity
+            self.scheduleBLESync(force: force)
+        }.store(in: &cancellables)
+        model.$thinkingSignalEffect.sink { _ in sync() }.store(in: &cancellables)
+        model.$activeSignalEffect.sink { _ in sync() }.store(in: &cancellables)
+        model.$activeEffectSpeed.sink { _ in sync() }.store(in: &cancellables)
+        model.$alertEffectSpeed.sink { _ in sync() }.store(in: &cancellables)
+        model.$completedSignalEffect.sink { _ in sync() }.store(in: &cancellables)
+        model.$needsReviewSignalEffect.sink { _ in sync() }.store(in: &cancellables)
+        model.$permissionSignalEffect.sink { _ in sync() }.store(in: &cancellables)
+        model.$blockedSignalEffect.sink { _ in sync() }.store(in: &cancellables)
         model.animationClock.$tick.sink { _ in sync() }.store(in: &cancellables)
     }
 
@@ -157,9 +181,14 @@ final class SignalLightBLEController: ObservableObject {
         guard model.isSignalLightBLEEnabled else { return }
         let command = currentBLECommand()
         // 命令级去重（Issue #6）：基于 BLE 命令字符串比较，相同命令不重复写入，
-        // 吸收 aggregate 在映射到同一命令的状态间 churn（如 active ↔ completed 都是 GREEN）。
+        // 吸收 aggregate 在映射到同一命令的状态间 churn（如 thinking ↔ working 都是 GREEN）。
         guard force || command != lastSentCommand else { return }
+        let previous = lastSentCommand
         lastSentCommand = command
+        // 绿灯切黄/红时，部分灯不吃下一条命令。先写 OFF 再写目标色。
+        if let previous, previous != command, command != .off {
+            _ = await commander.send(.off)
+        }
         // 写入失败视为隐式断连，立即触发重连（不等 didDisconnectPeripheral 回调）。
         let ok = await commander.send(command)
         if !ok {
@@ -219,7 +248,7 @@ final class SignalLightBLEController: ObservableObject {
         guard model.isSignalLightBLEEnabled else { return }
         Task { @MainActor in
             self.connectionState = .connecting
-            let ok = await self.commander.scanAndConnect()
+            let ok = await self.scanAndConnectWithTimeout()
             if ok {
                 self.isUserInitiatedDisconnect = false
                 self.persistLastDeviceID()
@@ -237,54 +266,22 @@ final class SignalLightBLEController: ObservableObject {
         await bleSyncTask?.value
     }
 
-    /// 根据当前调试模式/灯效快照解析应发送的 BLE 命令。
+    /// 灯光调试开着时跟调试帧，不跟悬浮灯筛选。否则跟悬浮软件灯。
     private func currentBLECommand() -> SignalLightBLECommand {
-        if isHardwareDebugModeEnabled, let hardwareDebugCommand {
-            return hardwareDebugCommand
+        if model.isLightDebugModeEnabled, let override = model.statusLightOverride {
+            return SignalLampAnimation.hardwareCommand(
+                signal: override.signal,
+                tick: override.usesLiveTick ? model.animationClock.tick : override.tick,
+                allLightsOn: override.allLightsOn,
+                customization: override.effectCustomization
+            )
         }
-        return model.floatingSignalLightSnapshot.aggregate.displayState.bleCommand
-    }
-
-    // MARK: - 硬件信号灯调试
-
-    /// 启/停硬件信号灯调试模式。启用时未指定命令则锁定为当前聚合命令，
-    /// 避免 snapshot 后续变化继续驱动硬件；停止时恢复聚合状态。
-    func setHardwareDebugModeEnabled(_ enabled: Bool) {
-        Task { @MainActor in
-            guard self.isHardwareDebugModeEnabled != enabled else { return }
-            self.isHardwareDebugModeEnabled = enabled
-            if enabled {
-                if self.hardwareDebugCommand == nil {
-                    self.hardwareDebugCommand = self.model.floatingSignalLightSnapshot.aggregate.displayState.bleCommand
-                }
-                await self.sendHardwareDebugCommand()
-            } else {
-                self.hardwareDebugCommand = nil
-                await self.syncCurrentState()
-            }
-            await self.updateConnectionState()
-        }
-    }
-
-    /// 指定并立即发送一条硬件调试命令，同时进入调试模式。
-    func setHardwareDebugCommand(_ command: SignalLightBLECommand) {
-        Task { @MainActor in
-            guard self.model.isSignalLightBLEEnabled else { return }
-            self.hardwareDebugCommand = command
-            self.isHardwareDebugModeEnabled = true
-            await self.sendHardwareDebugCommand()
-            await self.updateConnectionState()
-        }
-    }
-
-    /// 立即发送当前硬件调试命令（不经过命令级去重，确保每次用户点击都写入）。
-    private func sendHardwareDebugCommand() async {
-        guard model.isSignalLightBLEEnabled, let command = hardwareDebugCommand else { return }
-        lastSentCommand = command
-        let ok = await commander.send(command)
-        if !ok {
-            handleDisconnect()
-        }
+        return SignalLampAnimation.hardwareCommand(
+            signal: model.floatingSignalLightSnapshot.aggregate,
+            tick: model.floatingSignalLightTick,
+            allLightsOn: model.floatingSignalLightAllLightsOn,
+            customization: model.floatingSignalLightEffectCustomization
+        )
     }
 
     /// 用户主动断开（开关关闭或点断开按钮）：取消重连，标记不重连，commander 断开。
@@ -297,6 +294,26 @@ final class SignalLightBLEController: ObservableObject {
         lastSentCommand = nil
         // 注意：不清空保存的设备 ID —— 用户下次开启开关时仍可自动重连到同一设备。
         // 设备 ID 只在新设备连接成功时被覆盖（acceptance: 换设备覆盖）。
+    }
+
+    /// 扫描连接带超时：灯已在系统层连接时不会广播，`scanAndConnect` 会一直挂起。
+    /// 超时后取消这次扫描，让重连循环能再走定向 connect（CLI 那条能通的路）。
+    private func scanAndConnectWithTimeout() async -> Bool {
+        let timeout = scanAndConnectTimeout
+        let commander = commander
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await commander.scanAndConnect()
+            }
+            group.addTask {
+                let nanoseconds = UInt64(max(0, timeout) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
     }
 
     /// 启动重连流程，优先用保存的设备 ID 定向重连，失败回退到扫描。
@@ -320,10 +337,10 @@ final class SignalLightBLEController: ObservableObject {
                     ok = await self.commander.reconnect(toDeviceID: deviceID)
                     if !ok {
                         // 定向重连失败（设备未在系统缓存中）→ 回退到扫描。
-                        ok = await self.commander.scanAndConnect()
+                        ok = await self.scanAndConnectWithTimeout()
                     }
                 } else {
-                    ok = await self.commander.scanAndConnect()
+                    ok = await self.scanAndConnectWithTimeout()
                 }
                 if ok {
                     // 重连成功：保存设备 ID（可能换了设备），清零计数，同步状态，退出重连循环。

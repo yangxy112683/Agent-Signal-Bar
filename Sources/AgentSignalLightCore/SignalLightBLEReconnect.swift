@@ -46,4 +46,38 @@ public enum SignalLightBLEReconnectPolicy {
     public static func interval(forAttempt attempt: Int) -> TimeInterval {
         attempt < fastRetryLimit ? fastInterval : slowInterval
     }
+
+    /// 当前没有握着外设时，断连回调怎么处理。
+    ///
+    /// 生产代码曾把 `currentID == nil` 当成过期回调直接忽略，
+    /// 导致 cancel 之后系统仍连着灯、App 再也不重连。
+    public static func disconnectAction(
+        disconnectedID: String,
+        currentID: String?,
+        isReconnecting: Bool
+    ) -> SignalLightBLEDisconnectAction {
+        if let currentID {
+            if disconnectedID != currentID {
+                return .ignoreStale
+            }
+            if isReconnecting {
+                return .finishCancel
+            }
+            return .notifyReconnect
+        }
+        if isReconnecting {
+            return .finishCancel
+        }
+        return .notifyReconnect
+    }
+}
+
+/// `didDisconnectPeripheral` 的处理分流。
+public enum SignalLightBLEDisconnectAction: Equatable, Sendable {
+    /// 旧外设迟到的断连，当前已有别的连接：忽略。
+    case ignoreStale
+    /// 主动 cancel 后的断连：不通知上层，让随后的 connect 继续。
+    case finishCancel
+    /// 意外断连或握着的外设已丢失：通知上层重连。
+    case notifyReconnect
 }

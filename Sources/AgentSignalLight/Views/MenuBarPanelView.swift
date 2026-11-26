@@ -89,7 +89,12 @@ struct MenuBarPanelView: View {
 
     private var statusColor: Color {
         switch viewState.lightSnapshot.aggregate.displayState {
-        case .ready, .active, .completed: return .green
+        case .ready, .active: return .green
+        case .completed:
+            switch model.completedSignalEffect {
+            case .yellowPulse, .yellowSteady: return .yellow
+            case .greenPulse, .greenSteady, .allSteady, .allPulse: return .green
+            }
         case .needsReview, .stale, .paused: return .yellow
         case .permission, .blocked: return .red
         }

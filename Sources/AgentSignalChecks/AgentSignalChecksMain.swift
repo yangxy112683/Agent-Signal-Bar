@@ -34,6 +34,7 @@ struct AgentSignalChecks {
         try checkClaudeFailurePayloadMapsToBlocked()
         try checkGenericHookAdapterMapsOtherAgents()
         try checkCodexDesktopSessionParserMapsDesktopEvents()
+        try checkInterventionDisplayDropsExpiredClaudeAttentionFallback()
         print("agent-signal-checks: ok")
     }
 
@@ -56,8 +57,9 @@ struct AgentSignalChecks {
         )
         try expect(SignalLampAnimation.intensity(.green, signal: .thinking, tick: 0) == 1, "thinking should default to fast green flash")
         try expect(SignalLampAnimation.intensity(.green, signal: .thinking, tick: 1) == 0, "thinking fast green flash should turn off on the next tick")
-        try expect(SignalLampAnimation.intensity(.green, signal: .done, tick: 0) == 1, "done should default to steady green")
-        try expect(SignalLampAnimation.intensity(.green, signal: .done, tick: 3) == 1, "done steady green should remain on")
+        try expect(SignalLampAnimation.intensity(.yellow, signal: .done, tick: 0) == 1, "done should default to yellow pulse")
+        try expect(SignalLampAnimation.intensity(.yellow, signal: .done, tick: 2) == 0, "done yellow pulse should turn off later")
+        try expect(SignalLampAnimation.intensity(.green, signal: .done, tick: 0) == 0, "done should not stay green by default")
         try expect(SignalLampAnimation.intensity(.yellow, signal: .working, tick: 0) == 0, "active should not show yellow")
         try expect(SignalLampAnimation.intensity(.red, signal: .working, tick: 0) == 0, "active should not show red")
 
@@ -229,8 +231,8 @@ struct AgentSignalChecks {
                     "active": SessionRecord(signal: .working, updatedAt: now),
                     "completed": SessionRecord(signal: .done, updatedAt: now)
                 ]
-            ).aggregateSignal() == .working,
-            "active should win over completed"
+            ).aggregateSignal() == .done,
+            "completed should win over active"
         )
         try expect(
             SignalStateDocument(
@@ -287,6 +289,10 @@ struct AgentSignalChecks {
         try expect(
             ClaudeHookAdapter.chooseSignal(eventName: "PermissionDenied", payload: [:]) == .blocked,
             "Claude PermissionDenied should map to blocked"
+        )
+        try expect(
+            ClaudeHookAdapter.chooseSignal(eventName: "InstructionsLoaded", payload: [:]) == .sessionStart,
+            "Claude InstructionsLoaded should map to session_start, not attention"
         )
         try expect(
             ClaudeHookAdapter.chooseSignal(eventName: "TaskCreated", payload: [:]) == .subagentStart,
@@ -800,6 +806,81 @@ struct AgentSignalChecks {
 
     private static func checkUnknownSignalIsRejected() throws {
         try expect(AgentSignal.normalized("definitely_unknown") == nil, "unknown signal names should be rejected")
+    }
+
+    private static func checkInterventionDisplayDropsExpiredClaudeAttentionFallback() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let twelveHoursAgo = now.addingTimeInterval(-12 * 60 * 60)
+        let recorded = SignalSnapshot(
+            aggregate: .working,
+            sessions: [
+                SessionStatus(
+                    sessionID: "cursor-main",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "cursor",
+                    lastEvent: "PreToolUse"
+                )
+            ],
+            recentEvents: [
+                RecentSignalEvent(
+                    id: "ghost-claude",
+                    sessionID: "claude-ghost",
+                    signal: .attention,
+                    updatedAt: twelveHoursAgo,
+                    agent: "claude-code",
+                    event: "InstructionsLoaded"
+                ),
+                RecentSignalEvent(
+                    id: "live-cursor",
+                    sessionID: "cursor-main",
+                    signal: .working,
+                    updatedAt: now,
+                    agent: "cursor",
+                    event: "PreToolUse"
+                )
+            ],
+            stateFileURL: URL(fileURLWithPath: "/tmp/agent-signal-display-check.json"),
+            updatedAt: now
+        )
+
+        let mixed = InterventionDisplay.derive(
+            recorded: recorded,
+            preferences: InterventionDisplay.Preferences(
+                selectionMode: .manual,
+                scopes: [.codexCLI, .claudeCode, .localScript]
+            ),
+            presenceSessions: [],
+            now: now,
+            completedDisplayWindow: 30,
+            transientAlertDisplayWindow: 30,
+            presenceIncluded: false
+        )
+        try expect(
+            mixed.displaySnapshot.aggregate.displayState != .needsReview,
+            "expired Claude InstructionsLoaded must not drive the lamp to needs_review"
+        )
+        try expect(
+            mixed.exclusions.contains { $0.reason == "attention_window_expired" && $0.agent == "claude-code" },
+            "display dump should exclude the ghost Claude event as attention_window_expired"
+        )
+
+        let claudeOnly = InterventionDisplay.derive(
+            recorded: recorded,
+            preferences: InterventionDisplay.Preferences(
+                selectionMode: .manual,
+                scopes: [.claudeCode]
+            ),
+            presenceSessions: [],
+            now: now,
+            completedDisplayWindow: 30,
+            transientAlertDisplayWindow: 30,
+            presenceIncluded: false
+        )
+        try expect(
+            claudeOnly.displaySnapshot.aggregate == .idle,
+            "Claude-only scopes with no live Claude session must fall back to idle"
+        )
     }
 
     private static func makeStore(

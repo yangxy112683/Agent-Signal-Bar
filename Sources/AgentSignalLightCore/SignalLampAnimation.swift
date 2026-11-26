@@ -98,6 +98,57 @@ public enum SignalLampAnimation {
         ) > 0
     }
 
+    /// Hardware command for the same look the software lamps render.
+    /// Hardware only has GREEN, BLINK_YELLOW, BLINK_RED, and OFF.
+    /// Green flash, breathe, and pulse collapse to GREEN. Yellow and red stay on the blink commands because the hardware has no steady yellow or red.
+    public static func hardwareCommand(
+        signal: AgentSignal,
+        tick: Int,
+        allLightsOn: Bool = false,
+        customization: SignalEffectCustomization = .default
+    ) -> SignalLightBLECommand {
+        switch signal.displayState {
+        case .paused:
+            return .off
+        case .ready:
+            return .green
+        case .active:
+            if allLightsOn {
+                return .green
+            }
+            let effect = signal == .thinking ? customization.thinkingEffect : customization.activeEffect
+            return hardwareCommand(forActive: effect, tick: tick, speed: customization.activeSpeed)
+        case .completed:
+            if allLightsOn {
+                return .green
+            }
+            return hardwareCommand(forCompleted: customization.completedEffect)
+        case .needsReview:
+            return hardwareCommand(
+                forAlert: customization.needsReviewEffect,
+                color: .yellow,
+                tick: tick,
+                speed: customization.alertSpeed
+            )
+        case .permission:
+            return hardwareCommand(
+                forAlert: customization.permissionEffect,
+                color: .red,
+                tick: tick,
+                speed: customization.alertSpeed
+            )
+        case .blocked:
+            return hardwareCommand(
+                forAlert: customization.blockedEffect,
+                color: .red,
+                tick: tick,
+                speed: customization.alertSpeed
+            )
+        case .stale:
+            return .blinkYellow
+        }
+    }
+
     private static func activeIntensity(
         _ color: SignalLampColor,
         signal: AgentSignal,
@@ -190,6 +241,61 @@ public enum SignalLampAnimation {
             return 1
         case .allPulse:
             return pulseValues[completedTick % pulseValues.count]
+        }
+    }
+
+    private static func hardwareCommand(
+        forActive effect: ActiveSignalEffect,
+        tick: Int,
+        speed: SignalEffectSpeed
+    ) -> SignalLightBLECommand {
+        switch effect {
+        case .greenBreathing, .greenSteady, .greenSlowFlash, .greenFastFlash:
+            return .green
+        case .trafficCycle:
+            return trafficCycleCommand(tick: tick, speed: speed)
+        }
+    }
+
+    private static func hardwareCommand(forCompleted effect: CompletedSignalEffect) -> SignalLightBLECommand {
+        switch effect {
+        case .greenPulse, .greenSteady, .allSteady, .allPulse:
+            return .green
+        case .yellowPulse, .yellowSteady:
+            return .blinkYellow
+        }
+    }
+
+    private static func hardwareCommand(
+        forAlert effect: AlertSignalEffect,
+        color: SignalLampColor,
+        tick: Int,
+        speed: SignalEffectSpeed
+    ) -> SignalLightBLECommand {
+        if effect == .trafficCycle {
+            return trafficCycleCommand(tick: tick, speed: speed)
+        }
+        switch color {
+        case .red:
+            return .blinkRed
+        case .yellow:
+            return .blinkYellow
+        case .green:
+            return .green
+        }
+    }
+
+    private static func trafficCycleCommand(tick: Int, speed: SignalEffectSpeed) -> SignalLightBLECommand {
+        let phaseColors: [SignalLampColor] = [.red, .yellow, .green]
+        let ticksPerColor = 4
+        let phase = (adjustedTick(tick, speed: speed) / ticksPerColor) % phaseColors.count
+        switch phaseColors[phase] {
+        case .red:
+            return .blinkRed
+        case .yellow:
+            return .blinkYellow
+        case .green:
+            return .green
         }
     }
 

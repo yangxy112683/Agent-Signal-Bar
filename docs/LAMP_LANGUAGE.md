@@ -14,7 +14,7 @@ Agent Signal Bar 第二版灯语模型只回答一个问题：
 | --- | --- | --- |
 | `ready` | 空闲，系统正常 | 绿灯常亮 |
 | `active` | Agent 正在运行 | 绿灯亮度+大小呼吸 |
-| `completed` | 任务完成 | 绿色短闪并轻微缩放 |
+| `completed` | 任务完成，去看结果 | 黄灯闪 |
 | `needs_review` | 需要用户查看 | 黄灯慢闪并轻微缩放 |
 | `permission` | 等待用户授权 | 红灯慢闪并轻微缩放 |
 | `blocked` | 失败、阻塞、无法继续 | 红灯快闪 |
@@ -36,7 +36,7 @@ Agent Signal Bar 第二版灯语模型只回答一个问题：
 | `stale` | `stale` |
 | `off`, `pause`, `paused` | `paused` |
 
-`active` 只能使用绿色动态，不出现黄色或红色。动态同时改变亮度和大小，灯位本身保持固定，避免状态栏布局抖动。运行详情单灯、极简圆点和经典灯牌都使用同一套亮度与大小呼吸曲线；经典灯牌只额外保留黑色灯牌外壳。`done` 默认是绿色 completed，不再是黄色。黄色只表示 needs review，红色只表示 permission 或 blocked。
+`active` 只能使用绿色动态，不出现黄色或红色。动态同时改变亮度和大小，灯位本身保持固定，避免状态栏布局抖动。运行详情单灯、极简圆点和经典灯牌都使用同一套亮度与大小呼吸曲线；经典灯牌只额外保留黑色灯牌外壳。`done` 默认是黄色 completed（软件黄灯闪，硬件 `BLINK_YELLOW`），用来通知去看结果。completed 优先级高于 active，并按告警去重：同一来源另一个会话还在跑时，完成提示也保留到灯效时段结束。`needs_review` 是黄灯慢闪；红色只表示 permission 或 blocked。
 
 `completed` 是短暂停留状态，默认 30 秒后自动回到 `ready`，可以用 `AGENT_SIGNAL_LIGHT_COMPLETED_TTL_SECONDS` 覆盖。普通 active/warning session 过期仍会进入 `stale`，但 completed 过期代表“完成提示结束”，不会误报状态不可信。
 
@@ -47,7 +47,7 @@ Successful `Stop` events from Codex and Claude Code map to `done`. A following `
 多 session 聚合使用 display state 优先级：
 
 ```text
-paused > blocked > permission > needs_review > stale > active > completed > ready
+paused > blocked > permission > needs_review > stale > completed > active > ready
 ```
 
 示例：
@@ -58,7 +58,7 @@ paused > blocked > permission > needs_review > stale > active > completed > read
 | `active` | `permission` | `permission` |
 | `active` | `needs_review` | `needs_review` |
 | `permission` | `blocked` | `blocked` |
-| `completed` | `active` | `active` |
+| `completed` | `active` | `completed` |
 | `completed` | `ready` | `completed` |
 | `stale` | `ready` | `stale` |
 | `paused` | `active` | `paused` |

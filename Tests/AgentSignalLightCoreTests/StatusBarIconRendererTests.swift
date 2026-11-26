@@ -192,7 +192,7 @@ final class StatusBarIconRendererTests: XCTestCase {
         let cases: [(signal: AgentSignal, tick: Int, expected: ExpectedLampColor)] = [
             (.idle, 0, .green),
             (.working, 0, .green),
-            (.done, 0, .green),
+            (.done, 0, .yellow),
             (.attention, 2, .yellow),
             (.permission, 2, .red),
             (.blocked, 0, .red),

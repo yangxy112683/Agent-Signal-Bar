@@ -126,7 +126,7 @@ Both styles support horizontal and vertical layouts. You can also tune blink spe
 | Thinking `thinking` | fast green flash | The agent is reasoning about the task |
 | Working `working` | slow green flash | The agent is editing, running tools, or testing |
 | Step done `tool_done` | slow green flash | One step finished; the workflow may continue |
-| Done `done` | steady green | The task finished and will soon return to idle |
+| Done `done` | yellow flash | The task finished; review the result before it returns to idle |
 | Attention `attention` / `notification` | flashing yellow | Check when convenient |
 | Permission `permission` / `permission_request` | flashing red | Your approval is needed now |
 | Blocked `blocked` / `failure` / `error` | fast flashing red | Immediate action is needed |
@@ -188,9 +188,11 @@ Requires macOS 14+, Swift 6, and the full Xcode toolchain.
 
 ```bash
 ./script/build_and_run.sh --verify
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+swift test
 ./script/doctor.sh
 ```
+
+`script/*.sh` picks Xcode 26 under `/Applications` or `~/Applications` (do not pin `DEVELOPER_DIR` to `/Applications/Xcode.app` if that tree is still Swift 5.10). Hook-mapping changes: `./script/install_cli.sh` then smoke `claude-hook`; rebuild the app bundle only when UI changed. Lamp color: `./scripts/agent-signal display --json`.
 
 Release packaging and Sparkle-feed details live in [GitHub release management](docs/GITHUB_RELEASES.md) and the [release checklist](docs/RELEASE_CHECKLIST.md).
 
